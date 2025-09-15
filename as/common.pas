@@ -1,0 +1,122 @@
+module common;
+
+uses asdef;
+
+var errfil:    text;    { error output file }
+    cmdrot:    cmdptr;  { current command stack }
+    cmdfre:    cmdptr;  { free command entries }
+    linec:     integer; { source line counter }
+    labbuf:    lab;     { common system label buffer }
+    errlab:    blab;    { name of error output file }
+
+    { These roots form the active and free lists for
+      source file control system. Both a sequence
+      and a stack of files is maintained. }
+
+    srcrot:    srcptr; { source control system }
+    srcfre:    srcptr;
+
+    objfil:    bytfil;  { object files }
+    symfil:    bytfil;
+    filrot:    fnmptr;  { root of files list }
+    lstfil:    fnmptr;  { last file in list }
+    curfil:    fnmptr;  { next file to process }
+    flend:     boolean; { end of file flag }
+    fdiag:     boolean; { diagnostic print flag }
+    fsupp:     boolean; { supress output flag }
+    fouto:     boolean; { output files open }
+    flin:      boolean; { generate line file }
+    ferrf:     boolean; { error output file requested }
+    ferro:     boolean; { error output file open }
+    fverb:     boolean; { announce activites flag }
+    fplin:     boolean; { print input lines }
+    fpmac:     boolean; { print macro lines }
+    opcloc:    integer; { opcode location }
+    prgmc:     integer; { program counter }
+    glblc:     integer; { variable space counter }
+
+    { The symbols table is composed of a number of
+      unsorted lists in dynamic storage. The table
+      is accessed via a 'front end' array, which
+      indicates the hash code for the label. multiple
+      entries are chained off each array element.
+      also, a free symbols list is maintained which
+      holds symbols being recycled. }
+
+    symtab:    array [1..maxsym] of symptr;
+    symrot:    symptr;
+
+    { The RLD table contains the list of program locations
+      requiring adjustment, and how to do the insert. }
+
+    rldrot: rldptr;     { rld entries list }
+
+    { The line label is kept so that various opcode
+      handlers (like 'equ', 'dv', etc. can access it. }
+    linlab:    symptr;  { label for current line }
+    codsav:    symop;
+
+    { The 'if' tables indicate a stacked sequence of
+      encountered 'if's, and their associated t/f
+      values. A count is maintained of false 'if'
+      levels, and this controls the output of code.
+      nested 'if's are implemented. }
+
+    ifrot:     ifptr;   { 'if' encounter list }
+    iffre:     ifptr;
+    errcnt:    integer; { errors count }
+    errstr:    lab;     { error string }
+    alignment: integer; { alignment for CPU }
+    bits:      integer; { number of bits in integer }
+    bytes:     integer; { number of bytes in integer }
+    toppow:    integer; { top byte power, precalculated for speed }
+    bigend:    boolean; { processor is a big endian }
+    wrdsiz:    integer; { processor dependent size of "word" }
+    trnchr: array [char] of byte; { character to ascii translation array }
+    blkstk:    blkptr;  { stack of active nested blocks }
+    blklst:    blkptr;  { list of defined blocks }
+    blkfre:    blkptr;  { free block entries }
+    bicfre:    bicptr;  { free block inclusion entries }
+
+{ ASCII value to internal character set convertion array }
+
+fixed chrtrn: array [0..127] of char = array
+
+   '\nul',  { 0   } '\soh',  { 1   } '\stx',  { 2   } '\etx',  { 3   }
+   '\eot',  { 4   } '\enq',  { 5   } '\ack',  { 6   } '\bel',  { 7   }
+   '\bs',   { 8   } '\ht',   { 9   } '\lf',   { 10  } '\vt',   { 11  }
+   '\ff',   { 12  } '\cr',   { 13  } '\so',   { 14  } '\si',   { 15  }
+   '\dle',  { 16  } '\dc1',  { 17  } '\dc2',  { 18  } '\dc3',  { 19  }
+   '\dc4',  { 20  } '\nak',  { 21  } '\syn',  { 22  } '\etb',  { 23  }
+   '\can',  { 24  } '\em',   { 25  } '\sub',  { 26  } '\esc',  { 27  }
+   '\fs',   { 28  } '\gs',   { 29  } '\rs',   { 30  } '\us',   { 31  }
+   ' ',     { 32  } '!',     { 33  } '"',     { 34  } '#',     { 35  }
+   '$',     { 36  } '%',     { 37  } '&',     { 38  } '''',    { 39  }
+   '(',     { 40  } ')',     { 41  } '*',     { 42  } '+',     { 43  }
+   ',',     { 44  } '-',     { 45  } '.',     { 46  } '/',     { 47  }
+   '0',     { 48  } '1',     { 49  } '2',     { 50  } '3',     { 51  }
+   '4',     { 52  } '5',     { 53  } '6',     { 54  } '7',     { 55  }
+   '8',     { 56  } '9',     { 57  } ':',     { 58  } ';',     { 59  }
+   '<',     { 60  } '=',     { 61  } '>',     { 62  } '?',     { 63  }
+   '@',     { 64  } 'A',     { 65  } 'B',     { 66  } 'C',     { 67  }
+   'D',     { 68  } 'E',     { 69  } 'F',     { 70  } 'G',     { 71  }
+   'H',     { 72  } 'I',     { 73  } 'J',     { 74  } 'K',     { 75  }
+   'L',     { 76  } 'M',     { 77  } 'N',     { 78  } 'O',     { 79  }
+   'P',     { 80  } 'Q',     { 81  } 'R',     { 82  } 'S',     { 83  }
+   'T',     { 84  } 'U',     { 85  } 'V',     { 86  } 'W',     { 87  }
+   'X',     { 88  } 'Y',     { 89  } 'Z',     { 90  } '[',     { 91  }
+   '\\',    { 92  } ']',     { 93  } '^',     { 94  } '_',     { 95  }
+   '`',     { 96  } 'a',     { 97  } 'b',     { 98  } 'c',     { 99  }
+   'd',     { 100 } 'e',     { 101 } 'f',     { 102 } 'g',     { 103 }
+   'h',     { 104 } 'i',     { 105 } 'j',     { 106 } 'k',     { 107 }
+   'l',     { 108 } 'm',     { 109 } 'n',     { 110 } 'o',     { 111 }
+   'p',     { 112 } 'q',     { 113 } 'r',     { 114 } 's',     { 115 }
+   't',     { 116 } 'u',     { 117 } 'v',     { 118 } 'w',     { 119 }
+   'x',     { 120 } 'y',     { 121 } 'z',     { 122 } '{',     { 123 }
+   '|',     { 124 } '}',     { 125 } '~',     { 126 } '\del'   { 127 }
+
+end;
+
+begin                                      
+end.
+

@@ -1,0 +1,57 @@
+                           AS ASSEMBLER README
+
+AS is the generic term for the assembler. The assm directory is actually a set
+of both assemblers, support utilities, and different environments and
+implementations.
+
+AS itself is a portable multitarget assembler written in Pascal. It is an
+advanced macro assembler, and features "zero pass" or pass free methodology
+that completely removes all multipass issues from assembly.
+
+AS is quite old, and the first version was written as one of the first major
+programs under the new Pascal compiler for Z80 that was operational in January
+of 1980. The assembler was operational later that year with a companion ln
+written in assembly for speed an memory purposes. This makes AS, at this 
+writing, 27 years old. However, it has been almost continually updated since
+the 1980s. The ln program was long ago converted to Pascal code.
+
+The modular aspect of AS means that the main code that runs the assembler is in
+the as directory. Each assembler for each target machine lives in its own
+separate directory, and uses the modules built in the as directory to finish a
+complete assembler.
+
+In addition to the assembler machine directories, there is a utilities directory
+utl, which contains various machine independent support tools. For example, 
+today as files are constructed with the help of automatic source file 
+generation.
+
+There are a series of environment directorys under assm, each of which contains
+files and support details on a particular environment. Some of these are quite
+complex. For example, the Windows directory needs a file converter similar in
+complexity to a linker in order to convert as output files to .exe files.
+
+Here then are the different directories:
+
+as      Main assembler code.
+ln      Linker code.
+
+i8080   Machine specific assembler for Intel 8080 series processors.
+i8051   Machine specific assembler for Intel 8051 series processors.
+Z80     Machine specific assembler for Z80 series processors.
+Z280    Machine specific assembler for Z280 series processors (the Z280 was 
+        cancelled due to processor bugs).
+i80586	Machine specific assembler for the 80x86 series Intel/AMD processors.
+mpc7400	Machine specific assembler for PowerPC series processors (unfinished).
+sm4000  Machine specific assembler for MIPS 4000 series processors (unfinished).
+sparcv9 Machine specific assembler for Sparc v9 series processors (unfinished).
+
+utl		Assembler general utilities.
+dbz80	A Z80 debugger written in Z80 assembly language. Considered obsolete.
+db		A general debugger writen in Pascal. Presently implements I8080 only.
+doc		Support/design documents for AS.
+
+windows Windows environment specific support and utilities.
+unix	Unix (linux) environment specific support and utilities.
+pcdos	PC/DOS environment specific support and utilities.
+
+

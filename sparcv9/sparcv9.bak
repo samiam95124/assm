@@ -1,0 +1,68 @@
+                             SPARC V9 ASSEMBLER LANGUAGE
+
+OVERVIEW
+
+Describes the exact language as input by the IP Sparc V9 assembler.
+
+ASSEMBLER DIRECTIVES
+
+The following pseudo ops are oriented specifically for SPARC V9.
+
+Directive           Meaning
+================================================================================
+float				Enables the specification of floating point instructions.
+                    Note that msv9 instruction enables floating point by default.
+nfloat              Disables the specification of floating point instructions.
+msv7                Restricts the instruction set to SPARC V7.
+msv8                Restricts the instruction set to SPARC V8.
+msv9                Restricts the instruction set to SPARC V9.
+defw				Define Sparc specific word format, 32 bit big endian.
+defhw				Define SPARC specific half word format, 16 bit big endian.
+defdw               Define SPARC specific double word format, 64 bit big endian.
+deffd               Define SPARC specific double float, 64 bit big endian.
+deffq               Define SPARC specific quad float, 128 bit big endian.
+
+The standard pseudo op deflf defines the SPARC V9 Quad Precision floating point
+format.
+
+SIMILARITY OF IP SPARC V9 TO STANDARD SPARC V9
+
+Aside from the pseudo ops, every effort is made to keep compatibility with 
+standard SPARC assembly language as defined by SPARC International, Inc. This
+includes implementation of the following features:
+
+o Register names are introduced with a leading "%". Register names can be reused
+in equates and sets.
+
+o Operand formats are destination right, that is, the destination register or
+memory location is on the right side of the operand list.
+
+o Bracketed format is used for register indirect operands:
+
+   [reg]
+   [reg+imm]
+
+o "Synthetic" instructions are supported.
+
+DIFFERENCES BETWEEN IP SPARC V9 AND STANDARD SPARC V9
+
+These are SPARC V9 conventions that are NOT supported in the IP SPARC V9
+assembler.
+
+o The use of embedded commas in the memonic is not supported. IP SPARC V9
+instructions are written without commas:
+
+SPARC V9            IP
+=============================================
+brgez,a,pt          brgezapt
+
+o Predefined values are NOT written with a preceeding pound ("#") 
+character:
+
+SPARC V9            IP
+=============================================
+#page               page
+
+Predefined values in IP SPARC V9 assembler are ordinary equates and sets.
+
+o C style comments are not supported.

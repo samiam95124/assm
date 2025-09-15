@@ -1,0 +1,6 @@
+c
+c Link DB and prepare the db.pgm file.
+c
+ln db=dbb dbc dbd dbe dbf dbg dbh dbi dbj dbk dbl;
+copy db.pgm=db.obj;
+

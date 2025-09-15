@@ -1,0 +1,682 @@
+{*******************************************************************************
+*                                                                              *
+*                                  MAIN MODULE                                 *
+*                                                                              *
+*                        COPYRIGHT (C) 2006 SCOTT A. MOORE                     *
+*                                                                              *
+* Contains the main loop to run AS. All of the top level parsing details are   *
+* contained here, including the basic error handling and recovery to the next  *
+* line.                                                                        *
+*                                                                              *
+*******************************************************************************}
+
+program asmain(output);
+
+uses asdef,   { global definitions }
+     common,  { global variables }
+     utl,     { support utilities }
+     machine; { custom assembly module }
+
+label 
+
+   fileloop, { next file in assembly }
+   incloop,  { next line of assembly }
+   endfile,  { end of file loop }
+   99;       { abort assembly }
+
+var lprgmc:  integer; { last program count }
+    lglblc:  integer; { last variables count }
+    li:      blabinx;
+    i:       integer;
+    c:       char;
+
+procedure prclin; forward; { process line }
+
+{*******************************************************************************
+
+Abort assembly
+
+Terminates the assembly and closes all files, then exits.
+
+*******************************************************************************}
+
+procedure abort;
+
+begin
+
+   goto 99 { abort assembly }
+
+end;
+
+{*******************************************************************************
+
+Print fatal error
+
+Counts the error, prints it on the standard output, then terminates the 
+assembly. Used when assembly cannot proceed.
+
+*******************************************************************************}
+
+procedure fprterr(err : errcod { error to process });
+
+begin
+
+   errcnt := errcnt + 1; { count error }
+   write('*** '); { output error message }
+   prtecd(output, err);
+   writeln;
+   if fverb then writeln('Assembly aborted');
+   abort { process abort }
+
+end;
+
+{*******************************************************************************
+
+Print error
+
+Prints the given error to the errors file, then aborts the current line.
+
+*******************************************************************************}
+
+procedure prterr(e: errcod);
+
+begin
+
+   prcerr(e); { print the error }
+   fsupp := true; { stop outputting object (for speed) }
+   goto incloop { abort to next line }
+
+end;
+
+{*******************************************************************************
+
+Process macro
+
+Loads and executes the strings that comprise a macro. First, we form a list of
+parameters to be supplied to the macro. While doing this, we obey any string
+quoting that appears. The "\" force character is also obeyed, as far as forcing
+the next character. Advanced forces are not processed, they are simply passed
+on.
+
+Once the parameters list is made, we "execute" the macro. The macro consists of
+a list of "contructors", or instructions on how to make a macro. The
+constructors contain strings that represent pieces of the macro, and
+instructions as to where to place parameters, etc. Even the end of each macro
+line is an instruction.
+
+Because no searching is done at this level, macros "precompiled" this way are
+faster than normal "search" macros.
+
+*******************************************************************************}
+
+procedure prcmac(sym: symptr); { macro symbol }
+
+var mp:     macptr;    { pointer for macro constructors }
+    pc:     0..maxpar; { parameter count }
+    str:    linbuf;    { string buffer }
+    len:    inpinx;    { length of string in buffer }
+    i:      inpinx;    { index for buffer }
+    quote:  boolean;   { in quote flag }
+    parstr: array [1..maxpar] of pstring; { parameter string keepers }
+    err:    boolean;   { error occurred flag }
+    line:   integer;   { macro line counter }
+
+{ add character to string }
+
+procedure addstr(c: char);
+
+begin
+
+   len := len+1; { count character }
+   str[len] := c { place character }
+
+end;
+
+begin
+
+   pc := 0; { clear parameter count }
+   err := false; { set no error occured }
+   skpspc; { skip spaces }
+   if not endcmd then repeat { there are parameters }
+
+      skpspc; { skip spaces }
+      len := 0; { clear string }
+      quote := false; { set not in quote }
+      { load parameter }
+      while not endlin and (not (chkchr in [';', ',', '!']) or quote) do begin
+
+         { invert quote status on every quote found. Note that
+           this is ok even for the quote image, since it just
+           looks like two strings back to back }
+         if chkchr = '''' then { quote found }
+            quote := not quote { invert quote status }
+         else if quote and (chkchr = '\\') then begin { process force }
+
+            addstr(chkchr); { place next character }
+            getchr { next }
+
+         end;
+         if not endlin then addstr(chkchr); { place next character }
+         getchr
+
+      end;
+      { trim trailing spaces off parameter }
+      if len > 0 then { string not empty }
+         while str[len] = ' ' do len := len-1;
+      if pc < maxpar then begin { register parameter }
+
+         pc := pc+1; { count parameters }
+         new(parstr[pc], len); { create holding string }
+         for i := 1 to len do parstr[pc]^[i] := str[i] { copy into place }
+
+      end else begin { error, too many parameters }
+
+         { this error would be really hard to do. we supress all errors but the
+           first, and just ignore further parameters }
+         if not err then prterr(eparnum); { too many parameters }
+         err := true { flag error has occured }
+
+      end;
+      skpspc; { skip spaces }
+      c := chkchr; { get next character }
+      if c = ',' then getchr { ',', another label present }
+
+   until c <> ','; { no more parameters }
+   { finish macro command }
+   skpspc; { skip spaces }
+   if not endcmd then prterr(eparam); { bad parameter error }
+   newcmd; { establish new command level }
+   sym^.inv := sym^.inv+1; { count macro invocations }
+   mp := sym^.mac; { index the top constructor }
+   len := 0; { clear initial string }
+   line := 1; { set on first line }
+   while mp <> nil do begin { execute strings }
+
+      if mp^.sp <> nil then begin { there is a string }
+
+         { concatenate the new string to the command line }
+         for i := 1 to max(mp^.sp^) do str[len+i] := mp^.sp^[i]; { copy }
+         len := len+max(mp^.sp^) { find new length }
+
+      end;
+      { process parameter command }
+      if mp^.par = 253 then begin { macro counter }
+
+         if sym^.inv > 999999 then prterr(emacovf); { count overflow }
+         { place digits of macro counter }
+         addstr(chr(  sym^.inv div 100000+ord('0')));
+         addstr(chr(((sym^.inv div 10000) mod 10)+ord('0')));
+         addstr(chr(((sym^.inv div 1000) mod 10)+ord('0')));
+         addstr(chr(((sym^.inv div 100) mod 10)+ord('0')));
+         addstr(chr(((sym^.inv div 10) mod 10)+ord('0')));
+
+      end else if mp^.par = 254 then begin { parameter count }
+
+         if pc > maxpar then prterr(easflt); { count overflow }
+         { place digits of parameter counter }
+         addstr(chr(((pc div 10) mod 10)+ord('0')));
+         addstr(chr(pc mod 10+ord('0')))
+
+      end else if mp^.par = 255 then begin { execute string }
+
+         new(cmdrot^.sp, len); { create a new command string }
+         { copy the command line into place }
+         for i := 1 to len do cmdrot^.sp^[i] := str[i];
+         cmdrot^.inp := 1; { reset execute position }
+         { if macro print is on, print the line }
+         if fpmac then begin
+
+            write('+', line:6, ' ');
+            for i := 1 to len do write(cmdrot^.sp^[i]);
+            writeln
+
+         end;
+         prclin; { process line }
+         dispose(cmdrot^.sp); { release temp line }
+         cmdrot^.sp := nil; { clear pointer }
+         len := 0; { clear accumulation string }
+         line := line+1 { count lines }
+
+      end else if mp^.par <> 0 then { insert parameter }
+         if mp^.par <= pc then begin { parameter string exists }
+           
+            { concatenate the new string to the command line }
+            for i := 1 to max(parstr[mp^.par]^) do { copy string into place }
+               str[len+i] := parstr[mp^.par]^[i];
+            len := len+max(parstr[mp^.par]^) { find new length }
+
+         end;
+         { the bahavior of a parameter that does not exist is to give the
+           null string }
+      mp := mp^.next { next contructor }
+
+   end;
+   { discard all parameter strings }
+   for pc := 1 to pc do if parstr[pc] <> nil then dispose(parstr[pc]);
+   discmd { back out level }
+
+end;
+
+{*******************************************************************************
+
+Process label
+
+In prclin, the label (if any) preceding the statement is stored, and no further 
+processing is done. This is because the 'type' of the label is determined by the
+statement (as equ, glbl, dv, etc.). All routines concerned with a label
+preceeding access and define the label themselves. This procedure is activated
+to handle the 'all else' case.
+
+These labels are (default) declared to be in the address space, equated to the 
+start of any or the next generating statement. It is an error if the label has
+prior definition.
+
+*******************************************************************************}
+
+procedure prclab;
+
+
+begin
+
+   if linlab <> nil then begin { line label present }
+
+      if linlab^.mac <> nil then prterr(esymmac); { is macro }
+      if linlab^.def then prterr(eduplab); { already dec }
+      if linlab^.ext then prterr(edfext); { external }
+      linlab^.def := true; { set defined }
+      linlab^.add := true; { an address }
+      linlab^.val := prgmc; { at current location }
+      addinc(linlab) { add inclusion entry }
+
+   end;
+   linlab := nil { clear holding symbol }
+
+end;
+
+{*******************************************************************************
+
+Process suppress actions
+
+Processes a suppressed instruction. The instruction name is expected in labbuf.
+We directly mwatch for the verbs 'if', 'else', 'elseif' and 'endif'. These
+instructions are allowed to continue as normal. The others are all suppressed by
+skipping all parameters, while watching for quoted strings, so that the whole
+instruction is skipped.
+
+The effect of the suppress implementation is that during if suppressed code, the
+if instructions are allowed to continue executing, and can maintain the
+structure of 'if' blocks on their own. This is a simple implementation to
+maintain in the light of macros, includes and string assembly statements.
+
+Directly looking for the 'if' family instructions has two impacts, the speed
+of search and the fact that the assembly module cannot use other names for
+the 'if' statements.
+
+The speed issue should not be a problem, because the 'if' search is only done
+during suppress, and only searches a short list.
+
+*******************************************************************************}
+
+procedure prcsup;
+
+var quote: boolean; { in quoted string }
+
+begin
+
+   if compp(labbuf, 'if') or compp(labbuf, 'else') or
+      compp(labbuf, 'elseif') or compp(labbuf, 'endif') then
+      { an 'if' family statement found, we execute that to maintain
+        'if' block tracking }
+      prcopc
+   else begin { skip parameters }
+
+      { skip all parameters, taking quotes into account }
+      quote := false; { set not in quote }
+      while not endlin and ((chkchr <> ';') or quote) do begin
+
+         { invert quote status on every quote found. Note that
+           this is ok even for the quote image, since it just
+           looks like two strings back to back }
+         if chkchr = '''' then { quote found }
+            quote := not quote { invert quote status }
+         else if quote and (chkchr = '\\') then getchr; { process force }
+         if not endlin then getchr { get next }
+
+      end
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Process line
+
+This procedure is one down from the basic executive loop. Here we perform the 
+complete analisis of the statement current.
+
+A statement is decribed by:
+
+     [label:] [opcode [operand]...] [! comment]
+
+If present the label is tablized and saved for further process. If present, the 
+opcode is resolved and a handler is executed. Any comment is skipped.
+
+Note that in case there is a label without an opcode, the label is default 
+defined.
+
+*******************************************************************************}
+
+procedure prclin;
+
+var opcode: boolean; { opcode field flag }
+    sym:    symptr;  { symbol pointer }
+
+begin
+
+   opcloc := prgmc; { set location of opcode }
+   linlab := nil; { null line label }
+   opcode := false; { set no opcode encounter }
+   skpspc; { skip forward }
+   while (alpha(chkchr) or (chkchr = '_') or (chkchr = '.')) and not opcode do 
+      begin
+
+      { process opcode/label }
+      getlab; { parse the label }
+      if chkchr = ':' then begin { line label, process }
+
+         getchr; { skip ':' }
+         if linlab <> nil then prclab; { clear out last label }
+         if not chksup then begin { perform non-suppress actions }
+
+            { check for pc location indicator }
+            if compp(labbuf, '_') then prterr(eduplab);
+            plcsym(linlab, labbuf);
+            skpspc; { skip forward }
+            if endlin then prclab; { no opcode, process default define }
+
+         end;
+         skpspc { skip to next }
+
+      end else begin
+
+         if chksup then prcsup { perform suppress }
+         else begin
+
+            fndsym(sym, labbuf); { check symbol by that name exists }
+            if sym <> nil then { symbol found }
+               if sym^.mac <> nil then 
+                  prcmac(sym) { symbol is macro, process }
+               else
+                  prcopc { process opcode }
+            else prcopc; { process opcode }
+
+         end;
+         linlab := nil; { clear any holding }
+         opcode := true { set opcode was encountered }
+
+      end
+
+   end;
+   if linlab <> nil then prclab; { clear out holding label }
+   skpspc; { skip to next }
+   while opcode and (chkchr = ';') do begin { process opcodes }
+
+      getchr; { skip ';' }
+      skpspc; { skip to next }
+      opcloc := prgmc; { set location of opcode }
+      if alpha(chkchr) or (chkchr = '_') or (chkchr = '_') then begin { opcode }
+
+         getlab; { parse opcode }
+         if chksup then prcsup { perform suppress }
+         else begin
+
+            fndsym(sym, labbuf); { check symbol by that name exists }
+            if sym <> nil then { symbol found }
+               if sym^.mac <> nil then 
+                  prcmac(sym) { symbol is macro, process }
+               else
+                  prcopc { process opcode }
+            else prcopc; { process opcode }
+
+         end;
+         linlab := nil; { clear any holding }
+         skpspc { skip next }
+
+      end else prterr(eopcexp) { not found }
+
+   end;
+   if not endlin then prterr(eterm) { flag invalid ending }
+
+end;
+
+{*******************************************************************************
+
+Start new line
+
+Sets up the next line in the source file for processing. Also outputs line file 
+entries.
+
+*******************************************************************************}
+
+procedure newlin;
+
+begin
+
+   chkbrk; { check input break }
+   codsav := onop; { clear operation code }
+   while cmdrot <> nil do discmd; { dump old levels }
+   newcmd; { push a new one }
+   getlin(srcrot^.srcfil); { load a source line }
+   if not flend then begin
+
+      srcrot^.lincnt := srcrot^.lincnt + 1; { count lines }
+      if not fsupp and flin and { not suppressed and line enabled }
+         ((prgmc <> lprgmc) or (glblc <> lglblc)) then begin
+
+         { one of the counters has changed }
+         write(symfil, ord(lnlin)); { output diff set marker }
+         outstp(srcrot^.lincnt-srcrot^.llncnt); { differential line }
+         outstp(prgmc-lprgmc); { differential program }
+         outstp(glblc-lglblc); { differential variable }
+         lprgmc := prgmc; { copy present to last program count }
+         lglblc := glblc; { copy present to last variables count }
+         { copy present to last line count }
+         srcrot^.llncnt := srcrot^.lincnt
+
+      end
+
+   end
+
+end;
+
+{******************************************************************************
+
+Executive process
+
+Various tables and data are initalized, the sign - on output, the command line 
+processed, the files processed and set on line. The main assembly loop is then 
+entered. This loop gets a source line, processes it, and loops for the next.
+The symbols file is then generated, and all files closed.
+
+******************************************************************************}
+
+begin { as }
+
+   { initalize variables }
+   flend := false; { not source end }
+   fsupp := false; { not in suppress outputs }
+   fdiag := false; { diagnostic prints off }
+   fverb := true; { verbalize on }
+   fouto := false; { output files closed }
+   flin := false{true}; { generate line tracking entries }
+   ferrf := false; { no error output file }
+   ferro := false; { not open }
+   fplin := false; { do not print input lines }
+   fpmac := false; { do not print macro lines }
+   errcnt := 0; { no errors }
+   ifrot := nil; { no 'if' list }
+   iffre := nil; { no free 'if's }
+   prgmc := 0; { initalize program counter }
+   glblc := 0; { initalize global variables counter }
+   lprgmc := 0; { initalize last program count }
+   lglblc := 0; { initalize last variables count }
+   symrot := nil; { no free symbols }
+   rldrot := nil; { no RLD entries }
+   srcrot := nil; { no source file entries }
+   srcfre := nil; { no free source file entries }
+   filrot := nil; { no sequentail file names }
+   lstfil := nil;
+   curfil := nil;
+   cmdrot := nil; { set command list null }
+   cmdfre := nil; { set free commands null }
+   blkstk := nil; { clear block stack }
+   blkfre := nil; { clear free block list }
+   blklst := nil; { clear defined blocks list }
+   bicfre := nil; { clear free block inclusion list }
+
+   { determine the number of bits and bytes in an integer, not including the
+     sign }
+   i := maxint; { set 1st bit }
+   bits := 0;
+   while i <> 0 do begin i := i div 2; bits := bits + 1 end;
+   bytes := bits div 8; { set bytes in integer }
+   if (bits mod 8) <> 0 then bytes := bytes + 1; { round up }
+   { precalculate the top byte power, or the maximum $01 byte that an
+     integer can hold. Used for integer to byte output convertions,
+     we save time by precalculating it }
+   toppow := 1; { find top power }
+   for i := 1 to bytes-1 do toppow := toppow * 256;
+   for li := 1 to maxfil do errlab[li] := ' '; { clear out error filename }
+   { Form character to ASCII value translation array from ASCII value to 
+     character translation array. }
+   for i := 1 to 255 do trnchr[chr(i)] := 0; { null out array }
+   for i := 1 to 127 do trnchr[chrtrn[i]] := i; { form translation }
+   { initalize symbol table }
+   for i := 1 to maxsym do symtab[i] := nil;
+
+   iniprm; { initalize link parameters }
+   newcmd; { get the 1st command level }
+   getcmd; { get command line }
+   parcml; { parse command line }
+   curfil := filrot; { index 1st file }
+   if not fsupp and (curfil <> nil) then { skip output file }
+      curfil := curfil^.nxtfil;
+   while curfil <> nil do begin { index source files }
+
+      addext(curfil^.filnam, '.asm', false); { add asm extend }
+      { check file exists, err if not }
+      if not exists(curfil^.filnam) then fprterr(efnfn);
+      curfil := curfil^.nxtfil { next sequential }
+
+   end;
+   { prepare object and symbols files }
+   if not fsupp then begin { open output files }
+
+      curfil := filrot; { index object file }
+      { check extention on object }
+      for i := 1 to maxfil do if curfil^.filnam[i] = '.' then
+         fprterr(eextnal); { error if so }
+      if compp(errlab, '') then { no error file }
+         errlab := curfil^.filnam; { save error label }
+      addext(curfil^.filnam, '.obj', true); { add obj extend }
+      assign(objfil, curfil^.filnam); { open object file }
+      rewrite(objfil);
+      addext(curfil^.filnam, '.sym', true); { add sym extend }
+      assign(symfil, curfil^.filnam); { open symbol file }
+      rewrite(symfil);
+      fouto := true { set output files open }
+
+   end;
+   curfil := filrot; { index 1st file }
+   if not fsupp and (curfil <> nil) then { skip a file }
+      curfil := curfil^.nxtfil;
+   if ferrf then begin { process error intro }
+
+      if compp(errlab, '') then { no error filename }
+         copy(errlab, 'as'); { set default name }
+      addext(errlab, '.err', false); { add err extend }
+      { delete preexisting file }
+      if exists(errlab) then delete(errlab)
+
+   end;
+
+   fileloop:
+
+      if curfil = nil then goto endfile; { no more sequential files }
+      { open files }
+      opnsrc(curfil^.filnam); { open the source (1st on stk) }
+      if fverb and (srcrot<> nil) then begin { output file name message }
+
+         write('Processing ');
+         writeln(srcrot^.srcnam:0) { print source name }
+
+      end;
+      { run assembly }
+
+      incloop: { process 'include' nest files }
+
+         repeat { lines in the file }
+
+            newlin; { load new line }
+            if not flend then prclin { process file }
+
+         until flend; { end of this file }
+         { check if block(s) are active at the end of the file }
+         if blkstk <> nil then begin
+
+            relblk(blkstk); { release all blocks in stack }
+            prterr(eblkact) { blocks still active }
+
+         end;
+         clssrc; { close and back out file level }
+
+      if srcrot <> nil then goto incloop; { more include levels }
+      curfil := curfil^.nxtfil; { next sequential }
+
+   goto fileloop; { next file }
+
+   endfile: { no more sequetial files }
+
+   if ifrot <> nil then fprterr(eifact); { still 'if' levels active }
+   while cmdrot <> nil do discmd; { dump all command levels }
+   { end of assembly }
+   equprm; { set link parameters }
+   chkudf; { check globals undefined }
+   if not fsupp then begin { symbols file tasks }
+
+      gensmf; { generate symbols file }
+      wrtblks; { generate block list }
+      outrlds; { output uncomitted RLD's }
+      write(symfil, ord(lnend)) { terminate file }
+
+   end;
+
+   99: { this is the error abort point }
+
+   while srcrot <> nil do clssrc; { dump any open source files }
+   if fouto then begin { close output files }
+
+      close(symfil);
+      close(objfil);
+      if errcnt <> 0 then begin { errors, delete outputs }
+
+         addext(filrot^.filnam, '.obj', true); { add obj extend }
+         delete(filrot^.filnam); { delete object file }
+         addext(filrot^.filnam, '.sym', true); { add sym extend }
+         delete(filrot^.filnam) { delete symbol file }
+
+      end
+
+   end;
+   if ferro then close(errfil); { close error file }
+   if fverb then begin { print end message }
+
+      if errcnt <> 0 then
+         writeln('Errors this assembly: ', errcnt:1)
+      else writeln('No errors detected');
+      writeln('Function complete')
+
+   end
+
+end.

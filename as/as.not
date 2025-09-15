@@ -1,0 +1,20 @@
+                          AS Assembler notes
+
+1. "getval" should flag input overflow. This is problematic, because we
+effectively use overflow to allow unsigned representations (like $ffff_ffff).
+
+2. As per (2), overflows in all expression operators should be checked.
+[debatable, since many assembly language files rely on overflowing operands.]
+
+3. Make sure that IT modifications to output code check field overflow.
+
+4. Implement floating point types and outputs.
+
+5. Integer relational operators may be passed in link format.
+
+6. We could pass expanded assm and macro strings in the .lin file, allowing
+al to reconstruct them.
+
+7. Letting skpspc pass comments has unfortunate effects on the output of
+errors. The error pointer is output at the end of the line, because the
+entire comment was skipped.

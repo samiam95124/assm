@@ -1,0 +1,26 @@
+#
+# Create genpe portable executable file generator
+#
+
+parse genpe=genpe
+ce genpe=genpe
+
+#
+# Windows link
+# 
+
+ln runfile=/mnt/windrv/ip/windows/i80386/lib/serlib /mnt/windrv/ip/windows/i80386/lib/strlib /mnt/windrv/ip/windows/i80386/lib/extlib genpe /mnt/windrv/ip/windows/i80386/lib/cap
+genpe genper=runfile /mnt/windrv/windows/system/kernel32 /mnt/windrv/windows/system/user32 /mnt/windrv/windows/system/gdi32 /mnt/windrv/windows/system/winmm -v
+rm genpe.exe
+mv genper.exe genpe.exe
+rm runfile.*
+
+#
+# Linux link
+# 
+
+ln runfile=/mnt/windrv/ip/linux/i80386/lib/serlib /mnt/windrv/ip/linux/i80386/lib/strlib /mnt/windrv/ip/linux/i80386/lib/extlib genpe /mnt/windrv/ip/linux/i80386/lib/cap
+genelf genper=runfile -v
+rm genpe
+mv genper genpe
+rm runfile.*

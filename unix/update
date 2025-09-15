@@ -1,0 +1,2 @@
+cp genelf.exe /mnt/windrv/ip/windows/i80386/bin
+cp genelf /mnt/windrv/ip/linux/i80386/bin

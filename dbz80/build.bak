@@ -1,0 +1,30 @@
+rem
+rem Z80 Debugger build routine
+rem
+rem The files are:
+rem
+rem dbz80  - This is the main code
+rem cpmio  - Contains the CP/M I/O package
+rem dirio  - Contains direct I/O to hardware,the Polymorphic card for S-100
+rem oszio  - Contains the OS/Z I/O package
+rem loader - Contains the dbz80 relocator and symbols loader (CP/M specific).
+rem
+rem To generate an operating/environment specific package, one of the I/O 
+rem modules is linked to the back of the debugger. If required, the loader
+rem is linked to the front of the package. Because (in this version) the
+rem loader cannot relocate, the main dbz80 package is located differently
+rem than the loader, then the two are concatenated.
+rem
+asz80 dbz80=dbz80
+asz80 cpmio=cpmio
+asz80 dirio=dirio
+asz80 oszio=oszio
+asz80 loader=loader
+
+ln temp=dbz80 cpmio
+
+del dbz80.obj
+del dbz80.sym
+
+ren temp.obj dbz80.obj
+ren temp.sym dbz80.sym

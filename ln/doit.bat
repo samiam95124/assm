@@ -1,0 +1,1 @@
+ln runfile=c:\ip\windows\i80386\lib\blotter c:\ip\windows\i80386\lib\serlibx c:\ip\windows\i80386\lib\strlibx c:\ip\windows\i80386\lib\extlibx common utl link c:\ip\windows\i80386\lib\main c:\ip\windows\i80386\lib\reglockx c:\ip\windows\i80386\lib\timelockx main c:\ip\windows\i80386\lib\cap/nu

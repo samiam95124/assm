@@ -1,0 +1,4571 @@
+{******************************************************************************
+*                                                                             *
+*                        PORTABLE EXECUTABLE GENERATOR                        *
+*                                                                             *
+*                              95/04 S. A. Moore                              *
+*                                                                             *
+* The Portable Executable format is used by Microsoft for Windows 95.         *
+* We accept a .obj/.sym pair and generate an output .exe file in the PE       *
+* format.                                                                     *
+*                                                                             *
+* The PE format is quite complex, but we radically simplify it into nothing   *
+* more than a transport for a single block of relocatable code, using the     *
+* input .obj file. The complication comes from the fact that Microsoft        *
+* actually resolves the system linkages at program load time, by their        *
+* symbolic value. Further, the links must specify what module they go to.     *
+* This is because Microsoft expects the program to have been "dummy linked"   *
+* to a library of such functions, and the PE file directly generated.         *
+* If it were not for the module specification requirement, we could just      *
+* output all undefined symbols as being "inports" in the PE file.             *
+* Instead, we must "pretarget" all of the DLLs or EXEs that will be linked    *
+* to. Since DLLs have the same format as EXEs, this means that this program   *
+* must read as well as write PEs. The user specifies all the DLLs and EXEs    *
+* that will be pretargeted on the command line after the source/destination   *
+* files. We compile a dictionary of the module names and entry symbols, then  *
+* match all the unresolved references in the target to that. Then the         *
+* destination receives the compiled linkage tables and the object.            *
+* This has the side effect  of verifying that all the undefineds in the       *
+* source actually go somewhere, and genpe refuses to generate a file with     *
+* errors.                                                                     *
+*                                                                             *
+* The format of the command line is:                                          *
+*                                                                             *
+* genpe [dest=] source [dll/exe]... /option                                   *
+*                                                                             *
+* The output PE file has the following basic layout:                          *
+*                                                                             *
+*    --------------------------                                               *
+*    | DOS .exe compatibility |                                               *
+*    | header                 |                                               *
+*    --------------------------                                               *
+*    | PE header              |                                               *
+*    --------------------------                                               *
+*    | Object directory       |                                               *
+*    --------------------------<--- Page demarcation                          *
+*    | Import directory       |                                               *
+*    --------------------------<--- Page demarcation                          *
+*    | Symbols                |						                          *
+*    --------------------------<--- Page demarcation                          *
+*    | Program code (.obj)    |                                               *
+*    --------------------------                                               *
+*                                                                             *
+* The DOS header is fixed, and simply serves to cause an error message to     *
+* appear if the file is executed under DOS, and tells a Win32 server to look  *
+* for the PE information.                                                     *
+*                                                                             *
+* The PE header contains various fixed parameters about the program. We       *
+* hardware all the vendor/user/date information to dummy values in the        *
+* header.                                                                     *
+*                                                                             *
+* The object directory describes the sections present in the file. There are  *
+* only two, the import directory and the code itself.                         *
+* Finally, an exact image of the input .obj file is appended to the end of    *
+* all.                                                                        *
+*                                                                             *
+* There is only one "target" object created in the file, the code itself.     *
+* The layout of the .exe file is in two basic parts. The first, the header    *
+* section, contains all the .exe formatting and the import and relocation     *
+* sections that are required to resolve references to system routines.        *
+* The second contains a virgin copy of the address resolved code.             *
+*                                                                             *
+* The header and the code sections both occupy an even number of 4kb pages,   *
+* and the header section does not occupy any of the code pages or vice-versa. *
+* This is because Win 95 loads the entire file to memory (header and all),    *
+* and is a demand based pager. This allows the header section to be paged out *
+* after loading, and allows all of the code pages to be "pure" or containing  *
+* of code only.                                                               *
+*                                                                             *
+* The layout of Windows 95 memory is:                                         *
+*                                                                             *
+*    $00000000 ------------------                                             *
+*              | Zero trap      |                                             *
+*              | page           |                                             *
+*    $00001000 ------------------                                             *
+*              | 1st meg (real) |                                             *
+*              | Direct mapped  |                                             *
+*    $00100000 ------------------                                             *
+*              | Unknown        |                                             *
+*              | (system        |                                             *
+*              | reserved)      |                                             *
+*    $00400000 ------------------                                             *
+*              | .exe header    | Read only                                   *
+*              | direct mapped  |                                             *
+*              ------------------                                             *
+*              | Import/vector  | Read only, but modified by OS               *
+*              | area           |                                             *
+*              ------------------                                             *
+*              | Program code   | Read/execute only                           *
+*              ------------------                                             *
+*              | Variables      | Read/write/execute                          *
+*              ------------------                                             *
+*              | Heap           | Read/write/execute                          *
+*              ------------------                                             *
+*              | Stack          | Read/write/execute                          *
+*    $80000000 ------------------                                             *
+*              | Shared region  |                                             *
+*    $c0000000 ------------------                                             *
+*              | OS region      |                                             *
+*    $ffffffff ------------------                                             * 
+*                                                                             *
+* The trap page is simply to generate errors on 0 pointer accesses. The real  *
+* mode memory map can be used to gain access to hardware such as the video    *
+* display.                                                                    *
+*                                                                             *
+* The entire .exe file is then direct mapped at $400000 (4meg), using the     *
+* mappings specified in the file, We place the header, import/vectors, code   *
+* and variables on separate pages to facillitate paging. The variables are    *
+* described, but do not appear in the .exe file (not initalized).             *
+*                                                                             *
+* Finally, the heap and stack locations are controlled by the OS. We simply   *
+* specify the size and commit of these areas. The heap is found on the next   *
+* 64kb boundary after the end of the variables. The stack is found on the     *
+* next 64kb boundary after the heap ends. The heap and stack both are         *
+* allocated based on page hits, and contain under and overflow checking.      *
+*                                                                             *
+* Note that to provide program linking services the code from LN was raided,  *
+* any changes to LN should be copied back here, and vice versa.               *
+*                                                                             *
+* 00/01/23 Modified version numbers and verfied operation under Windows 2000  *
+* (Windows NT). Use of win95 base address is accepted.                        *
+*                                                                             *
+* Issues/improvements:                                                        *
+*                                                                             *
+* 1. The model layout in the /v option is incorrect (after variables area     *
+* layout).                                                                    *
+*                                                                             *
+******************************************************************************}
+
+program genpe(command, output);
+
+uses strlib, { strings }
+     extlib, { extentions }
+     parlib; { parsing }
+
+label 99; { terminate program }
+
+const
+
+   hdrfix  = 176;       { number of bytes in the fixed portion of the header }
+   hdrsiz  = 224;       { number of bytes in header }
+   maxlab  = 1000;      { number of characters in label }
+   maxcmp  = 10;        { number of characters in a constant compare label.
+                          Should NEVER be greater than maxlab }
+   maxext  = 3;         { number of characters in an extention }
+   digits  = 8;         { number of hex digits in an integer }
+   basadr  = $00400000; { base address of Win95 app }
+   sizhdr  = $00001000; { size of total header }
+   sizhdrf = $00000400; { size of total header in file }
+   sizpag  = $00001000; { size of 80386 MMU page }
+   sizfil  = $200;      { size of file basic block (one sector) }
+   vmalloc = $00010000; { size of Win95 VM allocation }
+   lstlen  = 79;        { length of output line }
+   maxsav  = 10000;     { size for disk caching }
+   maxlin  = 1000;      { number of characters in a text line }
+   maxfil  = 100;       { number of characters in a file name }
+   maxbyt  = 255;       { maximum value in a byte }
+   modmax  = 1000;      { size of module hash table }
+   expmax  = 1000;      { size of export hash table }
+   cmdmax  = 1000;      { maximum length of command string for parser }
+
+type 
+
+   lininx  = 1..maxlin;  { index for text line }
+   linbuf  = packed array [lininx] of char; { a text line }
+   filinx  = 1..maxfil; { index for file names }
+   filnam  = packed array [filinx] of char; { a file name }
+   labinx  = 1..maxlab;    { index for standard label }
+   labl    = packed array [labinx] of char; { a standard label }
+   label8  = packed array [1..8] of char; 
+   cmp     = packed array [1..maxcmp] of char; { a constant compare label }
+   extinx  = 1..maxext; { index for file extentions }
+   extbuf  = packed array [extinx] of char; { extention }
+   savinx  = 1..maxsav; { index for caching buffers }
+   savbuf  = packed array [savinx] of byte; { disk cache }
+   dllptr  = ^dllety; { pointer to dll list item }
+   dllety  = record { dll list item }
+
+      rva:  integer; { rva for entry }
+      hint: integer; { entry number of label }
+      lab:  pstring; { label }
+      irva: integer; { rva of IA vector }
+      next: dllptr   { next entry }
+
+   end;
+   idrptr  = ^idir; { pointer to import directory }
+   idir    = record { import directory pointer }
+
+      name:   pstring; { name of dll }
+      namrva: integer; { name RVA }
+      dll:    dllptr;  { dll lookup list }
+      dllrva: integer; { dll lookup RVA }
+      dllnum: integer; { number of dll labels }
+      iarva:  integer; { RVA of IA table }
+      next:   idrptr   { next entry }
+
+   end;
+   fdtptr = ^fildat; { structures for handling filename nesting }
+   fildat = record { source/object file entry }
+
+      nam:  filnam;  { file name }
+      next: fdtptr   { next entry linkage }
+
+   end;
+   dirptr = ^edir; { pointer to directory entry }
+   expptr = ^expnam; { export name entry pointer }
+   expnam = record
+
+      nam:   pstring; { symbol name }
+      cnam:  pstring; { coined symbol name }
+      nrva:  integer; { RVA for symbol name (used while loading) }
+      ordn:  integer; { ordinal number }
+      hnext: expptr;  { next hash table entry }
+      dir:   dirptr;  { pointer to master dll module }
+      next:  expptr   { next entry }
+
+   end;
+   edir   = record { export header }
+
+      nam:   pstring; { dll name }
+      nrva:  integer; { name RVA }
+      namc:  integer; { name count }
+      ntrva: integer; { name table RVA }
+      otrva: integer; { ordinal table RVA }
+      slist: expptr;  { export symbol list }
+      next:  dirptr   { next entry }
+
+   end;
+   expinx = 1..expmax; { index for export table }
+   { symbol file objects }
+   objtyp  = (obend,   { end of file }
+              obsym,   { symbol }
+              obcst,   { constant }
+              obrld,   { relocation }
+              obcrld,  { constant relocation }
+              obblk,   { block begin }
+              obblke,  { block end }
+              oblin,   { line tracking difference set }
+              obsrc,   { line tracking source name }
+              obnull); { null } 
+   { operation required on a symbol }
+   symop = (onop,  { no operation }
+            oadd,  { add }
+            osub,  { subtract }
+            omult, { multiply }
+            odiv,  { divide }
+            omod,  { modulo }
+            oshl,  { shift left }
+            oshr,  { shift right }
+            oand,  { and }
+            oor,   { or }
+            oxor,  { exclusive or }
+            onot,  { not }
+            oneg); { negate }
+   { format of entries in the symbols table }
+   symptr = ^symbol;    { symbol pointer }
+   symbol = record      { program symbols }
+   
+      opr:  symop;   { operation }
+      lab:  pstring; { symbol label }
+      def:  boolean; { symbol defined flag }
+      add:  boolean; { symbol address flag }
+      gbl:  boolean; { symbol global }
+      ext:  boolean; { symbol external }
+      vrs:  boolean; { symbol in variable space }
+      val:  integer; { integer value }
+      lft:  symptr;  { 1st operand }
+      rgt:  symptr;  { 2nd operand }
+      err:  boolean; { entry has already received duplicate/security violation
+                       report }
+      dll:  dllptr;  { pointer to linked dll export }
+      next: symptr   { next symbol chain }
+   
+   end;
+   { insertion mode }
+   imode = (imnorm,  { normal }
+            imsgof,  { signed offset }
+            imnsof); { non-standard signed offset }
+   rldptr = ^reloc; { relocation dictionary structures }
+   reloc = record { linkage marker }
+   
+      big:    boolean; { big endian insert }
+      im:     imode;   { insertion type }
+      cof:    integer; { constant offset }
+      str:    integer; { starting bit of offset }
+      len:    integer; { number of bits to insert }   
+      add:    integer; { where to insert }
+      inssym: symptr;  { what to insert }
+      val:    integer; { value (if no symbol) }
+      adf:    boolean; { value address flag }
+      vrs:    boolean; { value in variable space flag }
+      def:    boolean; { value is defined }
+      next:   rldptr   { next entry }
+   
+   end;
+   { module name hash structure }
+   modinx = 1..modmax; { index for name head table }
+   modptr = ^modnam; { pointer to entry }
+   modnam = record { module name entry }
+   
+      name:  pstring; { module export name }
+      mname: pstring; { name of containing module }
+      dup:   boolean; { is a duplicate }
+      ref:   boolean; { was referenced by a symbol }
+      next:  modptr   { next entry in chain }
+   
+   end;
+   { errors }
+   errcod = (eequexp,  { '"=" expected }
+             einvdll1,  { Invalid .dll file format }
+             einvdll2,  { Invalid .dll file format }
+             einvdll3,  { Invalid .dll file format }
+             einvdll4,  { Invalid .dll file format }
+             einvdll5,  { Invalid .dll file format }
+             einvnum,  { Invalid number }
+             edbr,     { Digit beyond radix }
+             einvfil,  { Invalid filename }
+             eoptnf,   { Option not found }
+             ecmdsyn,  { Command line syntax invalid }
+             elabovf,  { option label too long }
+             efilovf,  { filename too long }
+             edlabtl,  { dll label too long }
+             efilnf,   { file not found }
+             efltfmt,  { Floating point format not implemented }
+             esymfmt,  { Invalid symbol file format }
+             esymlen,  { Symbol length exceeds linker capability }
+             efldovf,  { bit field overflow }
+             eundef,   { undefined symbols exist }
+             erldovf,  { rld table overflow }
+             eobjfmt,  { invalid object file format }
+             ecmdovf,  { command line overflow }
+             ecatfmt,  { invalid catalog file format }
+             esysflt); { GENPE internal fault: Please notify S. A. Moore }
+
+var exefil:    bytfil; { .exe output file }
+    objfil:    bytfil; { .obj input file }
+    symfil:    bytfil; { open symbols file }
+    dllfil:    bytfil; { open dll file }
+    objsiz:    integer; { size of object file }
+    objpag:    integer; { size of object file in pages }
+    cputyp:    integer; { cpu type code }
+    import:    idrptr; { import list }
+    imprva:    integer; { import rva save }
+    cmdlin:    linbuf; { command line buffer }
+    cmdptr:    lininx; { command line index }
+    cmdlen:    lininx; { command line length }
+    stksiz:    integer; { stack size }
+    hepsiz:    integer; { heap size }
+    srclst:    fdtptr; { source files list }
+    srclas:    fdtptr; { last source file entry }
+    fverb:     boolean; { verbose flag }
+    fgui:      boolean; { generate windows gui }
+    fcoffsym:  boolean; { generate COFF symbols }
+    fstabssym: boolean; { generate STABS symbols }
+    fopnout:   boolean; { output files are open }
+    fgetcat:   boolean; { pick up default catalog file }
+    ftxtcat:   boolean; { force text catalog only }
+    exenam:    filnam; { output exe name save }
+    dlllst:    dirptr; { export dll list }
+    fp:        fdtptr; { file entry pointer }
+    nxtobj:    objtyp; { next sym file object type }
+    nxtsym:    symptr; { next symbol from sym file }
+    nxtrld:    rldptr; { next rld from rld file }
+    symtab:    symptr; { current symbols table }
+    rldtab:    rldptr; { current rlds table }
+    fresym:    symptr; { free symbol entries list }
+    pstrf:     boolean; { program start parameter found in file }
+    pendf:     boolean; { program end parameter found in file }
+    vstrf:     boolean; { variable start parameter found in file }
+    vendf:     boolean; { variable end parameter found in file }
+    pstrv:     integer; { program start value, new }
+    pstr:      symptr;  { program start symbol entry }
+    pendv:     integer; { program end value, new }
+    pend:      symptr;  { program end symbol entry }
+    vstrv:     integer; { variable start value, new }
+    vstr:      symptr;  { variable start symbol entry }
+    vendv:     integer; { variable end value, new }
+    vend:      symptr;  { variable end symbol entry }
+    poff:      integer; { current program frame offset }
+    voff:      integer; { current variable frame offset }
+    errnam:    filnam; { error file name }
+    errval:    integer; { error value }
+    errbits:   integer; { error number of bits }
+    errfil:    filnam; { error file print buffer }
+    pgmloc:    integer; { starting location of program overlay }
+    pgmlocf:   integer; { starting location of program overlay in file }
+    varloc:    integer; { starting location variables overlay }
+    varlocf:   integer; { starting location variables overlay in file }
+    prgmc:     integer; { program counter for final output }
+    psize:     integer; { program section, actual size }
+    psizep:    integer; { program section size, even to page }
+    psizef:    integer; { program section size, in file blocks }
+    vsize:     integer; { varaible section, actual size }
+    vsizep:    integer; { variable section size, even to page }
+    vsizef:    integer; { variable section size, in file blocks }
+    isize:     integer; { import directory size }
+    isizep:    integer; { import directory size in pages }
+    isizef:    integer; { import directory size in file blocks }
+    imploc:    integer; { import directory location }
+    implocf:   integer; { import directory location in file }
+    sysize:    integer; { symbols size }
+    sysizep:   integer; { symbols size in pages }
+    sysizef:   integer; { symbols size in file blocks }
+    syloc:     integer; { symbols location }
+    sylocf:    integer; { symbols location in file }
+    symnum:    integer; { number of internal symbols }
+    stsysize:  integer; { stabs symbols size }
+    stsysizep: integer; { stabs symbols size in pages }
+    stsysizef: integer; { stabs symbols size in file blocks }
+    stsyloc:   integer; { stabs symbols location }
+    stsylocf:  integer; { stabs symbols location in file }
+    sssysize:  integer; { stabs symbols size }
+    sssysizep: integer; { stabs symbols size in pages }
+    sssysizef: integer; { stabs symbols size in file blocks }
+    sssyloc:   integer; { stabs symbols location }
+    sssylocf:  integer; { stabs symbols location in file }
+    fundef:    boolean; { undefineds exist in object }
+    symlen:    0..maxlab; { maximum length of symbols }
+    symbuf:    savbuf;  { cache for symbols file }
+    syminx:    savinx;  { data read index for same }
+    symtop:    savinx;  { data top index for same }
+    objbuf:    savbuf;  { cache for object input file }
+    objinx:    savinx;  { data read index for same }
+    objtop:    savinx;  { data top index for same }
+    exebuf:    savbuf;  { cache for exe output file }
+    exeinx:    savinx;  { data write index for same }
+    objnum:    integer; { number of objects }
+    valfch:    chrset;  { valid file characters }
+    cmdovf:    boolean; { command line overflow }
+    modtbl:    array [modinx] of modptr; { module hash table }
+    mi:        modinx; { module name table index }
+    exptbl:    array [expinx] of expptr; { export hash table }
+    ei:        expinx; { export name table index }
+    trnchr:    array [char] of byte; { character to ascii translation array }
+    cf:        boolean; { catalog file found }
+    cfn:       filnam;  { catalog file name }
+    i:         integer;
+    b:         byte;
+    p, n, e:   filnam;
+
+{ ASCII value to internal character set convertion array }
+
+fixed chrtrn: array [0..127] of char = array
+
+   '\nul',  { 0   } '\soh',  { 1   } '\stx',  { 2   } '\etx',  { 3   }
+   '\eot',  { 4   } '\enq',  { 5   } '\ack',  { 6   } '\bel',  { 7   }
+   '\bs',   { 8   } '\ht',   { 9   } '\lf',   { 10  } '\vt',   { 11  }
+   '\ff',   { 12  } '\cr',   { 13  } '\so',   { 14  } '\si',   { 15  }
+   '\dle',  { 16  } '\dc1',  { 17  } '\dc2',  { 18  } '\dc3',  { 19  }
+   '\dc4',  { 20  } '\nak',  { 21  } '\syn',  { 22  } '\etb',  { 23  }
+   '\can',  { 24  } '\em',   { 25  } '\sub',  { 26  } '\esc',  { 27  }
+   '\fs',   { 28  } '\gs',   { 29  } '\rs',   { 30  } '\us',   { 31  }
+   ' ',     { 32  } '!',     { 33  } '"',     { 34  } '#',     { 35  }
+   '$',     { 36  } '%',     { 37  } '&',     { 38  } '''',    { 39  }
+   '(',     { 40  } ')',     { 41  } '*',     { 42  } '+',     { 43  }
+   ',',     { 44  } '-',     { 45  } '.',     { 46  } '/',     { 47  }
+   '0',     { 48  } '1',     { 49  } '2',     { 50  } '3',     { 51  }
+   '4',     { 52  } '5',     { 53  } '6',     { 54  } '7',     { 55  }
+   '8',     { 56  } '9',     { 57  } ':',     { 58  } ';',     { 59  }
+   '<',     { 60  } '=',     { 61  } '>',     { 62  } '?',     { 63  }
+   '@',     { 64  } 'A',     { 65  } 'B',     { 66  } 'C',     { 67  }
+   'D',     { 68  } 'E',     { 69  } 'F',     { 70  } 'G',     { 71  }
+   'H',     { 72  } 'I',     { 73  } 'J',     { 74  } 'K',     { 75  }
+   'L',     { 76  } 'M',     { 77  } 'N',     { 78  } 'O',     { 79  }
+   'P',     { 80  } 'Q',     { 81  } 'R',     { 82  } 'S',     { 83  }
+   'T',     { 84  } 'U',     { 85  } 'V',     { 86  } 'W',     { 87  }
+   'X',     { 88  } 'Y',     { 89  } 'Z',     { 90  } '[',     { 91  }
+   '\\',    { 92  } ']',     { 93  } '^',     { 94  } '_',     { 95  }
+   '`',     { 96  } 'a',     { 97  } 'b',     { 98  } 'c',     { 99  }
+   'd',     { 100 } 'e',     { 101 } 'f',     { 102 } 'g',     { 103 }
+   'h',     { 104 } 'i',     { 105 } 'j',     { 106 } 'k',     { 107 }
+   'l',     { 108 } 'm',     { 109 } 'n',     { 110 } 'o',     { 111 }
+   'p',     { 112 } 'q',     { 113 } 'r',     { 114 } 's',     { 115 }
+   't',     { 116 } 'u',     { 117 } 'v',     { 118 } 'w',     { 119 }
+   'x',     { 120 } 'y',     { 121 } 'z',     { 122 } '{',     { 123 }
+   '|',     { 124 } '}',     { 125 } '~',     { 126 } '\del'   { 127 }
+
+end;
+
+{******************************************************************************
+
+Convert ASCII to character
+
+Converts an ASCII 8 bit character to local character equivalents. This is
+needed when the internal characters are not ASCII. If the internal characters
+are ASCII, the translation will be a no-op. Note that we don't handle ISO 646
+or ISO 8859-1, which are the ISO version of ASCII, and the Western European
+character sets (same as Windows) respectively.
+
+These kinds of convertions are required because the string fields in .sym files
+are stored in ASCII.
+
+Note that characters with values 128 or over are simply returned untranslated.
+
+******************************************************************************}
+
+function ascii2chr(b: byte): char;
+
+var c: char; { character holder }
+
+begin
+
+   if b >= 128 then c := chr(b) { out of ASCII range, just return raw }
+   else c := chrtrn[b]; { translate }
+
+   ascii2chr := c { return result }
+
+end;
+
+{******************************************************************************
+
+Convert character to ASCII
+
+Converts a character to an ASCII value. This is needed when the internal
+characters are not ASCII. If the internal characters are ASCII, the translation
+will be a no-op. Note that we don't handle ISO 646 or ISO 8859-1, which are the
+ISO version of ASCII, and the Western European character sets (same as Windows)
+respectively.
+
+These kinds of convertions are required because the string fields in .sym files
+are stored in ASCII.
+
+Note that characters with values 128 or over are simply returned untranslated.
+
+******************************************************************************}
+
+function chr2ascii(c: char): byte;
+
+begin
+
+   chr2ascii := trnchr[c] { return translated character }
+
+end;
+
+{******************************************************************************
+
+Print hexadecimal
+
+Print a hexadecimal number with field width. Prints right justified with left
+hand zeros filling the field. Also allows for the fact that an unsigned 32 bit
+number can be read into a 32 bit signed number.
+
+******************************************************************************}
+
+procedure prthex(f: byte; w: integer);
+ 
+var buff: packed array [1..10] of char; { buffer for number in ascii }
+    i:    integer; { index for same }
+    t:    integer; { holding }
+ 
+begin
+
+   { set sign of number and convert }
+   if w < 0 then begin
+
+      w := w+1+maxint; { convert number to 31 bit unsigned }
+      t := w div $10000000 + 8; { extract high digit }
+      writeh(output, t); { ouput that }
+	   w := w mod $10000000; { remove that digit }
+      f := 7 { force field to full }     
+
+   end;
+   hexs(buff, w); { convert the integer }
+   for i := 1 to f-len(buff) do write('0'); { pad with leading zeros }
+   write(output, buff:0) { output number }
+
+end;
+
+{******************************************************************************
+
+Process error
+
+Prints the given error code, and aborts the program.
+
+******************************************************************************}
+
+procedure error(e: errcod);
+
+begin
+
+   write('*** ');
+   case e of { error }
+
+      eequexp: write('"=" expected');
+      einvdll1: write('Invalid DLL file format (code 1)');
+      einvdll2: write('Invalid DLL file format (code 2)');
+      einvdll3: write('Invalid DLL file format (code 3)');
+      einvdll4: write('Invalid DLL file format (code 4)');
+      einvdll5: write('Invalid DLL file format (code 5)');
+      einvnum: write('Invalid number');
+      edbr:    write('Digit beyond radix');
+      einvfil: write('Invalid filename');
+      eoptnf:  write('Option not found');
+      ecmdsyn: write('Command line syntax invalid');
+      elabovf: write('Option label too long');
+      edlabtl: write('DLL export label too long');
+      efltfmt: write('Floating point format not implemented');
+      esymfmt: write('Invalid symbol file format');
+      esymlen: write('Symbol length exceeds genpe capability');
+      efldovf: begin
+
+         write('Value $');
+         prthex(digits, errval); { print value }
+         write(' exceeds output field of ', errbits, ' bits provided at $');
+         prthex(digits, prgmc)
+
+      end;
+      efilnf:  begin 
+
+         write('File '''); 
+         write(output, errfil:0); 
+         write(''' not found') 
+
+      end;
+      eundef:  write('Undefined symbols exist');
+      efilovf: write('Filename too long');
+      erldovf: write('Relocation table size exceeds genpe capability');
+      eobjfmt: write('Invalid object file format');
+      ecmdovf: write('Command line too long');
+      ecatfmt: write('Catalog file format invalid');
+      esysflt: write('GENPE internal fault: Please notify S. A. Moore')
+
+   end;
+   writeln; { terminate line }
+   if fopnout then begin { output file is open, close and delete }
+
+      close(exefil); { close output file }
+      delete(exenam) { delete it }
+
+   end;
+   goto 99 { terminate program }
+
+end;
+{}
+{******************************************************************************
+
+Read byte from symbols file
+
+Reads a byte from the symbols file. Maintains a read cache.
+
+******************************************************************************}
+
+procedure readsymb(var b: byte);
+
+var buf: byte;
+
+begin
+
+   if syminx = symtop then begin { the read buffer is empty }
+
+      symtop := 1;  { reset top }
+      while not eof(symfil) and (symtop < maxsav) do begin
+
+         { not at file end, and more space exists in buffer }
+         read(symfil, buf); { get a byte }
+         symbuf[symtop] := buf;
+         symtop := symtop+1 { next location in buffer }
+
+      end;
+      syminx := 1 { reset index }
+
+   end;
+   if syminx = symtop then error(esymfmt); { should not be empty }
+   b := symbuf[syminx]; { return next byte }
+   syminx := syminx+1 { next byte }
+
+end;
+{}
+{******************************************************************************
+
+Read byte from object file
+
+Reads a byte from the object file. Maintains a read cache.
+
+******************************************************************************}
+
+procedure readobjb(var b: byte);
+
+var buf: byte;
+
+begin
+
+   if objinx = objtop then begin { the read buffer is empty }
+
+      objtop := 1;  { reset top }
+      while not eof(objfil) and (objtop < maxsav) do begin
+
+         { not at file end, and more space exists in buffer }
+         read(objfil, buf); { get a byte }
+         objbuf[objtop] := buf;
+         objtop := objtop+1 { next location in buffer }
+
+      end;
+      objinx := 1 { reset index }
+
+   end;
+   if objinx = objtop then error(eobjfmt); { should not be empty }
+   b := objbuf[objinx]; { return next byte }
+   objinx := objinx+1 { next byte }
+
+end;
+
+{******************************************************************************
+
+Read 16 bit word from dll file
+
+Reads a 16 bit little endian word from the given binary file.
+
+******************************************************************************}
+
+procedure readwrd(var w: integer);
+
+var b1, b2: byte;
+    i1, i2: integer;
+
+begin
+
+   read(dllfil, b1); { get low byte }
+   read(dllfil, b2); { get high byte }
+   i1 := b1; { expand the value }
+   i2 := b2;
+   w := i2*256+i1 { place result }
+
+end;
+
+{******************************************************************************
+
+Read 32 bit word from dll file
+
+Reads a 32 bit little endian word from the given binary file.
+
+******************************************************************************}
+
+procedure readdwd(var w: integer);
+
+var b1, b2, b3, b4: byte;
+    i1, i2, i3, i4: integer;
+
+begin
+
+   read(dllfil, b1); { get low byte }
+   read(dllfil, b2); { get mid low byte }
+   read(dllfil, b3); { get mid high byte }
+   read(dllfil, b4); { get high byte }
+   i1 := b1; { expand the value }
+   i2 := b2;
+   i3 := b3;
+   i4 := b4;
+   w := i4*16777216+i3*65536+i2*256+i1 { place result }
+
+end;
+
+{******************************************************************************
+
+Write word to binary file
+
+Writes a 16 bit little endian word to the given binary file.
+
+******************************************************************************}
+
+procedure wrtwrd(w: integer);
+
+begin
+
+   write(exefil, w mod 256);
+   write(exefil, w div 256 mod 256)
+
+end;
+
+{******************************************************************************
+
+Write double word to binary file
+
+Writes a 32 bit little endian word to the given binary file.
+
+******************************************************************************}
+
+procedure wrtdwd(w: integer);
+
+begin
+
+   write(exefil, w mod 256);
+   write(exefil, w div 256 mod 256);
+   write(exefil, w div 65536 mod 256);
+   write(exefil, w div 16777216 mod 256)
+
+end;
+
+{******************************************************************************
+
+Find length of label with zero pad
+
+Counts the non-space characters of a label to the output .exe file, with zero
+termination, and if need be, a zero byte pad to make the output an even number
+of bytes.
+
+******************************************************************************}
+
+function lenzerp(view l: string): integer;
+
+var i: integer; { index for string }
+    s: integer; { string }
+
+begin
+
+   { output characters }
+   s := 0; { clear count }
+   for i := 1 to max(l) do if l[i] <> ' ' then
+      s := s+1; { count characters }
+   s := s+1; { terminate }
+   if odd(s) then s := s+1; { add pad to make even }
+   lenzerp := s { return result }
+
+end;
+
+{******************************************************************************
+
+Write label to output with zero pad
+
+Writes the non-space characters of a label to the output .exe file, with zero
+termination, and if need be, a zero byte pad to make the output an even number
+of bytes.
+
+******************************************************************************}
+
+procedure strzerp(view l: string);
+
+var i: integer;
+    s: integer;
+
+begin
+
+   { output characters }
+   s := 0; { clear count }
+   for i := 1 to max(l) do if l[i] <> ' ' then begin
+
+      write(exefil, chr2ascii(l[i])); { write character }
+      s := s+1 { count characters }
+
+   end;
+   write(exefil, 0); { terminate }
+   if odd(s+1) then write(exefil, 0) { add pad to make even }
+
+end;
+
+{******************************************************************************
+
+Write 8 character label to output with pad
+
+Writes the 8 character label to the output, with zeros replacing every space
+position.
+
+******************************************************************************}
+
+procedure strpad8(l: label8);
+
+var i: integer;
+
+begin
+
+   { output characters }
+   for i := 1 to 8 do if l[i] <> ' ' then
+      write(exefil, chr2ascii(l[i])) { write character }
+   else 
+      write(exefil, $00)
+
+end;
+
+{******************************************************************************
+
+Get new file specification entry
+
+Gets a new file list entry, and places that in the source list at the end.
+
+******************************************************************************}
+
+procedure getsrc(var ptr: fdtptr);
+
+var i: filinx; { index for filename }
+
+begin
+
+   new(ptr); { get new name entry }
+   ptr^.next := nil; { terminate }
+   { if there was a last entry, place as next list item }
+   if srclas <> nil then srclas^.next := ptr;
+   { if null list, place as first item }
+   if srclst = nil then srclst := ptr;
+   srclas := ptr; { set new last file }
+   for i := 1 to maxfil do ptr^.nam[i] := ' ' { clear filename }
+
+end;
+
+{******************************************************************************
+
+Check end of line
+
+Checks if the end of the command buffer has been reached.
+
+******************************************************************************}
+
+function sendlin: boolean;
+
+begin
+
+   sendlin := cmdptr > cmdlen { input pointer past end of line }
+
+end;
+
+{******************************************************************************
+
+Check next command line character
+
+Returns the next character in the command line, or a space if past the end.
+
+******************************************************************************}
+
+function schkchr: char;
+
+begin
+
+   if not sendlin then schkchr := cmdlin[cmdptr] { return current character }
+   else schkchr := ' ' { else return space }
+
+end;
+
+{******************************************************************************
+
+Get next command line character
+
+If not at the end of the command line, skip to the next command line
+character.
+
+******************************************************************************}
+
+procedure sgetchr;
+
+begin
+
+   if not sendlin then cmdptr := cmdptr+1 { advance position if not end }
+
+end;
+
+{******************************************************************************
+
+Skip spaces
+
+Skips spaces in the command line.
+
+******************************************************************************}
+
+procedure sskpspc;
+
+begin
+
+   while (schkchr = ' ') and not sendlin do sgetchr { skip spaces, not end }
+
+end;
+
+{******************************************************************************
+
+Check file extention exists
+
+Checks if the filename given contains an extention.
+
+******************************************************************************}
+
+function chkext(var fn: filnam): boolean;
+
+var p, n, e: filnam; { name component holders }
+
+begin
+
+   brknam(fn, p, n, e); { break filename into components }
+   chkext := e[1] <> ' ' { return true if not empty }
+
+end;
+
+{******************************************************************************
+
+Append file extention
+
+Places a new extention to the given filename. If the ovr flag is true, then
+any existing extention is overwritten, otherwise the new extention is only
+added if the existing name has none.
+
+******************************************************************************}
+
+procedure addext(var fn:     filnam;   { filename to extend }
+                     ext:    extbuf;   { filename extention }
+                     extend: boolean); { overwrite flag }
+
+var p, n, e: filnam; { name component holders }
+
+begin
+
+   brknam(fn, p, n, e); { break filename into components }
+   { if overwrite is true or extention empty, place new extention }
+   if extend or (e[1] = ' ') then copy(e, ext);
+   maknam(fn, p, n, e) { reconstruct the filename }
+
+end;
+
+{******************************************************************************
+
+Parse label
+
+Parses a label, which is:
+
+    '_'/'a'..'z' ['_', '0'..'9', 'a'..'z']...
+
+The label is returned in the general label buffer labbuf.
+
+******************************************************************************}
+
+procedure sparlab(var l: labl);
+
+var i: 0..maxlab; { index for label }
+
+begin
+
+   for i := 1 to maxlab do l[i] := ' '; { clear label buffer }
+   i := 0; { clear index }
+   while schkchr in ['_', '0'..'9', 'a'..'z', 'A'..'Z'] do begin
+
+      { parse label characters }
+      if i >= maxlab then error(elabovf);
+      i := i + 1; { next character }
+      l[i] := schkchr; { place character }
+      sgetchr { skip }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Parse and convert numeric
+
+Parses and converts the following:
+
+     [radix specification] ['0'..'9', 'a'..'z', 'A'..'Z']...
+
+Where the radix specifier is:
+
+     % - Binary
+     & - Octal
+     $ - hexadecimal
+     none - Decimal
+
+Using the given radix, any digits are processed to yeild an integer unsigned
+result. Leading spaces are skipped. Overflow isn't now but should be flagged 
+as an error. No spaces are allowed anywhere in the format.
+
+******************************************************************************}
+
+procedure sparnum(var i: integer); { integer parsed }
+
+var r: 1..16;   { radix }
+    v: integer; { value holding }
+
+begin
+
+   sskpspc; { skip spaces }
+   r := 10; { set default radix decimal}
+   i := 0; { initalize result }
+   if schkchr = '%' then begin r := 2; sgetchr end { binary }
+   else if schkchr = '&' then begin r := 8; sgetchr end { octal }
+   else if schkchr = '$' then begin r := 16; sgetchr end; { hexadecimal }
+   if not (schkchr in ['0'..'9', 'A'..'Z', 'a'..'z']) then
+      error(einvnum); { invalid digit }
+   while ((schkchr in ['A'..'F', 'a'..'f']) and (r = 16)) or
+      (schkchr in ['0'..'9']) do begin { load buffer }
+   
+         { convert '0'..'9' }
+         if schkchr in ['0'..'9'] then v := ord(schkchr) - ord('0')
+         else v := ord(lcase(schkchr)) - ord('a') + 10; { convert 'a'..'z' }
+         sgetchr; { skip }
+         if v >= r then error(edbr); { check fits radix }
+         i := i * r + v { scale and add in }
+
+      end;
+   { check kilo multiplier }
+   if schkchr = 'k' then begin sgetchr; i := i*1024 end
+   { check mega multiplier }
+   else if schkchr = 'm' then begin sgetchr; i := i*1048576 end
+   { check giga multiplier }
+   else if schkchr = 'g' then begin sgetchr; i := i*1073741824 end
+
+end;
+
+{******************************************************************************
+
+Parse filename
+
+Gets a filename from the command line and validates it.
+
+******************************************************************************}
+
+procedure sparfil(var n: filnam); 
+
+var fi:  0..maxfil;  { index for filename }
+
+begin
+
+   sskpspc; { skip spaces }
+   clears(n); { clear filename }
+   fi := 0; { set 1st character }
+   if schkchr = '"' then begin { parse string }
+
+      sgetchr; { skip '"' }
+      while (schkchr <> '"') and not sendlin do begin { get string characters }
+
+         if fi = maxfil then error(einvfil); { overflow }
+         fi := fi+1; { next character }
+         n[fi] := schkchr; { place }
+         sgetchr { skip to next }
+         
+      end;
+      if schkchr = '"' then sgetchr { skip '"' }
+
+   end else while schkchr in valfch do begin
+
+      if fi = maxfil then error(einvfil); { overflow }
+      fi := fi+1; { next character }
+      n[fi] := schkchr; { place }
+      sgetchr { skip to next }
+
+   end;
+   if not validfile(n) then error(einvfil) { check and error on filename }
+
+end;
+
+{******************************************************************************
+
+Check options
+
+Checks if a sequence of options is present in the input, and if so, parses and
+processes them. An option is the option character followed by the option
+identifier. The identifier must be one of the valid options. Further processing
+may occur, on input after the option, depending on the option specified (see
+the handlers). Consult the operator's manual for full option details.
+
+******************************************************************************}
+
+procedure paropt;
+
+var n:    integer; { integer holder }
+    l:    labl;    { label holder }
+    ofnd: boolean; { option found }
+
+{ set positive negative flag option }
+
+procedure setopt(view ps: string;    { positive option string }
+                 view psa: string;   { positive option string abbreviated }
+                 view ns:  string;   { negative option string }
+                 view nsa: string;   { negative option string abbreviated }
+                 var  f:   boolean); { flag to set/unset }
+
+begin
+
+   if compp(l, ps) or compp(l, psa) then begin
+
+      f := true; { set option }
+      ofnd := true { flag option was set }
+
+   end else if compp(l, ns) or compp(l, nsa) then begin
+
+      f := false; { set option }
+      ofnd := true { flag option was set }
+
+   end
+
+end;
+
+begin
+
+   sskpspc; { skip spaces }
+   while schkchr = optchr do begin { parse option }
+
+      sgetchr; { skip '#' }
+      sparlab(l); { get option }
+      ofnd := false; { set no option found }
+      { set the simple on/off options }
+      setopt('verbose', 'v', 'noverbose', 'nv', fverb);
+      setopt('wingui', 'wg', 'winchr', 'wc', fgui);
+      setopt('symcoff', 'sc', '', '', fcoffsym);
+      setopt('symstabs', 'ss', '', '', fstabssym);
+      setopt('defcat', 'dc', 'nodefcat', 'ndc', fgetcat);
+      setopt('txtcat', 'tc', 'notxtcat', 'ntc', ftxtcat);
+      { set parameter options }
+      if compp(l, 'stack') or
+         compp(l, 's') then begin
+
+         { parse stack size specification }
+         sskpspc; { skip spaces }
+         if schkchr <> '=' then error(eequexp); { '=' expected }
+         sgetchr; { skip '=' }
+         sparnum(n); {  get stack size }
+         stksiz := n div sizpag*sizpag; { round up to nearest page }
+         if (n mod sizpag) <> 0 then stksiz := stksiz+sizpag;
+         ofnd := true { flag option was set }
+
+      end else if compp(l, 'heap') or
+                  compp(l, 'h') then begin 
+
+         { parse heap size specification }
+         sskpspc; { skip spaces }
+         if schkchr <> '=' then error(eequexp); { '=' expected }
+         sgetchr; { skip '=' }
+         sparnum(n); {  get stack size }
+         hepsiz := n div sizpag*sizpag; { round up to nearest page }
+         if (n mod sizpag) <> 0 then hepsiz := hepsiz+sizpag;
+         ofnd := true { flag option was set }
+
+      end;
+      if not ofnd then error(eoptnf); { option not found }
+      sskpspc { skip spaces }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Parse command line
+
+The structure of a command line is:
+
+     file = file [file]... [#option]...
+
+The first file is the output .exe file. The second is the object (both .sym and
+.obj must be present). After that, each file should be a dll file.
+Options are parsed both before and after all the files.
+
+******************************************************************************}
+
+procedure parcmd;
+
+var fp: fdtptr; { pointer for filename entries }
+
+begin
+
+   paropt; { parse any options }
+   getsrc(fp); { get a file entry }
+   sparfil(fp^.nam); { parse first file }
+   sskpspc; { skip spaces }
+   { check if the first file is the output }
+   if schkchr <> '=' then error(eequexp);
+   sgetchr; { skip '=' }
+   repeat { parse filenames }
+
+      getsrc(fp); { get a file entry }
+      sparfil(fp^.nam); { parse the filename }
+      sskpspc; { skip spaces }
+
+   { until no more filenames are found }
+   until not (schkchr in valfch);
+   paropt; { parse any options }
+   if not sendlin then error(ecmdsyn) { not line end }
+
+end;
+
+{******************************************************************************
+
+Find page size
+
+Given a true size, finds the number of whole pages required to contain it.
+
+******************************************************************************}
+
+function pagsiz(s: integer): integer;
+
+var ps: integer;
+
+begin
+
+   ps := s div sizpag*sizpag; { find size in pages }
+   if (s mod sizpag) <> 0 then ps := ps+sizpag; { round up }
+   pagsiz := ps { return that }
+
+end;
+
+{******************************************************************************
+
+Find file size
+
+Given a true size, finds the number of whole file blocks required to contain
+it.
+
+******************************************************************************}
+
+function filsiz(s: integer): integer;
+
+var ps: integer;
+
+begin
+
+   ps := s div sizfil*sizfil; { find size in pages }
+   if (s mod sizfil) <> 0 then ps := ps+sizfil; { round up }
+   filsiz := ps { return that }
+
+end;
+
+{******************************************************************************
+
+Find label hash function without case
+
+Finds a hash function for the given label. The maximum specifies the maximum
+value desired from the hash generator. The return value will be between
+1 and the max. The "add" parameter is a "stirring" parameter that just changes
+the hash value to a different set of values. This is used to optimize fixed
+tables, done using an external generator program. See the program for details,
+but the basic idea is that we will find an add that gives the optimum set of
+hash values for a fixed set of labels.
+Note that for dynamic tables, the add parameter can be left to 0.
+
+******************************************************************************}
+
+function hash(view s:    string;  { label to find hash for }
+                   add:  integer; { stirring parameter }
+                   maxv: integer) { maximum value returned }
+              : integer;          { return hash }
+
+var i, r : integer;
+
+begin
+
+   r := 0;
+   for i := 1 to max(s) do if lcase(s[i]) <> ' ' then
+      r := r + chr2ascii(lcase(s[i])) + add;
+
+   hash := r mod maxv + 1
+
+end;
+
+{******************************************************************************
+
+Transmute a name
+
+Turn a filename into a valid label name. When using a filename for a label,
+we have to make sure no characters outside the range _a-z0-9 exists (_a-z for
+the start of label). We make the filename a valid label by changing any such
+character into '_'. This can cause duplications.
+
+******************************************************************************}
+
+procedure trans(var s: string);
+
+var i: integer;
+
+begin
+
+   { change first character if not in _a-z }
+   if not (s[1] in ['a'..'z', 'A'..'Z', '_', ' ']) then s[1] := '_';
+   { change all next characters if not in _a-z0-9 }
+   for i := 2 to max(s) do
+      if not (s[i] in ['a'..'z', 'A'..'Z', '0'..'9', '_', ' ']) then s[i] := '_'
+
+end;
+
+{******************************************************************************
+
+Read dll file
+
+Reads all of the exports from the given dll file (it could also be an .exe),
+and places them in the dll list.
+Added coining by module name 10/2002.
+
+******************************************************************************}
+
+procedure readdll(var fn: filnam); { file to read }
+
+var objects: integer; { number of object descriptors in file }
+    hdrsiz:  integer; { nt header size }
+    exprva:  integer; { export table RVA }
+    dp:      dirptr;  { pointer for dll directory }
+    sp:      expptr;  { pointer for export symbols }
+    objrva:  integer; { rva for export object }
+    objoff:  integer; { file offset for export object }
+    objvsz:  integer; { object virtual size }
+    delta:   integer; { exports offset }
+    coinam:  filnam;  { coining name for module }
+    p, e:    filnam;  { path components }
+    h:       expinx;  { export symbol hash }
+    i:       integer;
+    w:       integer;
+    b:       byte;
+
+{ load label from file }
+
+procedure readlab(var l: pstring);
+
+var b: byte;
+    i: integer;
+    s: packed array [1..maxbyt] of char;
+
+begin
+
+   clears(s); { clear result }
+   i := 1; { set 1st character }
+   repeat { place module name }
+
+      read(dllfil, b); { get a character }
+      if b <> 0 then begin { valid character }
+
+         if i > maxbyt then error(edlabtl); { label too long }
+         s[i] := ascii2chr(b); { place character }
+         i := i+1 { next character }
+
+      end
+
+   until b = 0; { until end of string } 
+   l := copy(s) { place string in result }
+
+end;
+
+procedure coin(var l: pstring; view s: string);
+
+var s1: packed array [1..maxbyt] of char;
+
+begin
+
+   if coinam[1] <> ' ' then begin { there is a name to coin }
+
+      copy(s1, coinam); { coin the name }
+      cat(s1, '_');
+      cat(s1, s);
+
+   end;
+   l := copy(s1) { place string in result }
+
+end;
+
+begin
+
+   brknam(fn, p, coinam, e); { extract coining name from filename }
+   trans(coinam); { change it into valid label as required }
+   assign(dllfil, fn); { open the file }
+   reset(dllfil);
+   readwrd(w);
+   if w <> $5a4d then error(einvdll1); { must be 'MZ' (.exe magic number) }
+   for i := 1 to (15+4+10)*2 do read(dllfil, b); { index new .exe header offset }
+   readdwd(w); { get offset }
+   position(dllfil, w+1); { go to it }
+   readdwd(w); { check 'PE<0><0>' signiture }
+   if w <> $00004550 then error(einvdll2); { invalid dll file }
+   readwrd(w); { discard machine type }
+   readwrd(objects); { get object count }
+   if objects = 0 then error(einvdll3); { invalid dll file }
+   for i := 1 to 12 do read(dllfil, b); { discard until header size }
+   readwrd(hdrsiz); { get header size }
+   { well, we're gonna be flexible here. If the header size expands, that's
+     ok, we'll presume they added some fields and left what we need }
+   if hdrsiz < 224 then error(einvdll4); { must be right or larger }
+   for i := 1 to 98 do read(dllfil, b); { discard until export rva }
+   readdwd(exprva); { get the export RVA }
+   for i := 1 to hdrsiz-100 do read(dllfil, b); { discard rest of header }
+   { search the object deck }
+   while objects <> 0 do begin { search all objects }
+
+      for i := 1 to 8 do read(dllfil, b); { discard object name }
+      readdwd(objvsz); { get the object virtual size }
+      readdwd(objrva); { get the object RVA }
+      readdwd(w); { discard physical size }
+      readdwd(objoff); { get the object physical offset }
+      for i := 1 to 16 do read(dllfil, b); { discard rest of object }
+      { the exports are in the current object if its in it's space }
+      if (exprva >= objrva) and (exprva < (objrva+objvsz)) then objects := 0
+      else objects := objects-1 { count objects }
+
+   end;
+   { if no matching object is found, file is bad }
+   if not ((exprva >= objrva) and (exprva < (objrva+objvsz))) then
+      error(einvdll5); { error }
+   delta := objrva-objoff; { find base difference }
+   { now we read the dll directory }
+   new(dp); { get a new directory entry }
+   dp^.next := dlllst; { link into dll list }
+   dlllst := dp;
+   position(dllfil, exprva-delta+1); { seek to the file location of exports }
+   for i := 1 to 12 do read(dllfil, b); { discard the first entries }
+   readdwd(dp^.nrva); { get the name RVA }
+   readdwd(w); { get the ordinal base }
+   readdwd(w); { skip eat count }
+   readdwd(dp^.namc); { get name count }
+   readdwd(w); { skip address table RVA }
+   readdwd(dp^.ntrva); { get name table RVA }
+   readdwd(dp^.otrva); { get ordinal table rva }
+   { load dll name }
+   position(dllfil, dp^.nrva-delta+1); { seek to name }
+   readlab(dp^.nam); { get the name }
+   { create export symbols }
+   dp^.slist := nil; { clear list }
+   for i := 1 to dp^.namc do begin
+
+      new(sp); { get a symbol entry }
+      sp^.dir := dp; { point to head entry }
+      sp^.next := dp^.slist; { insert to list }
+      dp^.slist := sp;
+   
+   end;
+   { load symbols }
+   position(dllfil, dp^.ntrva-delta+1);
+   sp := dp^.slist; { index 1st symbol }
+   while sp <> nil do begin { read symbols }
+
+      readdwd(sp^.nrva); { get the RVA for the name }
+      sp := sp^.next { next symbol }
+
+   end;
+   sp := dp^.slist; { index 1st symbol }
+   while sp <> nil do begin { read symbols }
+
+      position(dllfil, sp^.nrva-delta+1); { seek to name }
+      readlab(sp^.nam); { read the name }
+      coin(sp^.cnam, sp^.nam^); { produce coined version }
+      h := hash(sp^.cnam^, 0, expmax); { find hash for coined symbol }
+      sp^.hnext := exptbl[h]; { push into export hash table lane }
+      exptbl[h] := sp;
+      sp := sp^.next
+
+   end;
+   { load ordinals }
+   position(dllfil, dp^.otrva-delta+1);
+   sp := dp^.slist; { index 1st symbol }
+   while sp <> nil do begin { read symbols }
+
+      readwrd(sp^.ordn); { get ordinal }
+      sp := sp^.next { next symbol }
+
+   end;
+   close(dllfil) { close the dll file }
+
+end;
+
+{******************************************************************************
+
+Get symbol entry
+
+Gets a symbol entry either from the free list, or creates one.
+
+******************************************************************************}
+
+procedure getsym(var p: symptr);
+
+begin
+
+   if fresym <> nil then begin { get existing entry }
+
+      p := fresym; { index symbol }
+      fresym := fresym^.next { gap list }
+
+   end else new(p);
+   p^.opr  := onop; { clear fields }
+   p^.lab := nil;
+   p^.def  := false;
+   p^.add  := false;
+   p^.gbl  := false;
+   p^.ext  := false;
+   p^.vrs  := false;
+   p^.val  := 0;
+   p^.lft  := nil;
+   p^.rgt  := nil;
+   p^.err  := false;
+   p^.dll  := nil;
+   p^.next := nil
+
+end;
+
+{******************************************************************************
+
+Put symbol entry
+
+Places the given symbol entry on the free list.
+
+******************************************************************************}
+
+procedure putsym(p: symptr);
+
+begin
+
+   p^.next := fresym; { link to list }
+   fresym := p
+
+end;
+
+{******************************************************************************
+
+Get rld entry
+
+Gets an rld entry either from the free list, or creates one.
+
+******************************************************************************}
+
+procedure getrld(var p: rldptr);
+
+begin
+
+   new(p);
+   p^.big    := false; { clear fields }
+   p^.im     := imnorm;
+   p^.cof    := 0;
+   p^.str    := 0;
+   p^.len    := 0;
+   p^.add    := 0;
+   p^.inssym := nil;
+   p^.val    := 0;
+   p^.adf    := false;
+   p^.vrs    := false;
+   p^.def    := false;
+   p^.next   := nil
+
+end;
+
+{******************************************************************************
+
+Input variger
+
+Inputs a variger to the given integer.
+Varigers are of the following format:
+
+   1. (byte) the tag byte.
+   2-N. The variger value.
+
+The tag byte values are:
+
+   bit 7 - Low for integer number, high for float.
+   bit 6 - Contains the sign of the integer. 
+   bit 5 - Unused.
+   bit 4 - Length of integer in bytes, 1-32, in -1 format.
+   bit 3 -      ""              ""
+   bit 2 -      ""              ""
+   bit 1 -      ""              ""
+   bit 0 -      ""              ""
+
+The integer is converted by removing the sign bit and converting
+to signed magnitude, then determining the byte size, then
+outputting the tag and number.
+
+******************************************************************************}
+
+procedure rdvar(var n: integer); { integer to output}
+
+var t: byte;     { tag byte }
+    s: integer;  { sign }
+    b: byte;     { read byte holder }
+
+begin
+
+   readsymb(t); { get tag byte }
+   if (t and $80) <> 0 then error(efltfmt); { floating point not implemented }
+   if (t and $40) <> 0 then s := -1 else s := 1; { set sign of value }
+   if (t and $20) <> 0 then error(esymfmt); { invalid symbol file format }
+   t := (t and $1f)+1; { mask byte length and adjust }
+   n := 0; { clear result }
+   while t <> 0 do begin { read in bytes of value }
+
+      n := n*256; { scale up bytes for big endian format }
+      readsymb(b); { get the next byte }
+      n := n+b; { add in }
+      t := t-1 { count bytes read }
+
+   end;
+   n := n*s { set sign of result }
+
+end;
+
+{*******************************************************************************
+
+Input stepped value
+
+Inputs a value in stepped format. This is an unsigned format. If the value 
+is < 255, then it is a single byte. If > 255, the value 255 is present, then a 
+16 bit, big endian format number follows, with values < 65535. If it exceeds
+that, the value 65536 is present, then we continue with a 3 byte, then finally
+a 4 byte format. This system is most efficient where values output tend to be
+small, with only occasional large values. We use it for the difference numbers
+in the line file.
+
+*******************************************************************************}
+
+procedure inpstp(var n: integer);
+
+var b: byte; { read byte holder }
+
+begin
+
+   readsymb(b); { get 1st byte }
+   n := b; { place as value }
+   if n = 255 then begin { > 1 byte format }
+
+      readsymb(b); { get high byte }
+      n := b*256; { place }
+      readsymb(b); { get low byte }
+      n := n+b; { place }
+      if n = 65535 then begin { > 2 byte format }
+
+         readsymb(b); { get high byte }
+         n := b*65536; { place }
+         readsymb(b); { get mid byte }
+         n := n+b*256; { place }
+         readsymb(b); { get low byte }
+         n := n+b; { place }
+         if n = 1677215 then begin { > 3 byte format }   
+
+            readsymb(b); { get high byte }
+            n := b*1677216; { place }
+            readsymb(b); { get high byte }
+            n := n+b*65536; { place }
+            readsymb(b); { get mid byte }
+            n := n+b*256; { place }
+            readsymb(b); { get low byte }
+            n := n+b { place }
+
+         end
+
+      end
+
+   end
+
+end;
+
+{******************************************************************************
+
+Read next symbol file entry
+
+Reads the next symbol file entry. The next object in the symbols file is read,
+either a symbol entry or an rld entry. 
+The object parameters are placed in the global save area, so that a
+"lookahead" mechanisim is implemented.
+
+******************************************************************************}
+
+procedure rdnxt;
+
+var b: byte;    { read byte holding }
+    l: byte;
+    i: integer;
+
+begin
+
+   readsymb(b); { get the next object type }
+   if b in [ord(obend), ord(obsym), ord(obcst), ord(obrld), ord(obcrld), 
+            ord(obblk), ord(obblke), ord(oblin), ord(obsrc)] then
+      case b of { object }
+
+      0 { obend  }: nxtobj := obend;
+      1 { obsym  }: nxtobj := obsym;
+      2 { obcst  }: nxtobj := obcst;
+      3 { obrld  }: nxtobj := obrld;
+      4 { obcrld }: nxtobj := obcrld;
+      5 { obblk  }: nxtobj := obblk;
+      6 { obblke }: nxtobj := obblke;
+      7 { oblin  }: nxtobj := oblin;
+      8 { obsrc  }: nxtobj := obsrc;
+
+   end else error(esymfmt); { invalid file symbol format }
+   if (nxtobj = obsym) or (nxtobj = obcst) then begin { symbol }
+
+      getsym(nxtsym); { get a symbol entry }
+      readsymb(b); { get the operation code }
+      if b in [ord(onop), ord(oadd), ord(osub), ord(omult), ord(odiv),
+               ord(omod), ord(oshl), ord(oshr), ord(oand), ord(oor),
+               ord(oxor), ord(onot), ord(oneg)] then case b of { operation }
+
+         0  { onop  }: nxtsym^.opr := onop; 
+         1  { oadd  }: nxtsym^.opr := oadd; 
+         2  { osub  }: nxtsym^.opr := osub;
+         3  { omult }: nxtsym^.opr := omult; 
+         4  { odiv  }: nxtsym^.opr := odiv; 
+         5  { omod  }: nxtsym^.opr := omod; 
+         6  { oshl  }: nxtsym^.opr := oshl; 
+         7  { oshr  }: nxtsym^.opr := oshr; 
+         8  { oand  }: nxtsym^.opr := oand; 
+         9  { oor   }: nxtsym^.opr := oor; 
+         10 { oxor  }: nxtsym^.opr := oxor; 
+         11 { onot  }: nxtsym^.opr := onot; 
+         12 { oneg  }: nxtsym^.opr := oneg
+
+      end else error(esymfmt); { invalid symbol file format }
+      if nxtobj = obsym then begin { get symbol label }
+
+         readsymb(b); { get the symbol length }
+         new(nxtsym^.lab, b+1); { allocate label string }
+         for i := 1 to b+1 do begin { read symbol characters }
+
+            readsymb(b); { get a symbol character }
+            if not (ascii2chr(b) in ['_', 'a'..'z', 'A'..'Z', '0'..'9','.']) then
+               error(esymfmt); { invalid symbol file format }
+            nxtsym^.lab^[i] := ascii2chr(b) { place character }
+
+         end
+
+      end;
+      readsymb(b); { get flags byte }
+      if (b and $80) <> 0 then error(esymfmt); { invalid symbol file format }
+      if (b and $40) <> 0 then error(esymfmt); { invalid symbol file format }
+      if (b and $20) <> 0 then error(esymfmt); { invalid symbol file format }
+      nxtsym^.vrs := (b and $10) <> 0; { set variable space flag }
+      nxtsym^.ext := (b and $08) <> 0; { set external flag }
+      nxtsym^.gbl := (b and $04) <> 0; { set global flag }
+      nxtsym^.add := (b and $02) <> 0; { set address flag }
+      nxtsym^.def := (b and $01) <> 0; { set defined flag }
+      if nxtsym^.def then rdvar(nxtsym^.val) { defined, get value }
+
+   end else if (nxtobj = obrld) or (nxtobj = obcrld) then begin { rld }
+
+      getrld(nxtrld); { get an rld entry }
+      readsymb(b); { get it tag byte }
+      nxtrld^.big := (b and $80) <> 0; { set big endian flag }
+      if (b and $40) <> 0 then error(esymfmt); { invalid symbol format }
+      if (b and $20) <> 0 then error(esymfmt); { invalid symbol format }
+      case (b and $18) div $08 of { insertion type }
+
+         0: nxtrld^.im := imnorm; { normal }
+         1: nxtrld^.im := imsgof; { signed offset }
+         2: nxtrld^.im := imnsof  { non-standard signed offset }
+
+      end;
+      nxtrld^.str := b and $7; { set bit field start }
+      readsymb(b); { get bit length }
+      nxtrld^.len := b+1; { place }
+      if nxtrld^.im = imnsof then begin { constant offset exists }
+
+         readsymb(b); { get constant offset }
+         nxtrld^.cof := b { place }
+
+      end;
+      rdvar(nxtrld^.add); { get address }
+      if nxtobj = obcrld then begin { constant rld, value exists }
+
+         readsymb(b); { get flag byte }
+         if (b and $80) <> 0 then error(esymfmt); { invalid symbol file format }
+         if (b and $40) <> 0 then error(esymfmt); { invalid symbol file format }
+         if (b and $20) <> 0 then error(esymfmt); { invalid symbol file format }
+         nxtrld^.vrs := (b and $10) <> 0; { set variable space flag }
+         if (b and $08) <> 0 then error(esymfmt); { invalid symbol file format }
+         if (b and $04) <> 0 then error(esymfmt); { invalid symbol file format }
+         nxtrld^.adf := (b and $02) <> 0; { set address space flag }
+         nxtrld^.def := (b and $01) <> 0; { set defined flag }
+         { the 'defined' flag must be set for constant rlds }
+         if not nxtrld^.def then error(esymfmt); { invalid symbol file format }
+         rdvar(nxtrld^.val) { get value }
+
+      end
+
+   end else if nxtobj = obblk then begin { block }
+
+      { just discard blocks for now }
+      rdvar(i); { get starting program address }
+      rdvar(i); { get ending program address }
+      rdvar(i); { get starting variable address }
+      rdvar(i) { get ending variable address }
+
+   end else if nxtobj = oblin then begin { line tracking entry }
+
+      { we don't use line tracking, so discard }
+      inpstp(i); { get the line difference }
+      inpstp(i); { get the program difference }
+      inpstp(i) { get the variable difference }
+      
+   end else if nxtobj = obsrc then begin { source file name entry }
+
+      { discard source filename }
+      readsymb(l); { get length of filename }
+      for i := 1 to l do readsymb(b); { skip filename }
+
+   end { else must be end of file }
+
+end;      
+
+{******************************************************************************
+
+Adjust rld entry
+
+Adjusts an rld entry by adding the current program and variable offsets
+to the address and value fields, as appropriate by the rld flags.
+
+******************************************************************************}
+
+procedure adjrld(rld: rldptr);
+
+begin
+
+   rld^.add := rld^.add+poff; { offset address }
+   { if value is defined, and in address space, offset by address }
+   if rld^.def then begin { value field is defined }
+
+      if rld^.adf then { value is in address space } 
+         rld^.val := rld^.val+poff { offset in program space }
+      else if rld^.vrs then { value is in variable space }
+         rld^.val := rld^.val+voff { offset in variable space }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Adjust symbol entry
+
+Adjusts a symbol entry by adding the current program and variable offsets
+to the value field, as appropriate by the symbol flags.
+
+******************************************************************************}
+
+procedure adjsym(sym: symptr);
+
+begin
+
+   if sym^.def and (sym^.opr = onop) then begin 
+
+      { symbol is defined and simple }
+      if sym^.add then { symbol is in program space }
+         sym^.val := sym^.val+poff { offset in program space }
+      else if sym^.vrs then { symbol is in variable space }
+         sym^.val := sym^.val+voff { offset in variable space }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Adjust symbol and RLD decks
+
+Adjusts all of the current symbol and RLD entries by the current poff and
+voff parameters.
+
+******************************************************************************}
+
+procedure adjusts;
+
+var sp: symptr; { pointer for symbols }
+    rp: rldptr; { pointer for rlds }
+
+begin
+
+   sp := symtab; { index top of symbols }
+   while sp <> nil do begin { traverse }
+
+      adjsym(sp); { adjust symbol entry }
+      sp := sp^.next { link next symbol }
+
+   end;
+   rp := rldtab; { index top of RLDs }
+   while rp <> nil do begin { traverse }
+
+      adjrld(rp); { adjust RLD entry }
+      rp := rp^.next { link next RLD }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Output object value
+ 
+The given unsigned integer is output to the output file.
+The number of bytes occupied by the output value can be specified, as well as 
+the big/little endian structure of the output.
+If the length specified is greater than the size of an integer, padding sign 
+extention bytes will be used to create an effective output of that size.
+This routine is dependent on integer being 32 bits, and uses equivalence of 
+"packed array [1..4] of byte" to integer to extract the value of an integer.
+ 
+******************************************************************************}
+
+procedure outval(val: integer;  { object integer to output }
+                 len: integer;  { number of bytes to occupy }
+                 big: boolean); { big endian format }
+
+var i: integer; { counter }
+    c: record case boolean of { convertion }
+
+          false: (a: packed array [1..4] of byte);
+          true:  (b: integer)
+
+       end;
+    s: integer; { sign holder }
+
+begin
+
+   if val < 0 then s := 255 else s := 0; { set sign extention byte }
+   c.b := val; { convert integer to bytes }
+   if big then begin { big endian }
+
+      { pad > 32 bits }
+      while len > 4 do begin write(exefil, s); len := len-1 end;
+      for i := len downto 1 do { output bytes }
+         write(exefil, c.a[i]) { output byte }
+
+   end else begin { little endian }
+
+      { output bytes to maximum of 4 }
+      if len > 4 then for i := 1 to 4 do write(exefil, c.a[i]) { output byte }
+      else for i := 1 to len do write(exefil, c.a[i]); { output byte }
+      { pad > 32 bits }
+      while len > 4 do begin write(exefil, s); len := len-1 end
+
+   end
+
+end;
+
+{******************************************************************************
+
+Output composite bit field
+
+Outputs a value as a composite bit field. Given the inserted value, the backing 
+value, and the start and length of bits to be inserted, a series of bytes is 
+created with the insertion value imbedded.
+Note: dependant on being able to use 'and', 'or' and 'not' on integers.
+
+******************************************************************************}
+
+procedure outbit(val: integer;  { object integer to output }
+                 bak: integer;  { backing value }
+                 big: boolean;  { big endian format }
+                 str: integer;  { start of insertion }
+                 len: integer); { number of bits to occupy }
+
+var mask: integer;
+    t:    integer; { holding }
+
+begin
+
+   if (str = 0) and ((len mod 8) = 0) then
+      { its just an ordinay bytewise insertion, in which case the
+        backing is not used }
+      outval(val, len div 8, big)
+   else begin { bitwise insertion }
+
+      { form bitmask }
+      mask := 1;
+      t := len-1;
+      while t <> 0 do begin mask := mask*2+1; t := t-1 end;
+      { shift up to proper bit position }
+      t := str;
+      while t <> 0 do begin 
+
+         val := val*2; { shift value }
+         mask := mask*2; { shift mask }
+         t := t-1 { count }
+
+      end;
+      { assemble output value }
+      val := (bak and not mask) or (val and mask);       
+      t := (len+str) div 8; { find total byte length }
+      if ((len+str) mod 8) <> 0 then t := t + 1; { round up }
+      outval(val, t, big) { and output final value }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Input backing value
+
+Inputs a backing value from the input object file. This is a byte constructed 
+word value that has enough bytes to cover the given byte count, and has the 
+same endian mode.
+Note that it is taken on trust that the number of bytes requested exists before
+the eof.
+
+******************************************************************************}
+
+procedure inpbak(var bak: integer;  { returns backing value }
+                     big: boolean;  { big endian format }
+                     siz: integer); { size of value in bytes }
+
+var b: byte;    { input byte holder }
+    p: integer; { power holder }
+
+begin
+
+   bak := 0; { clear backing value }
+   if big then while siz <> 0 do begin { read big endian }
+
+      readobjb(b); { get a byte }
+      bak := bak*256+b; { scale backing value and add }
+      siz := siz-1 { count bytes }
+      
+   end else begin { little endian }
+
+      p := 1; { set first power }
+      while siz <> 0 do begin { read little endian }
+  
+         readobjb(b); { get a byte }
+         bak := bak+b*p; { scale and add }
+         siz := siz-1 { count bytes }
+
+      end
+
+   end
+
+end;
+
+{******************************************************************************
+
+Process object
+
+Copies the input object file to the output object file. While copying, any
+pending rld's are "mixed" into the output object file.
+
+******************************************************************************}
+
+procedure prcobj;
+
+var objlen: integer; { output bytes count }
+    b:      byte;    { I/O byte holder }
+    bytes:  integer; { number of bytes in bit field }
+    v:      integer; { insertion value }
+    bak:    integer; { backing value }
+    t:      integer; { temp }
+    i:      integer; { index }
+    proc:   boolean; { processed flag }
+    rldinx: rldptr;  { index for rlds on output }
+
+begin
+
+   objlen := psize; { get the length of this input object }
+   rldinx := rldtab; { set 1st rld entry for output }
+   while objlen <> 0 do begin { read object bytes }
+
+      proc := false; { set next not processed }
+      if rldinx <> nil then { there is a next rld entry }
+         if rldinx^.add = prgmc then begin { found an rld patchpoint, process }
+
+         { find byte length of insertion field }
+         bytes := (rldinx^.len+rldinx^.str) div 8; { find total byte length }
+         if ((rldinx^.len+rldinx^.str) mod 8) <> 0 then 
+            bytes := bytes+1; { round up }
+         if rldinx^.inssym <> nil then { symbol exists }
+            v := rldinx^.inssym^.val { value is in symbol }
+         else v := rldinx^.val; { value is constant }
+         if (rldinx^.im = imsgof) or (rldinx^.im = imnsof) then begin
+
+            { if the type is signed offset, find displacement }
+            v := v-(prgmc+bytes+rldinx^.cof)
+
+         end;
+         t := v; { copy value }
+         { move off all bits to output, which should leave only 0 or -1 }
+         for i := 1 to rldinx^.len do t := t div 2;
+         if (t <> 0) and (t <> -1) then begin { value overflow }
+
+            errval := v; { place error value }
+            errbits := rldinx^.len; { place error bit length }
+            error(efldovf); { value overflows }
+
+         end;
+         inpbak(bak, rldinx^.big, bytes); { get backing value }
+         objlen := objlen-bytes; { find advance in input }
+         prgmc := prgmc+bytes; { find advance in program }
+         { output final composite }
+         outbit(v, bak, rldinx^.big, rldinx^.str, rldinx^.len);
+         rldinx := rldinx^.next; { index next rld entry }
+         proc := true { set processed }
+         
+      end;
+      if not proc then begin { transfer input to output object bytes }
+
+         readobjb(b); { get an input byte }
+         write(exefil, b); { output to final }
+         prgmc := prgmc+1; { advance final program counter }
+         objlen := objlen-1 { count input bytes }
+
+      end
+
+   end;
+   { pad to next file block }
+   for i := 1 to psizef-psize do write(exefil, $00)
+
+end;
+
+{******************************************************************************
+
+Originate module
+
+Sets the offsets required to acheive the program and variable locations LN is
+given. By default, the program frame is located at 0, and the variable frame is
+placed at the end of that. However, the program frame or the variable frame
+or both can be set anywhere. If the user has set a variable frame, then the
+"variable after program" mode is overridden, and the variable frame will be
+located where specified.
+
+******************************************************************************}
+
+procedure origin;
+
+begin
+
+   poff := pgmloc; { set program offset }
+   voff := varloc; { set variable offset }
+   adjusts { run offset pass }
+
+end;
+
+{******************************************************************************
+
+Sort rld table
+
+Sorts the rld table into address acending order. This is done so that the
+entries appear in order when we process the object.
+Since we really want to do a quicksort for speed, what we do is to create a
+custom array with the number of rld entries we need, then quicksort that.
+The hit for this is a pointer word per rld, and this only exists during this
+sort function.
+Note: there is no way to dynamically allocate in SVS Pascal, so I used a fixed
+array. This should be replaced with dynamic allocation later.
+
+******************************************************************************}
+
+procedure srtrld;
+
+const maxsrt = 50000; { maximum size of rld table we can sort }
+
+type srtinx = 1..maxsrt; { index for sort array }
+
+var rp:     rldptr;                      { rld pointers }
+    srttbl: array [1..maxsrt] of rldptr; { rld sorting array }
+    i:      srtinx;                      { index for that }
+
+{ perform quicksort }
+
+procedure sort(l, r: srtinx);
+
+var i, j: integer; { table indexes }
+    x, w: rldptr;  { entry holders }
+
+begin
+
+   i := l; { set indexes to min and max }
+   j := r;
+   x := srttbl[(l+r) div 2]; { pick up the middle element }
+   repeat
+
+      { find lower entry out of place with respect to x }
+      while srttbl[i]^.add > x^.add do i := i+1;
+      { find upper entry out of place with respect to x }
+      while x^.add > srttbl[j]^.add do j := j-1;
+      { perform exchange }
+      if i <= j then begin { exchange elements }
+
+         w := srttbl[i]; 
+         srttbl[i] := srttbl[j];
+         srttbl[j] := w;
+         i := i+1;
+         j := j-1
+
+      end
+
+   until i > j;
+   if l < j then sort(l, j); { sort lower partition }
+   if i < r then sort(i, r) { sort upper partition }
+
+end;
+
+begin
+
+   i := 1; { index 1st array position }
+   rp := rldtab; { index 1st entry }
+   while rp <> nil do begin { copy all pointers to array }
+
+      if i = maxsrt then error(erldovf); { overflow, error } 
+      srttbl[i] := rp; { place rld pointer }
+      rp := rp^.next; { next entry }
+      i := i+1
+
+   end;
+   sort(1, i-1); { perform sort }
+   rldtab := nil; { clear destination list }
+   { just to make things easier, we sorted the list for decending order,
+     then insert it backwards }
+   for i := 1 to i-1 do begin { copy table to list }
+
+      srttbl[i]^.next := rldtab; { link entry into list at top }
+      rldtab := srttbl[i]
+
+   end
+
+
+end;
+
+{******************************************************************************
+
+Check link parameter
+
+Checks if the given symbol is one of the link parameters:
+
+   _pstr - Program start
+   _pend - Program end
+   _vstr - Variable start
+   _vend - Variable end
+
+If so, then these symbols are processed specially. First, the value of the
+symbol is divorced from the symbol entry itself, so that we may have only
+one symbol by that name in the entire symbol table(s). The value is placed
+as the "new" value. Then, if the symbol is the first such symbol to appear,
+it is placed as the master entry. Otherwise, it is disposed of and the old
+master entry returned instead.
+
+******************************************************************************}
+
+procedure chkpar(var sym: symptr; { symbol to check for, returns master }
+                 var fnd: boolean); { symbol is link parameter }
+
+begin
+
+   fnd := false; { set no parameter found }
+   if compp(sym^.lab^, '_pstr') then begin { program start }
+
+      { check defined, address space, global }
+      if not (sym^.def and sym^.add and sym^.gbl) then error(esymfmt);
+      if pstrf then error(esymfmt); { more than one in file }
+      pstrf := true; { set parameter found }
+      pstrv := sym^.val; { set new program start value }
+      if pstr = nil then begin { no previous entry }
+
+         sym^.next := symtab; { link into symbols table }
+         symtab := sym;
+         pstr := sym { set master }
+
+      end else begin { duplicate entry }
+
+         putsym(sym); { dispose of new symbol }
+         sym := pstr { return old master }
+
+      end;
+      fnd := true { set parameter found }
+
+   end else if compp(sym^.lab^, '_pend') then begin { program end }
+
+      { check defined, address space, global }
+      if not (sym^.def and sym^.add and sym^.gbl) then error(esymfmt);
+      if pendf then error(esymfmt); { more than one in file }
+      pendf := true; { set parameter found }
+      pendv := sym^.val; { set new program end value }
+      if pend = nil then begin { no previous entry } 
+
+         sym^.next := symtab; { link into symbols table }
+         symtab := sym;
+         pend := sym { no previous entry, set master }
+
+      end else begin { duplicate entry }
+
+         putsym(sym); { dispose of new symbol }
+         sym := pend { return old master }
+
+      end;
+      fnd := true { set parameter found }
+
+   end else if compp(sym^.lab^, '_vstr') then begin { variable start }
+
+      { check defined, variable space, global }
+      if not (sym^.def and sym^.vrs and sym^.gbl) then error(esymfmt);
+      if vstrf then error(esymfmt); { more than one in file }
+      vstrf := true; { set parameter found }
+      vstrv := sym^.val; { set new variable start value }
+      if vstr = nil then begin { no previous entry }
+
+         sym^.next := symtab; { link into symbols table }
+         symtab := sym;
+         vstr := sym { set master }
+
+      end else begin { duplicate entry }
+
+         putsym(sym); { dispose of new symbol }
+         sym := vstr { return old master }
+
+      end;
+      fnd := true { set parameter found }
+
+   end else if compp(sym^.lab^, '_vend') then begin { variable end }
+
+      { check defined, variable space, global }
+      if not (sym^.def and sym^.vrs and sym^.gbl) then error(esymfmt);
+      if vendf then error(esymfmt); { more than one in file }
+      vendf := true; { set parameter found }
+      vendv := sym^.val; { set new variable end value }
+      if vend = nil then begin { no previous entry }
+
+         sym^.next := symtab; { link into symbols table }
+         symtab := sym;
+         vend := sym { no previous entry, set master }
+
+      end else begin { duplicate entry }
+
+         putsym(sym); { dispose of new symbol }
+         sym := vend { return old master }
+
+      end;
+      fnd := true { set parameter found }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Perform symbol operator
+
+If the operands of a symbol are defined, then the operation on a symbol is
+performed. On program or variable space values, these operations must be
+done on every link resolve operation (because they can always be relocated
+again). Otherwise, this may be the final resolution of the symbol.
+
+******************************************************************************}
+
+procedure symopr(sym: symptr); { symbol to operate on }
+
+var def: boolean; { operand(s) are defined flag }
+
+begin
+
+   { validate the correct parameters exist }
+   if (sym^.opr in [onot, oneg]) and 
+      ((sym^.lft = nil) or (sym^.rgt <> nil)) then error(esymfmt)
+   else if (sym^.opr in [oadd, osub, omult, odiv, omod, oshl, oshr, oand, oor,
+            oxor]) and
+           ((sym^.lft = nil) or (sym^.rgt = nil)) then error(esymfmt)
+   else if (sym^.opr = onop) and 
+           ((sym^.lft <> nil) or (sym^.rgt <> nil)) then error(esymfmt);
+   def := true; { set operand(s) defined }
+   { check left branch exists and is defined }
+   if sym^.lft <> nil then if not sym^.lft^.def then def := false;
+   { check right branch exists and is defined }
+   if sym^.rgt <> nil then if not sym^.rgt^.def then def := false;
+   if def then begin { operand(s) defined }
+
+      case sym^.opr of { operation }
+
+         onop:  ; { no operation }
+         oadd:  sym^.val := sym^.lft^.val+sym^.rgt^.val; { add }
+         osub:  sym^.val := sym^.lft^.val-sym^.rgt^.val; { subtract }
+         omult: sym^.val := sym^.lft^.val*sym^.rgt^.val; { multiply }
+         odiv:  sym^.val := sym^.lft^.val div sym^.rgt^.val; { divide }
+         omod:  sym^.val := sym^.lft^.val mod sym^.rgt^.val; { modulo }
+         oshl:  begin { shift left }
+     
+            sym^.val := sym^.lft^.val;
+            while sym^.rgt^.val > 0 do sym^.val := sym^.val*2
+     
+         end;
+         oshr:  begin { shift right }
+     
+            sym^.val := sym^.lft^.val;
+            while sym^.rgt^.val > 0 do sym^.val := sym^.val div 2
+     
+         end;
+         oand:  sym^.val := sym^.lft^.val and sym^.rgt^.val; { and }
+         oor:   sym^.val := sym^.lft^.val or sym^.rgt^.val; { or }
+         { exclusive or }
+         oxor:  sym^.val := (sym^.lft^.val and not sym^.rgt^.val) or
+                            (not sym^.lft^.val and sym^.rgt^.val);
+         onot:  sym^.val := not sym^.lft^.val; { not }
+         oneg:  sym^.val := -sym^.lft^.val { negate }
+
+      end;
+      if sym^.opr <> onop then { not a simple symbol }
+         sym^.def := true { set resulting symbol now defined }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Operate on symbol
+
+Performs any operations possible on the given symbol.
+
+******************************************************************************}
+
+procedure sympop(sym: symptr);
+
+begin
+
+   if sym^.lft <> nil then begin { left branch exists }
+
+      { add any attributes of subsymbol to this symbol }
+      if sym^.lft^.add then sym^.add := true;
+      if sym^.lft^.vrs then sym^.vrs := true;
+      sympop(sym^.lft) { reduce }
+
+   end;
+   if sym^.rgt <> nil then begin { right branch exists }
+
+      { add any attributes of subsymbol to this symbol }
+      if sym^.rgt^.add then sym^.add := true;
+      if sym^.rgt^.vrs then sym^.vrs := true;
+      sympop(sym^.rgt) { reduce }
+
+   end;
+   symopr(sym) { perform operation on current symbol }
+
+end;
+
+{******************************************************************************
+
+Operate symbols
+
+Performs any operations possible on the symbols deck.
+
+******************************************************************************}
+
+procedure symops;
+
+var sp: symptr; { pointer for symbols }
+
+begin
+
+   sp := symtab; { index top of symbols table }
+   while sp <> nil do begin { traverse }
+
+      sympop(sp); { reduce symbol }
+      sp := sp^.next { link next symbol }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Read rlds attached to symbol
+
+Reads any rld's that may follow a symbol, and attaches them to the given
+symbol, as the symbol provides the solution for that rld.
+
+******************************************************************************}
+
+procedure rdrlds(sym: symptr); { symbol to attach to }
+
+begin
+
+   while nxtobj = obrld do begin { read rlds }
+
+      nxtrld^.next := rldtab; { link into current rld table }
+      rldtab := nxtrld;
+      adjrld(nxtrld); { adjust entry }
+      nxtrld^.inssym := sym; { link to symbol }
+      rdnxt { read next entry }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Read symbol
+
+Reads a symbol entry from the symbols file. The next symbol is read, and also
+any symbols in "subtrees" under the symbol. In this way, the entire expression
+tree that represents an undefined symbol can be read. Also reads any rld's
+referencing the symbol, or symbols under it.
+Returns the symbol entry, as it is entered into the symbol table.
+
+******************************************************************************}
+
+procedure rdsym(var sym: symptr);
+
+var linkf:  boolean; { symbol is link parameter flag }
+    sp, fp: symptr;  { symbol table pointers }
+    saved:  boolean; { symbol is from saved flag }
+
+begin
+
+   { check valid object }
+   if (nxtobj <> obsym) and (nxtobj <> obcst) then error(esymfmt);
+   sym := nxtsym; { set entry pointer }
+   rdnxt; { get next object }
+   adjsym(sym); { adjust symbol entry }
+   linkf := false; { set not a link parameter }
+   if sym^.lab <> nil then { a labeled symbol }
+      chkpar(sym, linkf); { check the entry is a link parameter }
+   if not linkf then begin { standard symbol }
+
+      fp := nil; { set found pointer null }
+      if sym^.lab <> nil then begin { is a labeled symbol }
+
+          sp := symtab; { index top of symbols }
+          saved := false; { set symbol from new table }
+          while sp <> nil do begin { traverse symbols }
+         
+             if compp(sym^.lab^, sp^.lab^) then fp := sp; { save matching symbol }
+             sp := sp^.next { index next symbol }
+       
+          end
+    
+      end;
+      if fp <> nil then begin { symbol found }
+
+         if sym^.def and not fp^.def then begin 
+
+            { new symbol is defined, and the old symbol is not
+              copy new symbol parameters to old entry }
+            fp^.opr := sym^.opr;
+            fp^.def := sym^.def;
+            fp^.add := sym^.add;
+            fp^.gbl := sym^.gbl;
+            fp^.ext := sym^.ext;
+            fp^.vrs := sym^.vrs;
+            fp^.val := sym^.val
+
+         end;
+         { replace new symbol with old symbol }
+         putsym(sym); { dispose of new symbol }
+         sym := fp { replace with existing symbol }
+
+      end else begin { link unique symbol into new symbols table }
+
+         sym^.next := symtab; { link into table }
+         symtab := sym
+
+      end
+         
+   end;
+   rdrlds(sym); { read any associated rlds }
+   if sym^.opr <> onop then begin { the symbol is an expression head }
+
+      rdsym(sp); { read left symbol }
+      sym^.lft := sp; { place }
+      if sym^.opr <> onop then begin { right branch exists }
+
+         rdsym(sp); { read right symbol }
+         sym^.rgt := sp { place }
+
+      end
+
+   end
+
+end;
+
+{******************************************************************************
+
+Read symbols file
+
+Reads in the symbols and rld entries from the currently open symbols file,
+and creates in memory tables.
+
+******************************************************************************}
+
+procedure rdsyms;
+
+var sym: symptr; { pointer for return symbol (unused) }
+
+begin
+
+   pstrf  := false; { set program start found false }
+   pendf  := false; { set program end found false }
+   vstrf  := false; { set variable start found false }
+   vendf  := false; { set variable end found false }
+   rdnxt; { start lookahead mechanisim }
+   while nxtobj <> obend do begin { process entries }
+
+      if (nxtobj = obsym) or (nxtobj = obcst) then 
+         { object is symbol or constant }
+         rdsym(sym) { read symbol entry }
+      else if nxtobj = obcrld then begin { rld }
+
+         nxtrld^.next := rldtab; { link into current rld table }
+         rldtab := nxtrld;
+         adjrld(nxtrld); { adjust entry }
+         rdnxt { read next entry }
+
+      end else if (nxtobj <> obblk) and (nxtobj <> obblke) and 
+                  (nxtobj <> oblin) and (nxtobj <> obsrc) then
+         error(esymfmt) { rlds should not be floating loose ! }
+
+   end;
+   { check all link parameters existed in file read }
+   if not (pstrf and pendf and vstrf and vendf) then error(esymfmt)
+
+end;
+
+{******************************************************************************
+
+Find maximum length of symbols
+
+Finds the maximum length of any symbol in the symbol table. This is used to
+format tables properly.
+ 
+******************************************************************************}
+
+procedure fndmax;
+
+var sp: symptr; { pointer for symbols }
+
+begin
+
+   symlen := 0; { clear maximum length of symbols }
+   sp := symtab; { index top symbol }
+   while sp <> nil do begin { traverse }
+
+      if max(sp^.lab^) > symlen then symlen := max(sp^.lab^); { find max }
+      sp := sp^.next { next symbol }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Report undefined symbols
+
+Searches the current symbols table for undefined entries, and if found,
+produces a report on all such entries. The report listing outputs up to
+7 symbols on a line. At this version, we are dependent on having only 10
+character internal symbols in LN.
+
+Should probally calculate maximum list symbol length only on symbols that will
+be printed.
+ 
+******************************************************************************}
+
+procedure report;
+
+var sp:     symptr;  { pointer for symbols }
+    first:  boolean; { first undefined print flag }
+    symcnt: integer; { count of symbols output on line }
+    i:      labinx;  { index for labels }
+
+begin
+
+   first := true; { set first undefined symbol }
+   symcnt := 0; { clear output count }
+   sp := symtab; { index top symbol }
+   fundef := false; { set no undefineds present }
+   while sp <> nil do begin { traverse }
+
+      if (sp^.lab <> nil) and not sp^.def then begin { symbol undefined }
+
+         if first then begin { write header }
+
+            writeln; { space off }
+            writeln('Undefined symbols:'); 
+            writeln 
+
+         end;
+         for i := 1 to max(sp^.lab^) do write(sp^.lab^[i]); { output symbol }
+         if (symlen*2+2) < lstlen then begin 
+
+            { more than one symbol fits on line }
+            for i := 1 to symlen-max(sp^.lab^) do write(' '); { pad }
+            write(' '); { space off }
+            symcnt := symcnt+1; { count symbols output on line }
+            if symcnt >= lstlen div (symlen+1) then begin { line overflow }
+
+               writeln; { terminate line }
+               symcnt := 0 { clear counter }
+
+            end
+
+         end else { max symbol longer than line, just output and let it wrap }
+            writeln;
+         first := false; { set not first undefined }
+         fundef := true { set there are undefined symbols }
+
+      end;
+      sp := sp^.next { link next symbol }
+
+   end;
+   if symcnt <> 0 then writeln { terminate unfinished line }
+
+end;
+
+{******************************************************************************
+
+Connect symbols to dlls
+
+For each undefined symbols in the object, all of the dll export lists are
+searched, then an import entry created for each such connection found.
+If a dll reference is not found for an undefined, it will be output in an
+error listing later.
+If a target name is found under more than one name (possible if the target
+DLL relies on case sensitive matching), or exists in more than one DLL,
+a report to that effect is output, and the output file will be deleted.
+ 
+******************************************************************************}
+
+procedure condll;
+
+var sp:     symptr;  { pointer for symbols }
+    dp:     dirptr;  { dll directory pointer }
+    ep:     expptr;  { export label entry pointer }
+    ip,ips: idrptr;  { import modules pointers }
+    np:     dllptr;  { pointer to import name entry }
+    fnd:    boolean; { symbol found flag }
+
+{ get label name entry }
+
+procedure getdll(var np: dllptr);
+
+begin
+
+   new(np); { get a new entry }
+   np^.next := ip^.dll; { insert to list }
+   ip^.dll := np
+
+end;
+
+{ get new import directory entry }
+
+procedure getidr(var ip: idrptr);
+
+begin
+
+   new(ip); { get a new entry }
+   ip^.next := import; { insert to list }
+   import := ip;
+   ip^.dll := nil { empty label list }
+
+end;
+
+begin
+
+   sp := symtab; { index top symbol }
+   while sp <> nil do begin { traverse }
+
+      if (sp^.lab <> nil) and not sp^.def then begin { symbol undefined }
+
+         fnd := false; { set no symbol found }
+         ep := exptbl[hash(sp^.lab^, 0, expmax)]; { index top of label list }
+         while ep <> nil do begin { traverse export label list }
+
+            if compp(sp^.lab^, ep^.cnam^) then begin { found, enter link }
+
+               dp := ep^.dir; { set master dll }
+               if fnd then begin { duplicate entry }
+
+                  write('*** Duplicate symbol: '); 
+                  write(output, ep^.cnam^:0);
+                  write(' in module: ');
+                  write(output, dp^.nam^:0);
+                  writeln
+
+               end;
+               { ok, lets see if a dll module entry exists already }
+               ip := import; { index top of import list }
+               ips := nil; { set no module found }
+               while ip <> nil do begin { traverse }
+         
+                  if compp(dp^.nam^, ip^.name^) then begin { found }
+
+                     ips := ip; { save matching entry }
+                     ip := nil { terminate search }
+
+                  end else ip := ip^.next { next entry }
+
+               end;
+               ip := ips; { copy search entry back }
+               if ip = nil then begin { none found }
+
+                  getidr(ip); { create a new entry }
+                  ip^.name := copy(dp^.nam^) { place dll module name }
+                  
+               end;
+               getdll(np); { get a new name entry }
+               np^.lab := copy(ep^.nam^); { place entry label }
+               np^.hint := ep^.ordn; { place ordinal }
+               sp^.dll := np; { link back to symbol }
+               fnd := true { set entry found }
+
+            end;
+            ep := ep^.hnext { next hash entry }
+
+         end
+
+      end;
+      sp := sp^.next { link next symbol }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Resolve dll linkages
+
+Transfers the runtime address of the dll entry vectors to the attached symbols.
+The import table addresses should already be resolved.
+ 
+******************************************************************************}
+
+procedure resdll;
+
+var sp: symptr; { pointer for symbols }
+
+begin
+
+   sp := symtab; { index top symbol }
+   while sp <> nil do begin { traverse }
+
+      if sp^.dll <> nil then begin { symbol is dll linked }
+
+         sp^.val := sp^.dll^.irva+basadr; { place address }
+         sp^.def := true { set is now defined }
+
+      end;
+      sp := sp^.next { link next symbol }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Find import directory size
+
+Expects the import directory data to be set up in the import list. The total
+number of bytes in the import directory are counted, and the result placed in
+isize.
+
+******************************************************************************}
+
+procedure impsiz;
+
+var ip: idrptr; { pointer for import directories }
+    dp: dllptr; { pointer for dll entry }
+
+begin
+
+   isize := 0; { clear import directory size }
+   ip := import; { index base of directories }
+   { generate directories } 
+   while ip <> nil do begin { traverse }
+
+      isize := isize+20; { count bytes in directory entry }
+      ip := ip^.next { next }
+
+   end;
+   isize := isize+20; { generate null directory }
+   { generate dll pointer lists }
+   ip := import; { index 1st directory }
+   while ip <> nil do begin { traverse }
+
+      dp := ip^.dll; { index 1st lookup }
+      while dp <> nil do begin { traverse }
+
+         isize := isize+4; { generate hint/name RVA }
+         dp := dp^.next { next entry }
+
+      end;
+      isize := isize+4; { terminate }
+      ip := ip^.next { next entry }
+
+   end;
+   { assign addresses for IA lists }
+   ip := import; { index 1st directory }
+   while ip <> nil do begin { traverse }
+
+      dp := ip^.dll; { index 1st lookup }
+      while dp <> nil do begin { traverse }
+
+         isize := isize+4; { gerate dummy IA }
+         dp := dp^.next { next entry }
+
+      end;
+      isize := isize+4; { terminate }
+      ip := ip^.next { next entry }
+
+   end;
+   { assign address for name and hint/label tables }
+   ip := import; { index 1st directory }
+   while ip <> nil do begin { traverse }
+
+      isize := isize+lenzerp(ip^.name^); { generate dll name }
+      dp := ip^.dll; { index 1st lookup }
+      while dp <> nil do begin { traverse }
+
+         isize := isize+2; { output hint }
+         isize := isize+lenzerp(dp^.lab^); { output label }
+         dp := dp^.next { next entry }
+
+      end;
+      ip := ip^.next { next entry }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Find number of symbols
+
+Expects the symbols table to be loaded. The number of symbols is counted.
+
+******************************************************************************}
+
+procedure cntsym;
+
+var sp: symptr; { pointer for symbols }
+
+begin
+
+   sp := symtab; { index top of symbols table }
+   symnum := 0; { clear number of symbols }
+   while sp <> nil do begin { traverse }
+
+      if sp^.def and (sp^.lab <> nil) then
+         { symbol has been defined, and has a label }
+         symnum := symnum+1; { count symbol }
+      sp := sp^.next { link next symbol }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Find STABS symbols data size
+
+Expects the symbols table to be loaded. The number of symbols is counted,
+then this is used to find the number of bytes need to represent this as a STABS
+symbol data table.
+
+******************************************************************************}
+
+procedure stsymsiz;
+
+begin
+
+   { each symbol is 12 bites, plus a header symbol, plus "main" }
+   stsysize := symnum*12+12+12
+
+end;
+
+{******************************************************************************
+
+Find STABS symbols string size
+
+Expects the symbols table to be loaded. The symbol lengths are added up to find
+the total size of the STABS string length table.
+
+******************************************************************************}
+
+procedure sssymsiz;
+
+var sp: symptr; { pointer for symbols }
+
+begin
+
+   sp := symtab; { index top of symbols table }
+   sssysize := 0; { clear symbols table length }
+   while sp <> nil do begin { traverse }
+
+      if sp^.def and (sp^.lab <> nil) then
+         { symbol has been defined, and has a label }
+         sssysize := sssysize+max(sp^.lab^)+1; { count characters }
+      sp := sp^.next { link next symbol }
+
+   end;
+   { add starting and ending zeros, source file, and "main" }
+   sssysize := sssysize+2+1+12 { add starting and ending zeros, plus "main" }
+
+end;
+
+{******************************************************************************
+
+Find COFF symbols size
+
+Expects the symbols table to be loaded. The symbol lengths are added up, then
+this is used to find the number of bytes need to represent this as a coff
+symbol table.
+
+******************************************************************************}
+
+procedure symsiz;
+
+var sp: symptr; { pointer for symbols }
+
+begin
+
+   sp := symtab; { index top of symbols table }
+   sysize := 0; { clear symbols table length }
+   while sp <> nil do begin { traverse }
+
+      if sp^.def and (sp^.lab <> nil) then
+         { symbol has been defined, and has a label }
+         sysize := sysize+18+max(sp^.lab^)+1; { count characters }
+      sp := sp^.next { link next symbol }
+
+   end;
+   sysize := sysize+4 { add string table length }
+
+end;
+
+{******************************************************************************
+
+Resolve import RVA addresses
+
+The import directory is expected to be complete in the import list. Runs
+through all the structures in the import directory, assigning placement
+addresses for them, then the RVA pointers are set accordingly. This should be
+done preparitory to outputting the import directory.
+
+******************************************************************************}
+
+procedure impres(var rva: integer); { base RVA of import area }
+
+var ip: idrptr; { pointer for import directories }
+    dp: dllptr; { pointer for dll entry }
+    c:  integer; { label length }
+
+begin
+
+   ip := import; { index base of directories }
+   { allocate directories }
+   while ip <> nil do begin { traverse }
+
+      rva := rva+20; { add the length of a directory }
+      ip := ip^.next
+
+   end;
+   rva := rva+20; { add one for the null terminator }
+   { assign addresses for dll pointer lists }
+   ip := import; { index 1st directory }
+   while ip <> nil do begin { traverse }
+
+      ip^.dllrva := rva; { set the RVA for entry }
+      dp := ip^.dll; { index 1st lookup }
+      while dp <> nil do begin { traverse }
+
+         rva := rva+4; { add the length of an RVA per entry }
+         dp := dp^.next { next entry }
+
+      end;
+      rva := rva+4; { add one for null termination }
+      ip := ip^.next { next entry }
+
+   end;
+   { assign addresses for IA lists }
+   ip := import; { index 1st directory }
+   while ip <> nil do begin { traverse }
+
+      ip^.iarva := rva; { set the RVA for entry }
+      dp := ip^.dll; { index 1st lookup }
+      while dp <> nil do begin { traverse }
+
+         dp^.irva := rva; { set IA vector RVA }
+         rva := rva+4; { add the length of an RVA per entry }
+         dp := dp^.next { next entry }
+
+      end;
+      rva := rva+4; { add one for null termination }
+      ip := ip^.next { next entry }
+
+   end;
+   { assign address for name and hint/label tables }
+   ip := import; { index 1st directory }
+   while ip <> nil do begin { traverse }
+
+      ip^.namrva := rva; { set the RVA for dll name }
+      c := len(ip^.name^); { find the length of label }
+      c := c+1; { add ending zero }
+      if odd(c) then c := c+1; { make even }
+      rva := rva+c; { add to address }
+      dp := ip^.dll; { index 1st lookup }
+      while dp <> nil do begin { traverse }
+
+         dp^.rva := rva; { set address of entry }
+         rva := rva+2; { allocate hint }
+         c := len(dp^.lab^); { find length of label }
+         c := c+1; { add ending zero }
+         if odd(c) then c := c+1; { make even }
+         rva := rva+c; { add to address } 
+         dp := dp^.next { next entry }
+
+      end;
+      ip := ip^.next { next entry }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Generate import directory
+
+Expects the import directory data to be set up in the import list. The RVAs in
+the directory should be resolved.
+
+******************************************************************************}
+
+procedure impgen;
+
+var ip: idrptr; { pointer for import directories }
+    dp: dllptr; { pointer for dll entry }
+    i:  integer;
+
+begin
+
+   ip := import; { index base of directories }
+   { generate directories } 
+   while ip <> nil do begin { traverse }
+
+      wrtdwd(ip^.dllrva); { generate lookup table index }
+      wrtdwd($00000000); { generate date/time stamp (unused) }
+      wrtwrd($ffff); { target version (any) }
+      wrtwrd($ffff);
+      wrtdwd(ip^.namrva); { generate name RVA }
+      wrtdwd(ip^.iarva); { generate IA RVA }
+      ip := ip^.next
+
+   end;
+   for i := 1 to 20 do write(exefil, $00); { generate null directory }
+   { generate dll pointer lists }
+   ip := import; { index 1st directory }
+   while ip <> nil do begin { traverse }
+
+      dp := ip^.dll; { index 1st lookup }
+      while dp <> nil do begin { traverse }
+
+         wrtdwd(dp^.rva); { generate hint/name RVA }
+         dp := dp^.next { next entry }
+
+      end;
+      wrtdwd($00000000); { terminate }
+      ip := ip^.next { next entry }
+
+   end;
+   { assign addresses for IA lists }
+   ip := import; { index 1st directory }
+   while ip <> nil do begin { traverse }
+
+      dp := ip^.dll; { index 1st lookup }
+      while dp <> nil do begin { traverse }
+
+         { well, the IAs are filled in after the file loads, so the value
+           in the file isn't supposed to mean anything. On the other hand,
+           they cannot be zero, since that is the list termination }
+         wrtwrd($ffff); { gerate dummy IA }
+         wrtwrd($ffff);
+         dp := dp^.next { next entry }
+
+      end;
+      wrtdwd($00000000); { terminate }
+      ip := ip^.next { next entry }
+
+   end;
+   { assign address for name and hint/label tables }
+   ip := import; { index 1st directory }
+   while ip <> nil do begin { traverse }
+
+      strzerp(ip^.name^); { generate dll name }
+      dp := ip^.dll; { index 1st lookup }
+      while dp <> nil do begin { traverse }
+
+         wrtwrd(dp^.hint); { output hint }
+         strzerp(dp^.lab^); { output label }
+         dp := dp^.next { next entry }
+
+      end;
+      ip := ip^.next { next entry }
+
+   end;
+   { pad to end of import area }
+   for i := 1 to isizef-isize do write(exefil, $00)
+
+end;
+
+{******************************************************************************
+
+Generate COFF symbol table
+
+All of the defined symbols are output to the symbols section, in COFF format.
+We allways use the "long" name format for symbols.
+The symbols are adjusted back to a zero offset for the section they occupy.
+Relocations to symbols are done by the client.
+
+******************************************************************************}
+
+procedure symgen;
+
+var sp:   symptr;  { pointer for symbols }
+    stab: integer; { address into string table }
+    i:    integer; { index for symbol label }
+
+begin
+
+   { in the first pass, we output the symbol headers }
+   sp := symtab; { index top of symbols table }
+   stab := 4; { set 1st symbol table address (after length word) }
+   while sp <> nil do begin { traverse }
+
+      if sp^.def and (sp^.lab <> nil) then begin
+
+         { symbol is defined and has a label }
+         wrtdwd($00000000); { flag use longname }
+         wrtdwd(stab); { output base address of next string }
+         if sp^.add then begin { program }
+
+            wrtdwd(sp^.val-pgmloc); { output value }
+            wrtwrd($00000001) { section 0: .text }
+
+         end else if sp^.vrs then begin
+
+            wrtdwd(sp^.val-varloc); { output value }
+            wrtwrd($00000002) { section 1: .bss }
+
+         end else begin
+
+            wrtdwd(sp^.val); { output value }
+            wrtwrd($0000ffff) { no section: constant }
+
+         end;
+         wrtwrd($00000000); { type 0 }
+         write(exefil, $02); { storage class }
+         write(exefil, $00); { number of aux symbols }        
+         stab := stab+max(sp^.lab^)+1 { increment to next string }
+         
+      end;
+      sp := sp^.next { link next symbol }
+
+   end;
+   { now output symbol string table }
+   wrtdwd(stab); { output total length of string table }
+   sp := symtab; { index top of symbols table }
+   while sp <> nil do begin { traverse }
+
+      if sp^.def and (sp^.lab <> nil) then begin
+
+         { output symbol }
+         for i := 1 to max(sp^.lab^) do write(exefil, chr2ascii(sp^.lab^[i]));
+         write(exefil, $00) { terminate with zero }
+         
+      end;
+      sp := sp^.next { link next symbol }
+
+   end;
+   { pad to end of symbol area }
+   for i := 1 to sysizef-sysize do write(exefil, $00)
+
+end;
+
+{******************************************************************************
+
+Generate STABS symbol data table
+
+All of the defined symbols are output to the symbols data section, in STABS
+format.
+
+******************************************************************************}
+
+procedure stsymgen;
+
+var sp:   symptr;  { pointer for symbols }
+    stab: integer; { address into string table }
+    i:    integer; { index for symbol label }
+
+begin
+
+   { output header symbol }
+   wrtdwd($00000001); { output source string (null) }
+   write(exefil, $00); { set no type }
+   write(exefil, $00); { set no other }
+   wrtwrd(symnum+1); { output number of symbols, plus main }
+   wrtdwd(sssysize-1); { output symbols string table size (without terminator }
+   { output "main" symbol }
+   wrtdwd($00000002); { set string }
+   write(exefil, $24); { set .text type }
+   write(exefil, $00); { set no other }
+   wrtwrd($0000); { output description }
+   wrtdwd(basadr); { output base address }
+   { in the first pass, we output the symbol headers }
+   sp := symtab; { index top of symbols table }
+   { set 1st symbol table address, after null string, source, and main }
+   stab := 1+1+12; { set 1st symbol table address (after null string), and main }
+   while sp <> nil do begin { traverse }
+
+      if sp^.def and (sp^.lab <> nil) then begin
+
+         { symbol is defined and has a label }
+         wrtdwd(stab); { output base address of next string }
+         if sp^.vrs then write(exefil, $28) { output as .bss type }
+         else if sp^.add then write(exefil, $24) { output as .text type }
+         else write(exefil, $00); { don't know what commons are }
+         write(exefil, $00); { output other }
+         wrtwrd($0000); { output description }
+         wrtdwd(sp^.val); { output value }
+         stab := stab+max(sp^.lab^)+1 { increment to next string }
+         
+      end;
+      sp := sp^.next { link next symbol }
+
+   end;
+   { pad to end of symbol area }
+   for i := 1 to stsysizef-stsysize do write(exefil, $00)
+
+end;
+
+{******************************************************************************
+
+Generate STABS symbol data table
+
+All of the defined symbols are output to the symbols data section, in STABS
+format.
+
+******************************************************************************}
+
+procedure sssymgen;
+
+var sp:   symptr;  { pointer for symbols }
+    i:    integer; { index for symbol label }
+    main: packed array [1..11] of char; { "main" label holder }
+
+begin
+
+   main := 'main:F(0,1)'; { set "main" label }
+   { output symbol string table }
+   write(exefil, $00); { output first null string }
+   write(exefil, $00); { output null string source }
+   for i := 1 to 11 do
+      write(exefil, chr2ascii(main[i])); { output "main" }
+   write(exefil, $00);
+   sp := symtab; { index top of symbols table }
+   while sp <> nil do begin { traverse }
+
+      if sp^.def and (sp^.lab <> nil) then begin
+
+         { output symbol }
+         for i := 1 to max(sp^.lab^) do
+            write(exefil, chr2ascii(sp^.lab^[i])); { plain }
+         write(exefil, $00) { terminate with zero }
+         
+      end;
+      sp := sp^.next { link next symbol }
+
+   end;
+   write(exefil, $00); { output terminator string }
+   { pad to end of symbol area }
+   for i := 1 to sssysizef-sssysize do write(exefil, $00)
+
+end;
+
+{******************************************************************************
+
+Output MSDOS .exe header
+
+The MSDOS .exe header is for compatibility only, and announces "this program
+cannot be run in DOS mode" when run under DOS. Of course, a program that is
+larger than 640kb will never be DOS loadable anyways. It also contains a pointer
+to the real header that follows.
+The header is exactly 128 bytes long.
+
+******************************************************************************}
+
+procedure outdos;
+
+begin
+
+   write(exefil, chr2ascii('M')); { output MSDOS signature (magic number) }
+   write(exefil, chr2ascii('Z'));
+   wrtwrd($0090); { length of file mod 512 }
+   wrtwrd($0003); { length of file in 512 byte pages }
+   wrtwrd($0000); { number of relocation table items }
+   wrtwrd($0004); { size of header in paragraphs }
+   wrtwrd($0000); { minimum number of paragraphs above (MINALLOC) }
+   wrtwrd($ffff); { maximum number of paragraphs above (MAXALLOC) }
+   wrtwrd($0000); { displacement of stack segment in paragraphs }
+   wrtwrd($00b8); { inital value of SP register }
+   wrtwrd($0000); { checksum (unused) }
+   wrtwrd($0000); { inital value of IP register }
+   wrtwrd($0000); { code segment displacement }
+   wrtwrd($0040); { displacement of relocation table }
+   wrtwrd($0000); { overlay number (resident) }
+   { reserved entries. These contain the OEM information and ID. I don't have
+     a description for this, and it appears to be ununsed (set to 0) anyways }
+   wrtwrd($0000);
+   wrtwrd($0000);
+   wrtwrd($0000);
+   wrtwrd($0000);
+   wrtwrd($0000);
+   wrtwrd($0000);
+   wrtwrd($0000);
+   wrtwrd($0000);
+   wrtwrd($0000);
+   wrtwrd($0000);
+   wrtwrd($0000);
+   wrtwrd($0000);
+   wrtwrd($0000);
+   wrtwrd($0000);
+   wrtwrd($0000);
+   wrtwrd($0000);
+   wrtwrd($0080); { displacement of PE header }
+   write(exefil, $00); write(exefil, $00); { reserved }
+   { start of executed code }
+   write(exefil, $0E); { push cs } 
+   write(exefil, $1F); { pop ds }
+   { mov dx,message }
+   write(exefil, $BA); write(exefil, $0E); write(exefil, $00);
+   write(exefil, $B4); write(exefil, $09); { mov ah,$09 (display string) } 
+   write(exefil, $CD); write(exefil, $21); { int $21 (execute DOS function }
+   { mov ax,$4c01 (terminate with return code=abnormal terminate) }
+   write(exefil, $B8); write(exefil, $01); write(exefil, $4C);
+   write(exefil, $CD); write(exefil, $21); { int $21 (execute DOS function }
+   { message: "This program cannot be run in DOS mode<CR><CR><LF>$" }
+   write(exefil, $54); write(exefil, $68);
+   write(exefil, $69); write(exefil, $73);
+   write(exefil, $20); write(exefil, $70);
+   write(exefil, $72); write(exefil, $6F);
+   write(exefil, $67); write(exefil, $72);
+   write(exefil, $61); write(exefil, $6D);
+   write(exefil, $20); write(exefil, $63);
+   write(exefil, $61); write(exefil, $6E);
+   write(exefil, $6E); write(exefil, $6F);
+   write(exefil, $74); write(exefil, $20);
+   write(exefil, $62); write(exefil, $65);
+   write(exefil, $20); write(exefil, $72);
+   write(exefil, $75); write(exefil, $6E);
+   write(exefil, $20); write(exefil, $69);
+   write(exefil, $6E); write(exefil, $20);
+   write(exefil, $44); write(exefil, $4F);
+   write(exefil, $53); write(exefil, $20);
+   write(exefil, $6D); write(exefil, $6F);
+   write(exefil, $64); write(exefil, $65);
+   write(exefil, $2E); write(exefil, $0D);
+   write(exefil, $0D); write(exefil, $0A);
+   write(exefil, $24); 
+   write(exefil, $00); write(exefil, $00); { pad to end of header }
+   write(exefil, $00); write(exefil, $00);
+   write(exefil, $00); write(exefil, $00);
+   write(exefil, $00);
+
+end;
+
+{******************************************************************************
+
+Output PE header
+
+Outputs the portable executive header. Various parameters are plugged into the
+header, with the rest being fixed.
+The header is exactly 248 bytes long.
+
+******************************************************************************}
+
+procedure outpe;
+
+var i: integer;
+
+begin
+
+   { output PE signature ("PE<0><0>") }
+   write(exefil, chr2ascii('P')); 
+   write(exefil, chr2ascii('E'));
+   write(exefil, 0); write(exefil, 0);
+   wrtwrd(cputyp); { output cpu type }
+   wrtwrd(objnum); { number of objects }
+   wrtdwd($00000000); { time/date stamp (unused) }
+   { if COFF symbols are output, register that }
+   if fcoffsym then wrtdwd(sylocf{syloc-basadr}) { symbols pointer }
+   else wrtdwd($00000000); { no symbols }
+   if fcoffsym then wrtdwd(symnum) { number of symbols }
+   else wrtdwd($00000000); { no symbols }
+   wrtwrd(hdrsiz); { nt header size }
+   { flags: no debug info, 32 bit machine, local symbols stripped, line numbers
+     stripped, executable, relocations stripped }
+   wrtwrd($0107{$030f}); 
+   wrtwrd($010b); { nt header magic } 
+   wrtwrd($0c05); { no linker version } 
+   wrtdwd(psizef); { size of code } 
+   wrtdwd(psizef+isizef); { size of initalized data }
+   wrtdwd(vsizef); { size of uninitalized data }
+   wrtdwd(pgmloc-basadr); { entry RVA (at start of program) }
+   wrtdwd(pgmloc-basadr); { base of code (at start of program) }
+   wrtdwd(imploc-basadr); { base of data }
+   wrtdwd(basadr); { image base }
+   wrtdwd(sizpag); { object align }
+   wrtdwd(sizfil); { file align }
+   { The os version must be 3.51. My theory is that this is the version number
+     of windows NT 3.51 (since win 95 is version 4.0). Irregardless, win 95
+     only seems to care that it is non-zero, and only during a dos console
+     mode load }
+   wrtdwd($00000005); { os version }
+   wrtdwd($00000005); { no user version }
+   wrtdwd($00000004); { no subsystem version }
+   wrtdwd($00000000); { reserved }
+   wrtdwd(sizhdr+isizep+psizep+vsizep+sysizep+stsysizep+sssysizep); { image size }
+   wrtdwd(sizhdrf); { header size }
+   wrtdwd($00000000); { file checksum (unused) }
+   if fgui then wrtwrd($0002) { subsystem, windows gui }
+   else wrtwrd($0003); { subsystem, windows character }
+   wrtwrd($0000); { dll flags (unused) }
+   wrtdwd(stksiz); { stack reserve size }
+   { oh, here is just a fun one. win95 page faults if you pass the stack commit
+     size, even though it is supposed to autocommit until the reserve is hit !
+     gee, what a suprize, they got it wrong again. the solution is to simply
+     commit it all. jerks }
+   wrtdwd(stksiz{sizpag}); { stack commit size }
+   { does the heap have the same problem as the stack ? }
+   wrtdwd(hepsiz); { heap reserve size }
+   wrtdwd(sizpag); { heap commit size }
+   wrtdwd($00000000); { loader flags (unused) }
+   wrtdwd($00000010); { RVA table length }
+   wrtdwd($00000000); { export table RVA (unused) }
+   wrtdwd($00000000); { export table data size (unused) }
+   wrtdwd(imploc-basadr); { import table RVA (unused) }
+   wrtdwd(isizep); { import table data size (unused) }
+   wrtdwd($00000000); { resource table RVA (unused) }
+   wrtdwd($00000000); { resource table data size (unused) }
+   wrtdwd($00000000); { exception table RVA (unused) }
+   wrtdwd($00000000); { exception table data size (unused) }
+   wrtdwd($00000000); { security table RVA (unused) }
+   wrtdwd($00000000); { security table data size (unused) }
+   wrtdwd($00000000); { fixup table RVA (unused) }
+   wrtdwd($00000000); { fixup table data size (unused) }
+   wrtdwd($00000000); { debug table RVA (unused) }
+   wrtdwd($00000000); { total debug directories (unused) }
+   wrtdwd($00000000); { image description RVA (unused) }
+   wrtdwd($00000000); { total description size (unused) }
+   wrtdwd($00000000); { machine specific RVA (unused) }
+   wrtdwd($00000000); { machine specific size (unused) }
+   wrtdwd($00000000); { thread local storage RVA (unused) }
+   wrtdwd($00000000); { thread local storage size (unused) }
+
+   { pad to the end of the header at $178 }
+   for i := 1 to hdrsiz-hdrfix do write(exefil, $00)
+
+end;
+
+{******************************************************************************
+
+Output object area
+
+Outputs the .exe object descriptions. The objects are regions in the memory of
+the final program.
+the number of objects seems to be malable, but certain utilities appear to rely
+on data being in the "right form" for objects (notably quickview). We want
+these things to work, so we emulate the original objects as closely as
+possible.
+The original microsoft objects and meanings are:
+
+   .text  - Program code. Corresponds to our program space.
+   .rdata - debug data. Untsed.
+   .data  - believed to be the global variables area. Corresponds to
+            our variables area, except that we do not initalize it.
+   .idata - The import table. We use this.
+   .rsrc  - Resource data. Unused at the present.
+   .reloc - Fixup data. Unused.
+
+The object descriptors live in the region between $178 and $3ff in the output
+file.
+
+******************************************************************************}
+
+procedure outobj;
+
+var i: integer;
+
+begin
+
+   { these are the objects, in the same order they appear in the file }
+
+   strpad8('.text   ');   { name }
+   wrtdwd(psizep);        { program virtual size }
+   wrtdwd(pgmloc-basadr); { program RVA }
+   wrtdwd(psizef);        { program physical size }
+   wrtdwd(pgmlocf); { program physical offset }
+   wrtdwd($00000000);     { pointer to relocations (unused) }
+   wrtdwd($00000000);     { pointer to line numbers (unused) }
+   wrtwrd($0000);         { number of relocations (none) }
+   wrtwrd($0000);         { number of line numbers (none) }
+   { object flags: readable, executable, contains code }
+   wrtdwd($60000020);
+
+   strpad8('.bss    ');   { name }
+   wrtdwd(vsizep);        { variables virtual size }
+   wrtdwd(varloc-basadr); { variables RVA }
+   wrtdwd($00000000);     { program physical size (unused) }
+   wrtdwd($00000000);     { program physical offset (unused) }
+   wrtdwd($00000000);     { pointer to relocations (unused) }
+   wrtdwd($00000000);     { pointer to line numbers (unused) }
+   wrtwrd($0000);         { number of relocations (none) }
+   wrtwrd($0000);         { number of line numbers (none) }
+   { object flags: readable, writeable, executable, contains uninitalized 
+     data }
+   wrtwrd($0080); { real word is $e0000080, to large for integer }
+   wrtwrd($e000);
+
+   strpad8('.idata  ');   { name }
+   wrtdwd(isizep);        { import virtual size }
+   wrtdwd(imploc-basadr); { import RVA }
+   wrtdwd(isizef);        { import physical size }
+   wrtdwd(implocf);       { import physical offset (4kb) }
+   wrtdwd($00000000);     { pointer to relocations (unused) }
+   wrtdwd($00000000);     { pointer to line numbers (unused) }
+   wrtwrd($0000);         { number of relocations (none) }
+   wrtwrd($0000);         { number of line numbers (none) }
+   { object flags: readable, contains initalized data }
+   wrtdwd($40000040);
+
+   if fcoffsym then begin { output COFF object }
+
+      strpad8('.sym    ');   { name }
+      wrtdwd(sysizep);       { symbols virtual size }
+      wrtdwd(syloc-basadr);  { symbols RVA }
+      wrtdwd(sysizef);       { symbols physical size }
+      wrtdwd(sylocf);        { symbols physical offset (4kb) }
+      wrtdwd($00000000);     { pointer to relocations (unused) }
+      wrtdwd($00000000);     { pointer to line numbers (unused) }
+      wrtwrd($0000);         { number of relocations (none) }
+      wrtwrd($0000);         { number of line numbers (none) }
+      { object flags: readable, discardable, contains initalized data }
+      wrtdwd($42000040);
+
+   end;
+
+   if fstabssym then begin { output STABS objects }
+
+      strpad8('.stab   ');   { name }
+      wrtdwd(stsysizep);     { symbols data virtual size }
+      wrtdwd(stsyloc-basadr);  { symbols data RVA }
+      wrtdwd(stsysizef);     { symbols data physical size }
+      wrtdwd(stsylocf);      { symbols data physical offset (4kb) }
+      wrtdwd($00000000);     { pointer to relocations (unused) }
+      wrtdwd($00000000);     { pointer to line numbers (unused) }
+      wrtwrd($0000);         { number of relocations (none) }
+      wrtwrd($0000);         { number of line numbers (none) }
+      { object flags: readable, shareable, discardable, contains initalized data }
+      wrtdwd($52000040);
+
+      strpad8('.stabstr');   { name }
+      wrtdwd(sssysizep);     { symbols strings virtual size }
+      wrtdwd(sssyloc-basadr);  { symbols strings RVA }
+      wrtdwd(sssysizef);     { symbols strings physical size }
+      wrtdwd(sssylocf);      { import physical offset (4kb) }
+      wrtdwd($00000000);     { pointer to relocations (unused) }
+      wrtdwd($00000000);     { pointer to line numbers (unused) }
+      wrtwrd($0000);         { number of relocations (none) }
+      wrtwrd($0000);         { number of line numbers (none) }
+      { object flags: readable, discardable, contains initalized data }
+      wrtdwd($42000040);
+
+   end;
+
+   { pad to first object }
+   for i := 1 to sizhdrf-(128+24+hdrsiz+(objnum*40)) do write(exefil, 0)
+
+end;
+
+{******************************************************************************
+
+Get new module name entry
+
+Gets a new module name entry.
+
+******************************************************************************}
+
+procedure getmod(var mp: modptr);
+
+begin
+
+   new(mp); { get a new entry }
+   mp^.next := nil; { terminate entry }
+   mp^.name := nil; { set no name }
+   mp^.mname := nil; { set module name empty }
+   mp^.dup := false; { set not duplicated }
+   mp^.ref := false { set not referenced }
+
+end;
+
+{******************************************************************************
+
+Find module name entry
+
+Finds a module name entry matching the given module name.
+
+******************************************************************************}
+
+function fndmod(view s: string): modptr;
+
+var p, r: modptr; { pointers for symbol table }
+
+begin
+   
+   r := nil; { clear result pointer }
+   p := modtbl[hash(s, 0, modmax)]; { index the top entry }
+   while p <> nil do begin { traverse chain }
+
+      if compp(s, p^.name^) then begin { entry found }
+
+         r := p; { place result pointer }
+         p := nil { nix search pointer }
+
+      end else p := p^.next { index next entry }
+
+   end;
+
+   fndmod := r { return result pointer }
+
+end;
+
+{******************************************************************************
+
+Place module symbol
+
+Places a new module name entry. Any previous module name is found, and if there
+is one, it is flagged as a duplicate and no further action takes place. If not,
+then the name is placed in a new module name entry.
+
+In our model, names are coined by their module, so c:\windows\mymod.dll
+containing export findit becomes "mymod_findit". This is entered into the
+module symbol dictionary.
+
+Also counts module duplicates found.
+
+******************************************************************************}
+
+procedure newmod(view n:  string;    { exported symbol }
+                      mn: pstring;   { module filename }
+                 view nm: string;    { module name alone }
+                 var  cnt: integer); { duplicates count }
+
+var p: modptr; { module name pointer }
+    i: modinx; { index for module name table }
+    b: labl;   { buffer for coining }
+
+begin
+
+   { produce coined module symbol of the form "module_symbol" }
+   copy(b, nm); { place module }
+   trans(b); { transmute }
+   cat(b, '_'); { separate }
+   cat(b, n); { add symbol }
+   p := fndmod(b); { find any previous module export by that name }
+   if p <> nil then begin
+
+      p^.dup := true; { flag as duplicate }
+      cnt := cnt+1 { count duplicates }
+
+   end else begin { enter new module name }
+
+      getmod(p); { get a new entry }
+      p^.name := copy(b); { place name }
+      p^.mname := mn; { place module filename }
+      i := hash(b, 0, modmax); { find the top entry }
+      p^.next := modtbl[i]; { place the next entry link }
+      modtbl[i] := p { plant our symbol }
+
+   end
+
+end;   
+
+{******************************************************************************
+
+Find dll module
+
+Finds a dll module in the source list by name. Returns the file source entry
+pointer if found, otherwise nil.
+ 
+******************************************************************************}
+
+function fnddll(view s: string): fdtptr;
+
+var fp, p: fdtptr; { source list pointer }
+
+begin
+
+   fp := nil; { set no entry found }
+   p := srclst; { index 1st entry }
+   p := p^.next; { skip output file }
+   p := p^.next; { skip input file }
+   while p <> nil do begin { traverse }
+
+      if compp(s, p^.nam) then fp := p; { set found }
+      p := p^.next
+
+   end;
+
+   fnddll := fp { return result }
+
+end;
+
+{******************************************************************************
+
+Add dlls from catalog file
+
+For each undefined in the object, a catalog lookup is performed. If a catalog
+entry is found, then the dll that contains the reference is added to the
+dll files inport list, which should be already set to the files the user
+specified.
+
+If the undefined name references a duplicated dll entry, then an error results.
+ 
+******************************************************************************}
+
+procedure adddll;
+
+var sp:   symptr;  { pointer for symbols }
+    mp:   modptr;  { module data pointer }
+    fp:   fdtptr;  { source list pointer }
+    dref: boolean; { duplicate was referenced }
+
+begin
+
+   sp := symtab; { index top symbol }
+   dref := false; { set no duplicates referenced }
+   while sp <> nil do begin { traverse }
+
+      if (sp^.lab <> nil) and not sp^.def then begin { symbol undefined }
+
+         mp := fndmod(sp^.lab^); { find module entry if exists }
+         if mp <> nil then begin { found, enter new module definition }
+
+            if mp^.dup then begin
+
+               writeln('Symbol: ', sp^.lab^, 
+                       ' references an entry that exists in multiple modules');
+               dref := true { set duplicate was referenced }
+
+            end;
+            fp := fnddll(mp^.mname^); { check already in source list }
+            if fp = nil then begin { no, create new entry }
+
+               getsrc(fp); { get a new source entry }
+               copy(fp^.nam, mp^.mname^); { place dll file name }
+               if fverb then writeln('Adding .dll module: ', mp^.mname^:0)
+
+            end
+
+         end
+
+      end;
+      sp := sp^.next { link next symbol }
+
+   end;
+   if dref then begin { stop on duplicate referenced }
+
+      writeln('Duplicate symbols in dlls were referenced, halting');
+      goto 99
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Find file on paths
+
+Finds the given file on multple paths. Searches in order these paths:
+
+1. The current directory.
+2. The user path.
+3. The program path.
+
+This search order is typical for program related data files. The master path
+is the same location the program came from, the program path. The user path
+would allow each user to override the master installation. Finally, placing
+a file in the current directory overrides all others.
+
+The resulting path is returned in the same string. The status returns true if
+the file is found.
+
+*******************************************************************************}
+
+procedure fndpth(var fn: string;   { filename to find }
+                 var ff: boolean); { file found flag }
+
+var pth:     filnam;  { search path }
+    p, n, e: filnam; { filename components }
+
+begin
+
+   brknam(fn, p, n, e); { break up filename given }
+   ff := false; { set no catalog file found }
+   maknam(fn, '', n, e); { try current directory }
+   if exists(fn) then ff := true
+   else begin { search paths for it }
+   
+      getusr(pth); { get the user path }
+      maknam(fn, pth, n, e); { create name }
+      if exists(fn) then ff := true
+      else begin { search the program path }
+
+         getpgm(pth); { get the program path }
+         maknam(fn, pth, n, e); { create name }
+         ff := exists(fn)
+
+      end
+
+   end;
+
+end;
+
+{*******************************************************************************
+
+Parse and load catalog file
+
+Parses and loads the catalog file. The catalog file is allways "catalog", and
+has the format:
+
+WBTRV32 WBTRVINIT
+
+The first line item is the module name, as in WBTRV32.dll. The second is the 
+export name. The module gives the dll file that contains the export, and will
+be used to coin the reference so that it can be attached to the correct
+module.
+
+Note: we pretty much expect the module names to appear in sequence. We keep
+a module name in storage that is used to label all entries, and that is only
+changed when the module name changes in the file. If the module names were
+all mixed up, many duplicate module names would be created.
+
+*******************************************************************************}
+
+procedure parcat(view cfn: string);
+
+label nextline; { go to next line }
+
+var cathan:    parhan;  { handle for instruction parsing }
+    modl, exp: labl;    { labels to parse }
+    err:       boolean; { parsing error }
+    mn:        pstring; { running module name }
+    dupcnt:    integer; { duplicate counter }
+    pm, nm, em: labl; { module filename parts }
+
+procedure caterr(view es: string);
+
+begin
+
+   prterr(cathan, output, es, true); { print error }
+   getlin(cathan); { skip to new line }
+   goto nextline
+
+end;
+   
+begin
+
+   mn := nil; { clear module name }
+   dupcnt := 0; { clear duplicate count }
+   if fverb then writeln('Reading catalog file ', cfn:0);
+   openpar(cathan); { open parser }
+   openfil(cathan, cfn, cmdmax); { open file to parse }
+
+   nextline: { start new line }
+
+   while not endfil(cathan) do begin { process instructions }
+   
+      skpspc(cathan); { skip leading spaces }
+      if chkchr(cathan) = '!' then { skip comment line }
+         while not endlin(cathan) do getchr(cathan)
+      else if not endlin(cathan) then begin { command line }
+
+         parfil(cathan, modl, true, err); { get module name }
+         if err then caterr('Invalid catalog syntax');
+         parlab(cathan, exp, err); { get export name }
+         if err then caterr('Invalid catalog syntax');
+         if mn = nil then begin
+
+            mn := copy(modl); { create a new module name }
+            brknam(mn^, pm, nm, em) { extract the name }
+
+         end else
+            { also create one if the names don't match }
+            if not compp(mn^, modl) then begin
+
+            mn := copy(modl); { create new module name }
+            brknam(mn^, pm, nm, em) { extract the name }
+
+         end;
+         newmod(exp, mn, nm, dupcnt); { create new module name }
+         skpspc(cathan); { skip trailing spaces }
+         if chkchr(cathan) = '!' then { skip comment line }
+            while not endlin(cathan) do getchr(cathan);
+         if not endlin(cathan) then caterr('Invalid catalog symtax')
+         
+      end;
+      getlin(cathan) { skip to new line }
+
+   end;
+   closefil(cathan);
+   if dupcnt > 0 then
+      if fverb then 
+         writeln('Catalog file contains ', dupcnt:1, ' duplicate exports');
+
+end;
+
+{*******************************************************************************
+
+Load precalculated catalog file
+
+An alternative to the standard text based catalog file is a precalculated index
+file. This file is in "catalog.inx", and it contains the full catalog 
+preprocessed in hash table form. It is generated by the "geninx" program, and
+has the format:
+
+The index is output into a file called "catalog.inx". The file has the  
+following format:                                                       
+                                                                        
+1. A signature, '.inx'.                                                 
+2. The number of module files.                                          
+3. The number of symbol names.                                          
+4. The hash length (size of hash table used).                           
+5. Module filename dictionary.                                          
+6. Symbol name dictionary.                                              
+                                                                        
+Symbols are carried in strings, and each string consists of:            
+                                                                        
+1. Len (8 bits).                                                        
+2. Data (N*bytes).                                                      
+                                                                        
+The length gives the number of characters in the string that follows.   
+                                                                        
+The module filename directory is simply a series of strings containing  
+filenames of .dll modules with their complete paths. Each module filename
+in the file is numbered from 1 to N, and these numbers are referenced by 
+the symbols that follow.                                                 
+                                                                         
+The hash length is a 32 bit big endian word that contains the hash table 
+length.                                                                  
+                                                                         
+Each symbol in the symbol name dictionary has the following format:      
+                                                                         
+1. Symbol string.                                                        
+2. Number of containing module (32 bits big endian).                     
+3. Duplicate flag (8 bits, 0 or 1).                                      
+                                                                         
+Symbols are arranged in "lists" according to the hash table entry they   
+belong under. Each list is terminated by a null string. Each entry of the
+table, 1 to the table size, has its list appearing in order. A list can be
+null.                                                                     
+                                                                          
+The number of lists should match the number of table entries, or it is an 
+error.                                                                    
+
+*******************************************************************************}
+
+procedure loadcat(view cfn: string);
+
+type pstarr = array of pstring;
+
+var catfil: bytfil; { catalog file }
+    modnum: integer; { number of module files }
+    symnum: integer; { number of symbols }
+    hshlen: integer; { hash length }
+    pstptr: ^pstarr; { array of module names }    
+    logmod: integer; { logical module number }
+    sp:     pstring; { symbol string }
+    mp:     modptr;  { module export pointer }
+    b:      byte;
+    i:      integer;
+
+{ read 32 bit big endian unsigned }
+
+procedure readbe32(var f: bytfil;   { file to read from }
+                   var i: integer); { integer to read }
+
+var b: byte;
+
+begin
+
+   read(f, b); { get high }
+   i := b*16777216;
+   read(f, b); { get high middle }
+   i := i+b*65536;
+   read(f, b); { get low middle }
+   i := i+b*256;
+   read(f, b); { get low }
+   i := i+b;
+
+end;
+
+{ read length first string from file }
+
+procedure readlstr(var f: bytfil; { file to read from }
+                   var p: pstring); { string to read }
+
+var b, l: byte;
+    i:    integer;
+
+begin
+
+   p := nil; { clear result string }
+   read(f, l); { get length }
+   if l > 0 then begin { get string }
+
+      new(p, l); { create a string }
+      for i := 1 to l do begin { read string }
+
+         read(f, b); { get a character }
+         p^[i] := chr(b) { place }
+
+      end
+
+   end
+
+end;
+
+begin
+
+   if fverb then writeln('Reading catalog file ', cfn:0);
+
+   { open the catalog file }
+
+   assign(catfil, cfn);
+   reset(catfil);
+
+   { check contains signature, '.inx' }
+   read(catfil, b);
+   if b <> ord('.') then error(ecatfmt); { bad format }
+   read(catfil, b);
+   if b <> ord('i') then error(ecatfmt);
+   read(catfil, b);
+   if b <> ord('n') then error(ecatfmt);
+   read(catfil, b);
+   if b <> ord('x') then error(ecatfmt);
+   readbe32(catfil, modnum); { get number of modules }
+   readbe32(catfil, symnum); { get number of symbols }
+   readbe32(catfil, hshlen); { get hash length }
+   if hshlen <> modmax then error(ecatfmt); { hash table mismatch }
+   new(pstptr, modnum); { create module filename array }
+   for i := 1 to modnum do { read in module filename array }
+      readlstr(catfil, pstptr^[i]);
+   for i := 1 to hshlen do { read in symbols }
+      repeat { read symbols in this hash lane }
+   
+         readlstr(catfil, sp); { get symbol }
+         if sp <> nil then begin { place symbol in lane }
+
+            readbe32(catfil, logmod); { get logical module number for symbol }
+            read(catfil, b); { get duplicate flag }
+            getmod(mp); { get module entry pointer }
+            mp^.name := sp; { place symbol name }
+            mp^.mname := pstptr^[logmod]; { place module filename }
+            mp^.dup := b <> 0; { place duplicate flag }
+            mp^.next := modtbl[i]; { push to top of lane }
+            modtbl[i] := mp
+
+         end
+
+      until sp = nil; { until the end of this lane }
+
+   dispose(pstptr); { release module filename array }
+   { close catalog file }
+   close(catfil)
+
+end;
+
+{*******************************************************************************
+
+Normalize dll files
+
+Normalizes the dll files in the source list by completing the path, then adding
+a dll extention to any filename missing an extention. We need to normalize
+filenames so that they can be matched up to catalog file specifications.
+
+*******************************************************************************}
+
+procedure normdll;
+
+var fp:      fdtptr; { file entry pointer }
+    p, n, e: filnam; { path components }
+
+begin
+
+   fp := srclst; { index source list }
+   fp := fp^.next; { skip output file }
+   fp := fp^.next; { index the first dll file }
+   while fp <> nil do begin { normalize }
+
+      fulnam(fp^.nam); { complete path }
+      brknam(fp^.nam, p, n, e); { break down path }
+      if len(e) = 0 then copy(e, 'dll'); { if no extention, place ours }
+      maknam(fp^.nam, p, n, e); { reconstruct }
+      fp := fp^.next { next in list }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Main process
+
+*******************************************************************************}
+
+begin { main }
+
+   write('Portable executive file generator vs. 1.14.0001 copyright (C) 2005 ');
+   writeln('S. A. Moore');
+   import := nil; { clear import directory }
+   cputyp := $014c; { set I80386 cpu type (lowest common denominator) }
+   stksiz := 1048576; { set default stack size (1mb) }
+   hepsiz := 1048576; { set default heap size (1mb) }
+   srclst := nil; { clear files list }
+   srclas := nil; { clear files next }
+   fverb := false; { set no verbose }
+   fgui := false; { set character type }
+   fcoffsym := false; { do not generate COFF symbols }
+   fstabssym := false; { do not generate STABS symbols }
+   fopnout := false; { set no output file open }
+   fgetcat := true; { set pick up default catalog file }
+   ftxtcat := false; { no force text catalog }
+   dlllst := nil; { clear dll list }
+   symtab := nil; { clear symbol table }
+   rldtab := nil; { clear rld table }
+   pstrf  := false; { set program start found false }
+   pendf  := false; { set program end found false }
+   vstrf  := false; { set variable start found false }
+   vendf  := false; { set variable end found false }
+   fresym := nil; { clear free symbol entries list }
+   pstr   := nil; { clear program start symbol link }
+   pend   := nil; { clear program end symbol link }
+   vstr   := nil; { clear variable start symbol link }
+   vend   := nil; { clear varaible end symbol link }
+   pgmloc := 0; { set 0 as default program base (don't know yet) }
+   varloc := 0; { set 0 as default variables base (don't know yet) }
+   poff   := 0; { set current program frame offset to 0 }
+   voff   := 0; { set current variable frame offset to 0 }
+   pstrv  := 0; { clear program start value }
+   pendv  := 0; { clear program end value }
+   vstrv  := 0; { clear variable start value }
+   vendv  := 0; { clear variable end value }
+   prgmc  := 0; { final output program counter }
+   syminx := 1; { clear symbols cache index }
+   symtop := 1; { clear symbols cache top }
+   objinx := 1; { clear input object cache index }
+   objtop := 1; { clear input object cache top }
+   exeinx := 1; { clear output exe cache index }
+   objnum := 3; { set minimum number of objects }
+   symnum := 0; { set no symbols in program }
+   { clear COFF symbol parameters in case not output }
+   sysize := 0;
+   sysizep := 0;
+   sysizef := 0;
+   syloc := 0;
+   sylocf := 0;
+   { clear STABS symbol parameters in case not output }
+   stsysize := 0;
+   stsysizep := 0;
+   stsysizef := 0;
+   stsyloc := 0;
+   stsylocf := 0;
+   sssysize := 0;
+   sssysizep := 0;
+   sssysizef := 0;
+   sssyloc := 0;
+   sssylocf := 0;
+   for mi := 1 to modmax do modtbl[mi] := nil; { clear module name table }
+   for ei := 1 to expmax do exptbl[ei] := nil; { clear export name table }
+   { Form character to ASCII value translation array from ASCII value to 
+     character translation array. }
+   for i := 1 to 255 do trnchr[chr(i)] := 0; { null out array }
+   for i := 1 to 127 do trnchr[chrtrn[i]] := i; { form translation }
+
+   filchr(valfch); { get the filename valid characters }
+   valfch := valfch-['=']; { remove parsing characters }
+   { get command line }
+   reads(command, cmdlin, cmdovf);
+   if cmdovf then error(ecmdovf); { too long }
+   cmdlen := len(cmdlin); { find length }
+   cmdptr := 1; { set 1st character }
+   parcmd; { parse command line }
+
+   { delete the output file if it exists }
+   addext(srclst^.nam, 'exe', true);
+   if exists(srclst^.nam) then delete(srclst^.nam);
+   fp := srclst; { index source list }
+   fp := fp^.next; { skip output file }
+   { validate both files exist }
+   addext(fp^.nam, 'sym', true); { try to find .sym file }
+   if not exists(fp^.nam) then begin { non-existant }
+
+      errfil := fp^.nam; { place filename for errors }
+      error(efilnf) { file not found error }
+
+   end;
+   addext(fp^.nam, 'obj', true); { try to find .obj file }
+   if not exists(fp^.nam) then begin { non-existant }
+
+      errfil := fp^.nam; { place filename for errors }
+      error(efilnf) { file not found error }
+
+   end;
+   { check if we are to look for a standard catalog file }
+   if fgetcat then begin
+
+      cf := false; { set no file found }
+      if not ftxtcat then begin
+
+         { check precalculated index catalog file exists }
+         copy(cfn, 'catalog.inx'); { set catalog name }
+         fndpth(cfn, cf); { find on paths }
+         if cf then loadcat(cfn); { yes, use that }
+
+      end;
+      { if no binary catalog was loaded }
+      if not cf then begin { look for text based catalog file }
+
+         copy(cfn, 'catalog.cat'); { set catalog name }
+         fndpth(cfn, cf); { find on paths }
+         if cf then parcat(cfn) { yes, use that }
+
+      end
+
+   end;
+   { read in the source symbol deck }
+   addext(fp^.nam, 'sym', true); { set .sym file }
+   assign(symfil, fp^.nam); { open symbols file }
+   reset(symfil);
+   rdsyms; { read symbols deck }
+   close(symfil); { close symbols file }
+   { add optional objects }
+   if fcoffsym then objnum := objnum+1; { COFF symbols }
+   if fstabssym then objnum := objnum+2; { STABS symbols }
+   psize := pendv-pstrv; { find true program size }
+   vsize := vendv-vstrv; { find true variable size }
+   psizep := pagsiz(psize); { find program size in pages }
+   psizef := filsiz(psize); { find program size in file blocks }
+   vsizep := pagsiz(vsize); { find variable size in pages }
+   vsizef := filsiz(vsize); { find variable size in file blocks }
+   poff := -pstrv; { zero program and variable locations }
+   voff := -vstrv;
+   adjusts;
+   normdll; { normalize dll files }
+   adddll; { add dlls from undefined references }
+   { read all the dll's in }
+   fp := fp^.next; { index the first dll file }
+   while fp <> nil do begin { read dlls/catalogs }
+
+      if not chkext(fp^.nam) then begin { no extention present }
+
+         addext(fp^.nam, 'dll', true); { try .dll extention first }
+         if not exists(fp^.nam) then begin { no file }
+
+            addext(fp^.nam, 'exe', true); { try .exe extention }
+            if not exists(fp^.nam) then begin { not found }
+
+               { put back extention for error }
+               addext(fp^.nam, 'dll', true);
+               errfil := fp^.nam; { place filename for errors }
+               error(efilnf) { file not found }
+
+            end
+
+         end
+
+      { process error for users file extention not found }
+      end else if not exists(fp^.nam) then begin
+
+         errfil := fp^.nam; { place filename for errors }
+         error(efilnf);
+
+      end;
+      readdll(fp^.nam); { load that file's dll spec }
+      fp := fp^.next { index next dll }
+
+   end;
+   condll; { connect undefineds to dll references }
+
+   { we process the layout of the symbols twice. first to determine the
+     file layout, second to actually locate it. This is required because
+     we need to know the number of symbols present in the final deck
+     before the layout (for the symbols section), and that can change
+     after resolutions. Needless to say, this can slow down the program
+     run, so we might rethink this }
+   resdll; { resolve dll linkages }
+   srtrld; { sort rld deck }
+   origin; { locate program to destination }
+   symops; { perform all symbols operations }
+   { the data tables have been created. now we layout the format of the module }
+   pgmloc := basadr+sizpag; { locate program after headers }
+   pgmlocf := sizhdrf; { locate program in file }
+   varloc := pgmloc+psizep; { locate variables after program }
+   varlocf := pgmlocf+psizef; { locate variables in file }
+   imploc := varloc+vsizep; { set location of import directory }
+   implocf := pgmlocf+psizef; { set location in file (after program) }
+   imprva := imploc-basadr; { set RVA of imports }
+   impsiz; { find length of import area }
+   isizep := pagsiz(isize); { find length to page }
+   isizef := filsiz(isize); { find length in file blocks }
+   cntsym; { count symbols }
+   if fcoffsym then symsiz; { find length of symbols area for COFFS }
+   if fstabssym then begin
+
+      { find lengths of symbols data and string for STABS }
+      stsymsiz;
+      sssymsiz
+
+   end;
+   { find symbol page sizes }
+   sysizep := pagsiz(sysize); { find length to page }
+   sysizef := filsiz(sysize);
+   stsysizep := pagsiz(stsysize);
+   stsysizef := filsiz(stsysize);
+   sssysizep := pagsiz(sssysize);
+   sssysizef := filsiz(sssysize);
+   syloc := imploc+isizep; { set location of symbols }
+   sylocf := implocf+isizef; { set location in file (after inports) }
+   stsyloc := syloc+sysizep; { set location of symbols }
+   stsylocf := sylocf+sysizef; { set location in file (after inports) }
+   sssyloc := stsyloc+stsysizep; { set location of symbols }
+   sssylocf := stsylocf+stsysizef; { set location in file (after inports) }
+   { locations are done, now we cross link all the data tables }
+   impres(imprva); { assign import addresses }
+   resdll; { resolve dll linkages }
+   srtrld; { sort rld deck }
+   origin; { locate program to destination }
+   symops; { perform all symbols operations }
+   fndmax; { find maximum length of symbols }
+   report; { report any undefined symbols }
+   if fundef then error(eundef); { undefineds exist }
+   { now we have the complete layout of the final program, so we may just
+     output all the sections }
+   addext(srclst^.nam, 'exe', true); { open the output file }
+   assign(exefil, srclst^.nam);
+   rewrite(exefil);
+   copy(exenam, srclst^.nam); { save exe name }
+   fopnout := true; { set output file open }
+   outdos; { output MSDOS header }
+   outpe; { output PE header }
+   outobj; { output object directory }
+   fp := srclst^.next; { open the object file }
+   addext(fp^.nam, 'obj', true);
+   assign(objfil, fp^.nam);
+   reset(objfil);
+   prgmc := pgmloc; { set 1st program count }
+   prcobj; { output program section }
+   close(objfil); { close object file }
+   impgen; { generate import directory }
+   if fcoffsym then symgen; { generate symbols table }
+   if fstabssym then begin { generate STABS symbol table }
+
+      stsymgen; { symbols data table }
+      sssymgen { symbols string table }
+
+   end;
+   close(exefil); { close output file }
+   fopnout := false; { set output not open }
+   { generate layout report }
+   if fverb then begin
+
+      writeln;
+      write('Memory organization for '); write(output, srclst^.nam:0);
+      writeln(':');
+      writeln;
+      write('Image base:            $'); prthex(8, basadr); writeln;
+      write('PE header:             $'); prthex(8, basadr); writeln;
+      write('Program section:       $'); prthex(8, pgmloc); writeln;
+      write('Variable section:      $'); prthex(8, varloc); writeln;
+      write('Import directory:      $'); prthex(8, imploc); writeln;
+      write('Symbol table:          $'); prthex(8, syloc); writeln;
+      { find next allocation unit for heap }
+      i := (varloc+vsize) div vmalloc*vmalloc;
+      if ((varloc+vsize) mod vmalloc) <> 0 then i := i+vmalloc;
+      write('Heap section:          $'); prthex(8, i); writeln;
+      i := i+hepsiz; { find base of stack }
+      write('Stack overflow guard:  $'); prthex(8, i); writeln;
+      i := i div vmalloc*vmalloc+vmalloc; { find next boundary }
+      write('Stack allocation:      $'); prthex(8, i); writeln;
+      i := i+stksiz; { find end of stack space }
+      write('Stack underflow guard: $'); prthex(8, i); writeln;
+      i := i div vmalloc*vmalloc+vmalloc; { find next boundary }
+      write('Program free memory:   $'); prthex(8, i); writeln
+
+   end;
+
+   99: { terminate program }
+
+end.

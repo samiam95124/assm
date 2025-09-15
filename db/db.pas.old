@@ -1,0 +1,2186 @@
+program db(input, output);
+
+uses dbdef,
+     simcpu;
+
+label loop, { loop command statements }
+      88,   { resume next line }
+      99;   { terminate debugger }
+
+var 
+
+   objfil:  bytfil; { object file }
+   memory:  array [0..maxmem] of byte; { processor simulated memory }
+   addr:    integer; { address for memory }
+   proglen: integer; { length of loaded program }
+   cpu:     record { 8080 CPU context }
+
+      pc:  word;    { register pc }
+      sp:  word;    { register sp }
+      ie:  boolean; { interrupt enable flag }
+      case boolean of { word/byte access }
+
+         { here we are using an undiscriminated union to gain two different
+           viewpoints of each register. this is dependent on a little endian
+           processor, and must be changed to reside on a big endian processor }
+         true:  (af, bc, de, hl: word); { word access }
+         false: (fz: boolean; { zero flag }
+                 fc: boolean; { carry flag }
+                 fa: boolean; { auxilliary carry flag }
+                 fs: boolean; { sign flag }
+                 fp: boolean; { parity flag }
+                 f5: boolean; { extra flag bit 5 }
+                 f3: boolean; { extra flag bit 3 }
+                 f1: boolean; { extra flag bit 1 }
+                 a:  byte;    { register a }
+                 c:  byte;    { register c }
+                 b:  byte;    { register b }
+                 e:  byte;    { register e }
+                 d:  byte;    { register d }
+                 l:  byte;    { register l }
+                 h:  byte)    { register h }
+
+      { end }
+
+   end;   
+   parity:  array [0..255] of boolean; { parity odd/even table }
+   memdis:  integer; { settable memory display pointer }
+   cmdlin:  packed array [lininx] of char; { command input line }
+   cmdlen:  lininx; { length of command line }
+   cmdptr:  lininx; { command line index }
+   excbuf:  packed array [excinx] of byte; { intermediate buffer }
+   excptr:  excinx; { current code fill/execute pointer }
+   labbuf:  labl; { label buffer }
+   tarnam:  filnam; { filename of target program }
+   cmdtab:  array [cmdcod] of labl; { command lookup table }
+   vartab:  array [varcod] of labl; { fixed variables lookup table }
+   stack:   array [stkinx] of integer; { exec operand stack }
+   stkptr:  stkinx; { exec operand stack top }
+   brkadr:  integer; { address of simulated breakpoint routine }
+   brkins:  byte; { breakpoint instruction }
+   brklst:  brkptr; { permenent breakpoint list }
+   tmplst:  brkptr; { temporary breakpoint list }
+   brkfre:  brkptr; { free breakpoint entry list }
+   fstap:   boolean; { allow system tap calls }
+   runcpu:  boolean; { run cpu flag }
+   fidtab:  array [fidinx] of fidrec; { open program files id table }
+   fi:      fidinx; { file table index }
+   i, t, c, bi: integer;
+
+{*******************************************************************************
+
+Abort program
+
+Terminates the program immediately.
+
+*******************************************************************************}
+
+procedure abort;
+
+begin
+
+   goto 99 { terminate program }
+
+end;
+
+{*******************************************************************************
+
+Print error
+
+Prints an error according to the given error code, then aborts the current run
+to input the next command line.
+
+*******************************************************************************}
+
+procedure prterr(e: errcod);
+
+begin
+
+   write('*** ');
+   case e of { error code }
+
+      elabtl:   write('Label too long');
+      ecmdend:  write('End of command expected');
+      ecmdexp:  write('Command expected');
+      elabexp:  write('Label expected');
+      ecmdnf:   write('Command not found');
+      ecmdnimp: write('Command not implemented');
+      ecodovf:  write('Code buffer overflow');
+      enfmt:    write('Invalid numeric format');
+      edbr:     write('Digit beyond radix specified');
+      ecmaexp:  write('"," expected');
+      evarnf:   write('Variable not found');
+      einvprt:  write('I/O port accessed does not exist');
+      einvins:  write('Invalid instruction executed');
+      ehltins:  write('Halt instruction executed');
+      esys:     write('System error: notify S. A. Moore');
+
+   end;
+   writeln;
+   goto 88 { resume next line }
+
+end;
+
+{*******************************************************************************
+
+Print numeric
+
+Print integer in any given radix. Prints the number in the radix given to the
+file given. The number will be given with leading zeros to make up the field
+width.
+
+*******************************************************************************}
+
+procedure prtnum(r:  byte;     { radix to print in }
+                 fd: byte;     { field width }
+                 w:  integer); { value to print }
+
+var i, j: byte;
+    v:    integer;
+
+begin
+
+   for i := 1 to fd do begin { output digits }
+
+      v := w; { save word }
+      for j := 1 to fd - i do v := v div r; { extract digit }
+      v := v mod r; { mask }
+      { convert ascii }
+      if v >= 10 then v := v + (ord('a') - 10)
+      else v := v + ord('0');
+      write(chr(v)) { output }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Find length of instruction
+
+Finds the length of the instruction at the given address. For the 8080, a simple
+set of rules can be used to find the length.
+
+*******************************************************************************}
+
+function instlen(addr: integer): integer;
+
+var l: integer;
+    i: integer;
+
+begin
+
+   l := 1; { set basic instruction length }
+   i := memory[addr]; { get instruction byte }
+   if ((i and $c7) = $06) or ((i and $c7) = $c6) or ((i and $f7) = $d3) then
+      l := l + 1 { immediate byte }
+   else if ((i and $cf) = $01) or ((i and $e7) = $22) or 
+           ((i and $c7) = $c2) or (i = $c3) or
+           ((i and $c7) = $c4) or (i = $cd) or 
+           ((i = $ed) and (memory[(addr+1) and $ffff] = $ff)) then
+      l := l + 2; { immediate word }
+   instlen := l { return length }
+
+end;
+
+{*******************************************************************************
+
+List instruction
+
+Lists the instruction at the given address.
+
+*******************************************************************************}
+
+procedure listinst(addr: integer);
+
+var i: integer; { byte counter }
+
+{ print byte register according to code }
+
+procedure prtreg(r: integer);
+
+begin
+
+   case r and 7 of
+
+      $0: write('b');
+      $1: write('c');
+      $2: write('d');
+      $3: write('e');
+      $4: write('h');
+      $5: write('l');
+      $6: write('m');
+      $7: write('a')
+
+   end
+
+end;
+
+{ print word register according to code }
+
+procedure prtdreg(r: integer);
+
+begin
+
+   case r and 3 of
+
+      $0: write('b');
+      $1: write('d');
+      $2: write('h');
+      $3: write('sp')
+
+   end
+
+end;
+
+{ print word "af mode" register according to code }
+
+procedure prtdregaf(r: integer);
+
+begin
+
+   case r and 3 of
+
+      $0: write('b');
+      $1: write('d');
+      $2: write('h');
+      $3: write('af')
+
+   end
+
+end;
+
+{ print byte with leading "$" }
+
+procedure prtbyt(a: integer);
+
+begin
+
+   write('$');
+   prtnum(16, 2, memory[a])
+
+end;
+
+{ print word with leading "$" }
+
+procedure prtwrd(a: integer);
+
+begin
+   
+   write('$');
+   prtnum(16, 4, memory[a]+memory[a+1]*256)
+
+end;
+
+begin
+
+   prtnum(16, 4, addr); { output list address }
+   write('  ');
+   for i := 1 to instlen(addr) do begin { print bytes of instruction }
+
+      prtnum(16, 2, memory[addr+i-1]);
+      write(' ')
+
+   end;
+   for i := 1 to 3-instlen(addr)+1 do write('   ');
+   write('  ');
+   case memory[addr] of { instruction }
+
+      $37: write('stc');
+      $3f: write('cmc');
+      $04, $0c, $14, $1c, $24, $2c, $34, $3c, $05, $0d, $15, $1d, $25, $2d,
+      $35, $3d: begin 
+
+         if odd(memory[addr]) then write('dcr     ')
+         else write('inr     ');
+         prtreg(memory[addr] div 8)
+
+      end;
+      $2f: write('cma');
+      $27: write('daa');
+      $00: write('nop');
+      $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $4a, $4b, $4c, $4d,
+      $4e, $4f, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $5a, $5b,
+      $5c, $5d, $5e, $5f, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69,
+      $6a, $6b, $6c, $6d, $6e, $6f, $70, $71, $72, $73, $74, $75, $77, $78,
+      $79, $7a, $7b, $7c, $7d, $7e, $7f: begin
+
+         write('mov     ');
+         prtreg(memory[addr] div 8);
+         write(',');
+         prtreg(memory[addr])
+
+      end;
+      $02: write('stax    b');
+      $12: write('stax    d');
+      $0a: write('ldax    b');
+      $1a: write('ldax    d');
+      $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $8a, $8b, $8c, $8d,
+      $8e, $8f, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $9a, $9b, 
+      $9c, $9d, $9e, $9f, $a0, $a1, $a2, $a3, $a4, $a5, $a6, $a7, $a8, $a9, 
+      $aa, $ab, $ac, $ad, $ae, $af, $b0, $b1, $b2, $b3, $b4, $b5, $b6, $b7,
+      $b8, $b9, $ba, $bb, $bc, $bd, $be, $bf: begin
+
+         case memory[addr] div 8 and 7 of
+
+            0: write('add     ');
+            1: write('adc     ');
+            2: write('sub     ');
+            3: write('sbb     ');
+            4: write('ana     ');
+            5: write('xra     ');
+            6: write('ora     ');
+            7: write('cmp     ')
+
+         end;
+         prtreg(memory[addr])
+  
+      end;
+      $07: write('rlc');
+      $0f: write('rrc');
+      $17: write('ral');
+      $1f: write('rar');
+      $c5, $d5, $e5, $f5, $c1, $d1, $e1, $f1, $09, $19, $29, $39, $03, $13,
+      $23, $33, $0b, $1b, $2b, $3b: begin
+
+         case memory[addr] and $cf of
+
+            $c5: write('push    ');
+            $c1: write('pop     ');
+            $09: write('dad     ');
+            $03: write('inx     ');
+            $0b: write('dcx     ')
+
+         end;
+         if (memory[addr] and $cb) = $c1 then prtdregaf(memory[addr] div 16)
+         else prtdreg(memory[addr] div 16)
+   
+      end;
+      $eb: write('xchg');
+      $e3: write('xthl');
+      $f9: write('sphl');
+      $01, $11, $21, $31: begin
+
+         write('lxi     ');
+         prtdreg(memory[addr] div 16);
+         write(',');
+         prtwrd(addr+1)
+   
+      end;
+      $06, $0e, $16, $1e, $26, $2e, $36, $3e: begin
+
+         write('mvi     ');
+         prtreg(memory[addr] div 8);
+         write(',');
+         prtbyt(addr+1)
+
+      end;
+      $c6, $ce, $d6, $de, $e6, $ee, $f6, $fe: begin
+
+         case memory[addr] of
+
+            $c6: write('adi     ');
+            $ce: write('aci     ');
+            $d6: write('sui     ');
+            $de: write('sbi     ');
+            $e6: write('ani     ');
+            $ee: write('xri     ');
+            $f6: write('ori     ');
+            $fe: write('cpi     ')
+
+         end;
+         prtbyt(addr+1)
+
+      end;
+      $22, $2a, $32, $3a: begin
+
+         case memory[addr] div 8 and 3 of 
+
+            $2: write('sta     ');
+            $3: write('lda     ');
+            $0: write('shld    ');
+            $1: write('lhld    ')
+
+         end;
+         prtwrd(addr+1)
+
+      end;
+      $e9: write('pchl');
+      $c0, $c2, $c3, $c4, $c8, $c9, $ca, $cc, $cd, $d0, $d2, $d4, $d8, $da, 
+      $dc, $e0, $e2, $e4, $e8, $ea, $ec, $f0, $f2, $f4, $f8, $fa, $fc: begin
+
+         if odd(memory[addr]) then case memory[addr] and $c6 of
+
+            $c2: write('jmp     ');
+            $c4: write('call    ');
+            $c0: write('ret     ')
+
+         end else begin
+
+            case memory[addr] and $c6 of
+   
+               $c2: write('j');
+               $c4: write('c');
+               $c0: write('r')
+   
+            end;
+            case memory[addr] div 8 and 7 of
+   
+               $00: write('nz     ');
+               $01: write('z      ');
+               $02: write('nc     ');
+               $03: write('c      ');
+               $04: write('po     ');
+               $05: write('pe     ');
+               $06: write('p      ');
+               $07: write('m      ')
+   
+            end
+
+         end;
+         if (memory[addr] and $c6) <> $c0 then prtwrd(addr+1)
+
+      end;
+      $c7, $cf, $d7, $df, $e7, $ef, $f7, $ff: begin
+
+         write('rst     ');
+         write(memory[addr] div 8 and 7)
+
+      end;
+      $fb: write('ei');
+      $f3: write('di');
+      $db: begin write('in      '); prtbyt(addr+1) end;
+      $d3: begin write('out     '); prtbyt(addr+1) end;
+      $76: write('halt');
+      $08, $10, $18, $20, $28, $30, $38, $cb, $d9, $dd, $fd: write('???');
+      $ed: if fstap and (memory[(addr+1) and $ffff] = $ff) then
+              begin write('prtcal  '); 
+                 if memory[(addr+2) and $ffff] > ord(scwrite) then 
+                    write('???') else case memory[(addr+2) and $ffff] of
+
+                    0 { scterm }: write('term');
+                    1 { scopen }: write('open');
+                    2 { scclose }: write('close');
+                    3 { scread }: write('read');
+                    4 { scwrite }: write('write')
+
+                 end
+              end else write('???');
+
+   end;
+   writeln
+
+end;
+
+{*******************************************************************************
+
+Input value from simulated port
+
+Simulates a port read. At the current implementation, only one port is
+simulated, which is the console port at 0. Future extension will probally allow
+arbitrary files to be connected to ports, or perhaps grandiose plans such as the
+virtual port scheme.
+
+*******************************************************************************}
+
+procedure inpprt(    p: word;  { port to input from }
+                 var n: byte); { value to input }
+
+var c: char; { input holding }
+
+begin
+
+   if p > 0 then prterr(einvprt); { invalid port access }
+   read(c); { read a single character }
+   n := ord(c) { place }
+
+end;
+
+{*******************************************************************************
+
+Output value to simulated port
+
+Simulates a port write. At the current implementation, only one port is
+simulated, which is the console port at 0.
+
+*******************************************************************************}
+
+procedure outprt(p: word;  { port to output to }
+                 n: byte); { value to output }
+
+begin
+
+   if p > 0 then prterr(einvprt); { invalid port access }
+   write(chr(n)) { output single character }
+
+end;
+
+{*******************************************************************************
+
+Perform system call
+
+In 8080, the system tap is tripped by the sequence "ed ff xx", where "xx" is
+the system call code in byte form. This number is used because "ed ff" is an
+illegal instruction in 8080, 8085, Z80, Z64180, and Z280 processors. This means
+that a program using this system tap can be migrated upwards to any simulator
+without change.
+The Portable Call Set is used, with 8080 registers. The following calls and
+formats are implemented:
+
+        0 - Terminate program. A contains the termination error code,
+            with A = 0 = no error, and A <> 0 means error. The error code,
+            if <> 0, is printed in text on the console, and the program run
+            halted.
+            When a program gets an error, it may handle the error itself,
+            or pass the error back for printout and termination.
+
+        1 - Open file. A contains the length of the filename, HL points to
+            the first character of the filename, and B contains the file
+            mode flags as follows:
+
+               bit 0 - Open for read.
+               bit 1 - open for write. Both read and write set means open for
+                       read and write, which is not implemented at present. 
+                       No read or write is an error.
+
+            Returns an error code in A, where A <> 0 = error.
+            Returns the file ID of the open file in C, which is 0 if no file
+            was opened.
+
+        2 - Close file. C contains the file ID. Closes the file. Returns the
+            error code in A.
+
+        3 - Read. C contains the file ID, HL contains the block address, and
+            DE contains the block count. Returns the error code in A.
+
+        4 - Write. C contains the file ID, HL contains the block address, and
+            DE contains the block count. Returns the error code in A.
+
+On all system calls, the carry AND zero flags also reflect the error status of
+the call. If an error occured, carry is set and zero is reset. If not, carry is
+reset and zero is set.
+In addition to DOS provided filenames, we implement the following special
+assignments:
+
+        _command - Contains the command line.
+        _console - Talks to the debug console.
+        _input   - Receives input from the debug console.
+        _output  - Prints on the debug console.
+        _error   - Prints on the debug console.
+        _list    - Prints on the printer.
+
+*******************************************************************************}
+
+procedure syscall(cc: byte); { system call code }
+
+var fidn: 0..maxfid; { program fid }
+    fnam: filnam;    { file name buffer }
+
+{ find free fid }
+
+function frefid: fid;
+
+var fi:   fidinx;    { index for program files table }
+    fidn: 0..maxfid; { program fid }
+
+begin
+
+   { search for first open file. We search down in the table so that
+     we will allways return the lowest number possible }
+   fidn := 0; { set fid invalid }
+   for fi := maxfid downto 1 do { search for open fid }
+      if fidtab[fi].sta = fmfree then fidn := fi; { found a free entry }
+   frefid := fidn { return found or null entry }
+
+end;
+
+{ load filename from memory }
+
+procedure lodfil;
+
+var t, l: integer; { temps }
+    ni:   filinx;  { index for filename }
+
+begin
+
+   l := cpu.a; { get length of filename }
+   cpu.a := 0; { set no error }
+   { load filename }
+   for ni := 1 to maxfil do fnam[ni] := ' '; { clear filename }
+   ni := 1; { set 1st filename character }
+   t := cpu.h*256+cpu.l; { get address of filename }
+   while (l > 0) and (memory[t] = ord(' ')) do begin { skip spaces }
+
+      t := t+1; { next character }
+      l := l-1
+
+   end;
+   { read non-space characters into filename }
+   while (l > 0) and (memory[t] <> ord(' ')) do begin
+
+      if ni < maxfil then begin { place filename characters }
+
+         fnam[ni] := chr(memory[t]); { place character }
+         ni := ni+1 { next character }
+
+      end;
+      t := t+1; { next character }
+      l := l-1
+
+   end;
+   { skip trailing spaces }
+   while (l > 0) and (memory[t] = ord(' ')) do begin { skip spaces }
+
+      t := t+1; { next character }
+      l := l-1
+
+   end;
+   { if filename is null (after spaces), or too large, or had
+     embedded blanks, it's invalid }
+   if (ni = 1) or (ni = maxfil) or (l <> 0) then 
+      cpu.a := ord(seivfn) { invalid filename }
+
+end;
+
+{ check filenames equal }
+
+function filequ(var a: filnam; b: filnam): boolean;
+
+var i: filinx;  { index for filenames }
+    m: boolean; { match status }
+
+begin
+
+   m := true; { set default is match }
+   { check all characters match }
+   for i := 1 to maxfil do if a[i] <> b[i] then m := false; { reset match }
+   filequ := m { return match status }
+
+end;
+   
+begin
+
+   if cc > ord(scwrite) then { invalid system call }
+      cpu.a := ord(secal) { flag invalid call }
+   else case cc of { system call }
+
+      0 { scterm }: begin { terminate program }
+
+         runcpu := false; { stop execution }
+         if cpu.a <> 0 then begin { an error was passed }
+
+            write('*** Program error: ');
+            if cpu.a > ord(seeof) then { unknown error }
+               writeln('Unspecified')
+            else case cpu.a of { error code }
+
+               0 { senull  }: ;
+               1 {  secal  }: write('Invalid system call');
+               2 {  semod  }: write('Invalid file mode');
+               3 { sefull  }: write('Maximum files already open');
+               4 { seivfn  }: write('Invalid filename');
+               5 { seexist }: write('Non-existant file');
+               6 {  sefiln }: write('Invalid file number');
+               7 {   seeof }: write('End of file reached')
+
+            end;
+            writeln
+
+         end;
+         cpu.pc := cpu.pc-3; { back up to start of instruction }
+         if cpu.pc < 0 then cpu.pc := cpu.pc+maxmem+1
+
+      end;
+
+      1 { scopen }: begin { open file }
+
+         cpu.c := 0; { set file unopened by default }
+         if (cpu.b <> 1) and (cpu.b <> 2) then 
+            cpu.a := ord(semod) { flag invalid open mode }
+         else begin { open mode is read or write }
+
+            { search for first open file. We search down in the table so that
+              we will allways return the lowest number possible }
+            fidn := frefid; { find free fid }
+            if fidn = 0 then cpu.a := ord(sefull) { flag table full }
+            else begin { open the file }
+
+               lodfil; { load filename from memory }
+               if cpu.a = 0 then begin { filename loaded ok }
+
+                  { check for special files. For the command file, we must
+                    tag this for special handling, as there is no MSDOS
+                    equivalent. The other specials are just handled as
+                    symbolic names for existing MSDOS filenames }
+                  fidtab[fidn].sta := fmfil; { default to normal file }
+                  if filequ(fnam, '_command            ') then
+                     fidtab[fidn].sta := fmcmd { set command file }
+                  else if filequ(fnam, '_console            ') then
+                     fnam := 'CON                 ' { set file }
+                  else if filequ(fnam, '_input              ') then
+                     fnam := 'CON                 ' { set file }
+                  else if filequ(fnam, '_output             ') then
+                     fnam := 'CON                 ' { set file }
+                  else if filequ(fnam, '_error              ') then
+                     fnam := 'CON                 ' { set file }
+                  else if filequ(fnam, '_list               ') then
+                     fnam := 'PRN                 '; { set file }
+                  { open file for read }
+                  if fidtab[fidn].sta <> fmcmd then begin { not command file }
+
+                     if cpu.b = 1 then begin
+
+                        assign(fidtab[fidn].fil, fnam);
+                        reset(fidtab[fidn].fil)
+
+                     end else begin
+
+                        assign(fidtab[fidn].fil, fnam);
+                        rewrite(fidtab[fidn].fil)
+
+                     end;
+                     cpu.c := fidn { place opened file }
+
+                  end
+
+               end
+
+            end
+
+         end
+
+      end;
+
+      2 { scclose }: begin { close file }
+
+         { check file descriptor is non-zero and within limits }
+         if (cpu.c = 0) or (cpu.c > maxfid) then cpu.a := ord(sefiln)
+         { check file at descriptor is open }
+         else if fidtab[cpu.c].sta = fmfree then cpu.a := ord(sefiln)
+         else if fidtab[cpu.c].sta = fmfil then begin { close file }
+
+            close(fidtab[cpu.c].fil); { close the file }
+            fidtab[cpu.c].sta := fmfree; { free fid entry }
+            cpu.c := 0; { set no longer a valid file }
+            cpu.a := 0 { set no error }
+
+         end
+
+      end;
+
+      3 { scread }: begin { read from file }
+
+         { check file descriptor is non-zero and within limits }
+         if (cpu.c = 0) or (cpu.c > maxfid) then cpu.a := ord(sefiln)
+         { check file at descriptor is open }
+         else if fidtab[cpu.c].sta = fmfree then cpu.a := ord(sefiln)
+         else if fidtab[cpu.c].sta = fmfil then begin { read file }
+
+            repeat { read bytes }
+
+               { read a byte }
+               read(fidtab[cpu.c].fil, memory[cpu.h*256+cpu.l]);
+               cpu.l := (cpu.l+1) and $ff; { increment destination }
+               if cpu.l = 0 then cpu.h := (cpu.h+1) and $ff;
+               cpu.e := cpu.e-1;
+               if cpu.e < 0 then begin 
+
+                  cpu.e := cpu.e+$100;
+                  cpu.d := cpu.d-1;
+                  if cpu.d < 0 then cpu.d := cpu.d+$100
+
+               end
+
+            until cpu.d+cpu.e = 0; { until count satisfied }
+            cpu.a := 0 { set no error }
+
+         end
+
+      end;
+
+      4 { scwrite }: begin { write to file }
+
+         { check file descriptor is non-zero and within limits }
+         if (cpu.c = 0) or (cpu.c > maxfid) then cpu.a := ord(sefiln)
+         { check file at descriptor is open }
+         else if fidtab[cpu.c].sta = fmfree then cpu.a := ord(sefiln)
+         else if fidtab[cpu.c].sta = fmfil then begin { write file }
+
+            repeat { write bytes }
+
+               { write a byte }       
+               write(fidtab[cpu.c].fil, memory[cpu.h*256+cpu.l]);
+               cpu.l := (cpu.l+1) and $ff; { increment destination }
+               if cpu.l = 0 then cpu.h := (cpu.h+1) and $ff;
+               cpu.e := cpu.e-1;
+               if cpu.e < 0 then begin 
+
+                  cpu.e := cpu.e+$100;
+                  cpu.d := cpu.d-1;
+                  if cpu.d < 0 then cpu.d := cpu.d+$100
+
+               end
+
+            until cpu.d+cpu.e = 0; { until count satisfied }
+            cpu.a := 0 { set no error }
+
+         end
+
+      end
+
+   end;
+   { set flags for "good" termination }
+   if cpu.a = 0 then begin cpu.fc := false; cpu.fz := true end
+   { set flags for "bad" termination }
+   else begin cpu.fc := true; cpu.fz := false end
+
+end;
+
+{*******************************************************************************
+
+Get a new breakpoint entry
+
+Either recycles an existing breakpoint entry, or returns a new one.
+
+*******************************************************************************}
+
+procedure getbrk(var p: brkptr);
+
+begin
+
+   if brkfre <> nil then begin { get existing free entry }
+
+      p := brkfre; { get top entry }
+      brkfre := brkfre^.next { gap list }
+
+   end else new(p); { get a new entry }
+   p^.addr := 0; { clear entry }
+   p^.data := 0;
+   p^.next := nil
+
+end;
+
+{*******************************************************************************
+
+Put used breakpoint entry
+
+Places a used breakpoint on the free list.
+
+*******************************************************************************}
+
+procedure putbrk(p: brkptr);
+
+begin
+
+   p^.next := brkfre; { link onto free list }
+   brkfre := p
+
+end;
+
+{*******************************************************************************
+
+Set breakpoints in list
+
+Sets all the breakpoints in a list. To set a breakpoint, we save the data
+under the breakpoint location, then place the breakpoint instruction.
+
+*******************************************************************************}
+
+procedure setbrk(p: brkptr);
+
+begin
+
+   while p <> nil do begin { traverse }
+
+      p^.data := memory[p^.addr]; { save data under breakpoint }
+      memory[p^.addr] := brkins; { set breakpoint }
+      p := p^.next { link next break entry }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Remove breakpoints in list
+
+Removes the breakpoints in a list by replacing the origial data under the
+breakpoint instruction.
+
+*******************************************************************************}
+
+procedure resbrk(p: brkptr);
+
+begin
+
+   while p <> nil do begin { traverse }
+
+      memory[p^.addr] := p^.data; { replace data under breakpoint }
+      p := p^.next { link next break entry }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Execute continuously at current address
+
+Sets the breakpoints in the breakpoint list, then sets the run flag and
+steps instructions until the run flag is no longer true. This will happen
+when a breakpoint, halt, error or similar event occurs.
+
+*******************************************************************************}
+
+procedure goins(addr: integer); 
+
+var p: brkptr; { breakpoint list pointer }
+
+begin
+
+   setbrk(brklst); { place all permenant breakpoints }
+   setbrk(tmplst); { place all temporary breakpoints }
+   cpu.pc := addr; { place execute address }
+   runcpu := true; { set run flag on }
+   while (cpu.pc <> brkadr) and runcpu do exeins; { execute forever }
+   if cpu.pc = brkadr then begin
+
+      { a breakpoint was hit, or something really stupid happened.
+        in any case, we do just what the cpu would do, and so we clean
+        it up the same way }
+      { restore address }
+      cpu.pc := memory[cpu.sp]+memory[(cpu.sp+1) and $ffff]*256-1;
+      cpu.sp := cpu.sp+2 { restore stack }
+
+   end;
+   resbrk(brklst); { remove all permenant breakpoints }
+   resbrk(tmplst); { remove all temporary breakpoints }
+   { purge the temporary breakpoints list }
+   while tmplst <> nil do begin { purge }
+
+      p := tmplst; { index top entry }
+      tmplst := tmplst^.next; { gap list }
+      putbrk(p) { free entry }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Display current CPU status
+
+The cpu status display outputs the registers, flags, what is at the pointer
+registers, and the top section of the stack. This is followed by the next
+instruction to execute.
+
+*******************************************************************************}
+
+procedure display;
+
+var i: integer; { byte count }
+    t: integer; { temp }
+p: integer;
+
+begin
+
+p := 256;
+   writeln('A  B  C  D  E  H  L  SP   FLAGS IE [BC] [DE] [HL] [SP] ',
+           '--------- MEM ---------');
+   prtnum(16, 2, cpu.a); write(' ');
+   prtnum(16, 2, cpu.b); write(' ');
+   prtnum(16, 2, cpu.c); write(' ');
+   prtnum(16, 2, cpu.d); write(' ');
+   prtnum(16, 2, cpu.e); write(' ');
+   prtnum(16, 2, cpu.h); write(' ');
+   prtnum(16, 2, cpu.l); write(' ');
+   prtnum(16, 4, cpu.sp); write(' ');
+   if cpu.fz then write('z') else write(' ');
+   if cpu.fc then write('c') else write(' ');
+   if cpu.fs then write('m') else write(' ');
+   if cpu.fp then write('p') else write(' ');
+   if cpu.fa then write('a') else write(' ');
+   write(' ');
+   if cpu.ie then write('e') else write('d'); write('  ');
+   t := cpu.b*256+cpu.c; prtnum(16, 4, memory[t]+memory[t+1]*256); write(' ');
+   t := cpu.d*256+cpu.e; prtnum(16, 4, memory[t]+memory[t+1]*256); write(' ');
+   t := cpu.h*256+cpu.l; prtnum(16, 4, memory[t]+memory[t+1]*256); write(' ');
+   prtnum(16, 4, memory[cpu.sp]+memory[(cpu.sp+1) and $ffff]*256); write(' ');
+   for i := 1 to 8 do begin { print memory window }
+
+      prtnum(16, 2, memory[(memdis+i-1) and $ffff]);
+      write(' ')
+
+   end;
+   writeln;
+   listinst(cpu.pc)
+
+end;
+
+{*******************************************************************************
+
+Load text line
+
+The line contained in the given text file is loaded into the inplin buffer, and
+inpptr is reset to 1.
+The line can be terminated by either an eoln or eof. In the case of eoln, the
+eoln is skipped, and the file positioned at the next line.
+
+*******************************************************************************}
+
+procedure getlin(var f: text);
+
+label 1; { eoln jump }
+
+var i: lininx; { line index }
+
+begin
+
+   if not eof(f) then begin { read line }
+
+      { clear input line }
+      for i := 1 to maxlin do cmdlin[i] := ' ';
+      i := 1; { 1st position }
+      while (i <= maxlin) and not eof(f) do begin
+
+         if eoln(f) then goto 1; { abort on eoln }
+         { check line overflow }
+         if (i < maxlin) then begin
+
+            read(f, cmdlin[i]); { get a command character }
+            i := i + 1 { next position }
+
+         end
+
+      end;
+      1: { abort loop }
+      if not eof(f) then readln(f); { skip line }
+      cmdlen := i - 1; { set length of line }
+      cmdptr := 1 { reset line pointer }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Check end of line
+
+Checks if we are at the end of the command line.
+
+*******************************************************************************}
+
+function endlin: boolean;
+
+begin
+
+   endlin := cmdptr > cmdlen { input pointer past end of line }
+
+end;
+
+{*******************************************************************************
+
+Check next character
+
+Returns the next character in the command line, or space if we have reached the
+end.
+
+*******************************************************************************}
+
+function chkchr: char;
+
+begin
+
+   if not endlin then chkchr := cmdlin[cmdptr] { return current character }
+   else chkchr := ' ' { else return space }
+
+end;
+
+{*******************************************************************************
+
+Get next character
+
+Skips to the next character in the command line. If we are at the end, does
+nothing.
+
+*******************************************************************************}
+
+procedure getchr;
+
+begin
+
+   if not endlin then cmdptr := cmdptr+1 { advance position if not end }
+
+end;
+
+{*******************************************************************************
+
+Skip spaces
+
+Skips spaces in the command line. If we are at the end, does nothing.
+
+*******************************************************************************}
+
+procedure skpspc;
+
+begin
+
+   while (chkchr = ' ') and not endlin do getchr { skip spaces, not end }
+
+end;
+
+{*******************************************************************************
+
+Check end of command
+
+Checks if we are either at the end of the command line, or at a ";" character,
+which is the command separator.
+
+*******************************************************************************}
+
+function endcmd: boolean;
+
+begin
+
+   endcmd := (chkchr = ';') or endlin { command separator or end of line }
+
+end;
+
+{*******************************************************************************
+
+Check digit
+
+Checks wether the given character lies in the set ['0'..'9'].
+Returns the status.
+
+*******************************************************************************}
+
+function digit(c: char)  { character to check }
+              : boolean; { status of check }
+
+begin
+
+   digit := c in ['0'..'9']
+
+end;
+
+{******************************************************************************
+
+Convert lower case
+
+Given a character in the set ['A'-'Z'] converts it to the set ['a'..'z']. If
+the character is not in the first set, it will be returned unchanged.
+Note that lower case representations are standard within this program.
+
+*******************************************************************************}
+
+function lcase(c: char) { character to convert }
+              : char;   { converted character}
+
+begin
+
+   if c in ['A'..'Z'] then
+      { find lower case equivalent }
+      c := chr(ord(c) - ord('A') + ord('a'));
+   lcase := c { return as result }
+
+end;
+
+{*******************************************************************************
+
+Check alphabetical
+
+Checks if the given character lies in the set ['A'..'Z', 'a'..'z'] (is a
+letter). Returns the status.
+
+*******************************************************************************}
+
+function alpha(c : char) { character to check }
+              : boolean; { status }
+
+begin
+
+   alpha := c in ['A'..'Z', 'a'..'z']
+
+end;
+
+{******************************************************************************
+ 
+Parse label
+ 
+Parses a label from the input. Labels consist of a sequence of characters in
+the set ['0'..'9', 'A'..'Z', 'a'..'z', '_']. The caller is responsible for
+verifying any extra resrictions on the first character (typ. ['A'..'Z',
+'a'..'z', '_']).
+The label is returned in the system variable labbuf.
+ 
+*******************************************************************************}
+ 
+procedure parlab;
+ 
+var i: labinx; { label index }
+ 
+begin
+
+   skpspc; { skip spaces }
+   for i := 1 to maxlab do labbuf[i] := ' '; { clear buffer }
+   i := 1;
+   { check label exists }
+   if not (alpha(chkchr) or (chkchr = '_')) then prterr(elabexp);
+   while alpha(chkchr) or digit(chkchr) or (chkchr = '_') do
+      begin { accept valid characters }
+
+      if i = maxlab then prterr(elabtl); { too long }
+      labbuf[i] := chkchr; { place character }
+      getchr; { skip character }
+      i := i+1 { count }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Print label
+
+*******************************************************************************}
+
+procedure prtlab(var l: labl);
+
+var i: labinx; { index for label }
+
+begin
+
+   for i := 1 to maxlab do if l[i] <> ' ' then write(l[i])
+
+end;
+
+{*******************************************************************************
+
+Print filename
+
+*******************************************************************************}
+
+procedure prtfil(var fn: filnam);
+
+var i: filinx; { index for filename }
+
+begin
+
+   for i := 1 to maxfil do if fn[i] <> ' ' then write(fn[i])
+
+end;
+
+{*******************************************************************************
+
+Find labels equal
+
+Checks if the two labels equal each other, regarless of case.
+
+*******************************************************************************}
+function labequ(var a: labl; b: labl): boolean;
+
+var i: labinx; { index for labels }
+    f: boolean; { match flag }
+
+begin
+
+   f := true; { set matches }
+   { check label matches }
+   for i := 1 to maxlab do if lcase(a[i]) <> lcase(b[i]) then f := false;
+   labequ := f { return match status }
+
+end;
+
+{*******************************************************************************
+
+Parse and convert numeric
+
+Parses and converts the following:
+
+     [radix specification] ['0'..'9', 'a'..'z', 'A'..'Z']...
+
+Where the radix specifier is:
+
+     % - Binary
+     & - Octal
+     $ - hexadecimal
+     none - Decimal
+
+Using the given radix, any digits are processed to yeild an integer unsigned
+result. Leading spaces are skipped. Overflow isn't now but should be flagged as
+an error. No spaces are allowed anywhere in the format.
+
+*******************************************************************************}
+
+procedure parnum(var i: integer); { integer parsed }
+
+var r: 1..16;   { radix }
+    v: integer; { value holding }
+
+begin
+
+   skpspc; { skip spaces }
+   r := 10; { set default radix decimal}
+   i := 0; { initalize result }
+   if chkchr = '%' then begin r := 2; getchr end { binary }
+   else if chkchr = '&' then begin r := 8; getchr end { octal }
+   else if chkchr = '$' then begin r := 16; getchr end; { hexadecimal }
+   if not alpha(chkchr) and not digit(chkchr) then
+      prterr(enfmt); { invalid digit }
+   while (alpha(chkchr) and (r = 16)) or
+      digit(chkchr) do begin { load buffer }
+   
+         { convert '0'..'9' }
+         if digit(chkchr) then v := ord(chkchr) - ord('0')
+         else v := ord(lcase(chkchr)) - ord('a') + 10; { convert 'a'..'z' }
+         getchr; { skip }
+         if v >= r then prterr(edbr); { check fits radix }
+         i := i * r + v { scale and add in }
+
+      end;
+
+end;
+
+{*******************************************************************************
+
+Place byte in code buffer
+
+Paces the given byte in the code buffer, and advances. Errors on overflow.
+
+*******************************************************************************}
+
+procedure putbyt(b: byte);
+
+begin
+
+   if excptr = maxexc then prterr(ecodovf); { code buffer overflow }
+   excbuf[excptr] := b; { place intermediate byte }
+   excptr := excptr+1 { next location }
+
+end;
+
+{*******************************************************************************
+
+Get byte from code buffer
+
+Get the next byte from the code buffer, and advances. Errors on overflow.
+
+*******************************************************************************}
+
+procedure getbyt(var b: byte);
+
+begin
+
+   if excptr = maxexc then prterr(esys); { code buffer overflow }
+   b := excbuf[excptr]; { place intermediate byte }
+   excptr := excptr+1 { next location }
+
+end;
+
+{*******************************************************************************
+
+Place integer in code buffer
+
+Places an integer in the code buffer and advances.
+
+*******************************************************************************}
+
+procedure putint(n: integer);
+
+var r: record case boolean of { converter case }
+      
+          false: (a: integer);
+          true:  (b: packed array [1..4] of byte)
+
+       end;
+    i: 1..4; { index for same }
+
+begin
+
+   r.a := n; { convert integer }
+   for i := 4 downto 1 do putbyt(r.b[i]) { place in code }
+
+end;
+
+{*******************************************************************************
+
+Get integer from code buffer
+
+Gets an integer from the code buffer and advances.
+
+*******************************************************************************}
+
+procedure getint(var n: integer);
+
+var r: record case boolean of { converter case }
+      
+          false: (a: integer);
+          true:  (b: packed array [1..4] of byte)
+
+       end;
+    i: 1..4; { index for same }
+    b: byte; { byte holder }
+
+begin
+
+   for i := 4 downto 1 do begin getbyt(b); r.b[i] := b end; { load integer }
+   n := r.a { get integer }
+
+end;
+
+{*******************************************************************************
+
+Find variable
+
+Parses and looks up a variable by name. Returns the variable code. This should
+probally be restated as a procedure.
+
+*******************************************************************************}
+
+function fndvar: varcod;
+
+var s, c: varcod; { variable code indexes }
+
+begin
+
+   parlab; { get command label }
+   s := vnull; { set no variable }
+   for c := vnull to vend do if labequ(vartab[c], labbuf) then s := c;
+   if s = vnull then prterr(evarnf); { variable not found }
+   fndvar := s { return resulting variable }
+
+end;
+
+{*******************************************************************************
+
+Place code constant
+
+Places the given integer as a loadable constant.
+
+*******************************************************************************}
+
+{ put constant in code }
+
+procedure putcst(n: integer);
+
+begin
+
+   putbyt(ord(ilodc)); { place as load }
+   putint(n)
+
+end;
+
+{*******************************************************************************
+
+Compile expression
+
+Compiles an expression to the equivalent sequence in the code buffer. At this
+time, all that is implemented is to get a number.
+
+*******************************************************************************}
+
+{ compile expression }
+
+procedure expr;
+
+var n: integer; { temp }
+
+begin
+
+   parnum(n); { get value }
+   putbyt(ord(ilodc)); { place as load }
+   putint(n)
+
+end;
+
+{*******************************************************************************
+
+Compile command
+
+Compiles the command by the given command code and places that in the code
+buffer.
+
+*******************************************************************************}
+
+procedure cmpcmd(c: cmdcod);
+
+var v: varcod; { variable code holder }
+
+begin
+
+   case c of { command }
+
+      cfpe:  putbyt(ord(ifpe)); { flag parity even }
+      cfpo:  putbyt(ord(ifpo)); { flag parity odd }
+      cfp:   putbyt(ord(ifp));  { flag positive }
+      cfm:   putbyt(ord(ifm));  { flag minus }
+      cfz:   putbyt(ord(ifz));  { flag zero }
+      cfnz:  putbyt(ord(ifnz)); { flag not zero }
+      cfa:   putbyt(ord(ifa));  { flag arithmetic carry }
+      cfna:  putbyt(ord(ifna)); { flag no arithmetic carry }
+      cfc:   putbyt(ord(ifc));  { flag carry }
+      cfnc:  putbyt(ord(ifnc)); { flag no carry }
+      cds:   putbyt(ord(ids));  { single step with display }
+      css:   putbyt(ord(iss));  { single step }
+      ccp:   prterr(ecmdnimp);
+      cse:   prterr(ecmdnimp); 
+      csn:   prterr(ecmdnimp);
+      cnbu:  prterr(ecmdnimp);
+      cret:  prterr(ecmdnimp);
+      cptr:  prterr(ecmdnimp);
+      cnptr: prterr(ecmdnimp);
+      cht:   prterr(ecmdnimp);
+      cnht:  prterr(ecmdnimp);
+      cport: begin { input output port }
+
+         expr; { load port address }
+         skpspc; { skip spaces }
+         if chkchr = ',' then begin { output operation }
+   
+            getchr; { skip ',' }
+            expr; { load value address }
+            putbyt(ord(iout)) { place output code }
+
+         end else putbyt(ord(iin)) { place input code } 
+
+      end;
+      cmove: prterr(ecmdnimp);
+      cfill: prterr(ecmdnimp);
+      creg:  putbyt(ord(ireg)); { display cpu status/registers }
+      cdump: begin { dump memory }
+
+         expr; { load starting address }
+         skpspc; { skip spaces }
+         if chkchr = ',' then begin { end address exists }
+
+            getchr; { skip ',' }
+            expr { load end address }
+
+         end else putcst(0); { else default to 0 }
+         putbyt(ord(idump)) { list code }
+
+      end;
+      centr: begin { enter memory }
+
+         expr; { load starting address }
+         putbyt(ord(iloda)); { place "load address" instruction }
+         skpspc; { skip spaces }
+         if chkchr <> ',' then prterr(ecmaexp); { ',' expected }
+         repeat { entry values }
+
+            getchr; { skip ',' }
+            expr; { load value }
+            putbyt(ord(iputm)); { place "put" instruction }
+            skpspc { skip spaces }
+
+         until chkchr <> ',' { until no more values }
+
+      end;
+      clist: begin { list machine code } 
+
+         expr; { load starting address }
+         skpspc; { skip spaces }
+         if chkchr = ',' then begin { end address exists }
+
+            getchr; { skip ',' }
+            expr { load end address }
+
+         end else putcst(0); { otherwise default to 0 }
+         putbyt(ord(ilist)) { list code }
+
+      end;
+      cgo:   begin { execute program }
+
+         skpspc; { skip spaces }
+         if not endcmd then begin { go address exists }
+
+            expr; { load execution address }
+            putbyt(ord(igo)) { place go code }
+
+         end else putbyt(ord(igop)) { place go code using present addr }
+
+      end;
+      cclr:  prterr(ecmdnimp);
+      cbrk:  begin { set/display breakpoints }
+
+         skpspc; { skip spaces }
+         if endcmd then putbyt(ord(idisb)) { display all breakpoints }
+         else begin { break addresses specified }
+
+            expr; { load break address }
+            putbyt(ord(isetb)); { set breakpoint }
+            skpspc; { skip spaces }
+            while chkchr = ',' do begin { more break addresses }
+
+               getchr; { skip ',' }
+               expr; { load break address }
+               putbyt(ord(isetb)); { set breakpoint }
+               skpspc { skip spaces }
+    
+            end
+
+         end
+
+      end;
+      cprt:  begin { print value }
+
+         expr; { load value to print }
+         putbyt(ord(iprt)); { place print code }
+         skpspc; { skip spaces }
+         while chkchr = ',' do begin { further parameters }
+
+            getchr; { skip ',' }
+            expr; { load value to print }
+            putbyt(ord(iprt)); { place print code }
+            skpspc { skip spaces }
+
+         end
+
+      end;
+      cutl:  prterr(ecmdnimp);
+      cstp:  prterr(ecmdnimp);
+      cquit: putbyt(ord(iquit)); { quit DB }
+      cass:  begin
+
+         v := fndvar; { find variable }
+         skpspc; { skip spaces }
+         if chkchr <> ',' then prterr(ecmaexp); { ',' expected }
+         getchr; { skip ',' }
+         expr; { load value }
+         putbyt(ord(iass)); { place assign instruction }
+         putbyt(ord(v)) { place variable code }
+
+      end;
+      cei:   putbyt(ord(iei)); { enable interrupts }
+      cdi:   putbyt(ord(idi)); { enable interrupts }
+      chelp: putbyt(ord(ihelp)); { help commands }
+             
+   end
+
+end;
+
+{*******************************************************************************
+
+Parse and compile command
+
+Parses and compiles the next command on the line, placing that in the code
+buffer.
+
+*******************************************************************************}
+
+procedure parcmd;
+
+var c, s: cmdcod; { command indexes }
+
+begin
+
+   skpspc; { skip spaces }
+   parlab; { get command label }
+   s := cnull; { set no command }
+   for c := cnull to cend do if labequ(cmdtab[c], labbuf) then s := c;
+   if s = cnull then prterr(ecmdnf); { command not found }
+   cmpcmd(s) { compile command }
+
+end;
+
+{*******************************************************************************
+
+Parse and compile line
+
+Parses and compiles a series of commands on the same line, placing the result in
+the code buffer.
+
+*******************************************************************************}
+
+procedure parlin;
+
+begin
+
+   excptr := 1; { reset code buffer fill pointer }
+   skpspc; { skip spaces }
+   while not endlin do begin { parse commands on line }
+
+      parcmd; { parse command }
+      skpspc; { skip remaining spaces }
+      if not endcmd then prterr(ecmdend); { end of command expected }
+      if chkchr = ';' then begin { another command cometh }
+
+         getchr; { skip ';' }
+         skpspc; { skip spaces }
+         if endlin then prterr(ecmdexp); { command expected }
+
+      end
+
+   end;
+   putbyt(ord(iendl)) { terminate intermediate buffer }
+
+{ this diagnostic prints the intermediate code to be executed }
+
+{;i := 1; while i < excptr do begin prtnum(16, 2, excbuf[i]); write(' ');
+i := i+1 end; writeln;}
+
+end;
+{}
+{*******************************************************************************
+
+Dump memory
+
+Dumps memory between the given start and end addresses.
+
+*******************************************************************************}
+
+procedure dump(s, e: integer);
+
+var bytes: 0..16;   { bytes on line count }
+    ls:    integer; { line start save }
+    i:     1..16;   { byte index }
+
+procedure prtasc(c: byte); { print byte as ascii character }
+
+begin
+
+   c := c and $7f; { mask parity }
+   { replace unprintable characters with '.' }
+   if (c < ord(' ')) or (c > ord('~')) then c := ord('.');
+  write(chr(c)) { output }
+
+end;
+
+{ print ascii field }
+
+procedure prtacf;
+
+begin
+
+   write(' *'); { bracket }
+   while ls < s do begin { output ascii characters }
+
+      prtasc(memory[ls]); { output character }
+      ls := ls+1 { end }
+
+   end;
+   write('*') { bracket } 
+
+end;
+
+begin
+
+   bytes := 0; { initalize byte count }
+   ls := s; { save line start address }
+   while s <= e do begin { dump bytes }
+
+      if bytes = 0 then begin { print line address }
+
+         prtnum(16, 4, s); { print address }
+         write(': ') { separate }
+
+      end;
+      prtnum(16, 2, memory[s]); { print a byte }
+      write(' ');
+      bytes := bytes + 1; { count bytes }
+      s := s + 1; { next address }
+      if bytes >= 16 then begin { line full, finish }
+
+         prtacf; { print ascii field }
+         writeln; { terminate }
+         bytes := 0 { clear byte count }
+
+      end
+
+   end;
+   if bytes <> 0 then begin { last line unfinished }
+
+      for i := 1 to 16-bytes do write('   '); { pad missing bytes }
+      prtacf; { print ascii field }
+      writeln { terminate }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Pause output
+
+*******************************************************************************}
+
+procedure pause;
+
+begin
+
+   writeln('Hit return to continue');
+   readln
+
+end;
+
+{*******************************************************************************
+
+Execute buffer
+
+Executes a single code buffer. At this point, the buffer contains single
+instruction codes followed by parameters. It is excuted until the end of the
+buffer is detected.
+
+*******************************************************************************}
+
+procedure exclin;
+
+var i:    byte;    { instruction holder }
+    s, e: integer; { start and end }
+    ea:   integer; { byte entry address }
+    n:    integer; { temp }
+    v:    byte;    { temp }
+    bp:   brkptr;  { breakpoint list entry pointer }
+
+begin
+
+   excptr := 1; { reset execution pointer }
+   stkptr := 1; { reset stack pointer }
+   while not (excbuf[excptr] = ord(iendl)) do begin
+
+      i := excbuf[excptr]; { get instruction }
+      excptr := excptr+1; { advance next instruction }
+      case i of { intermediate command }
+
+         0  { ifpe  }: cpu.fp := true;  { flag parity even }
+         1  { ifpo  }: cpu.fp := false; { flag parity odd }
+         2  { ifp   }: cpu.fs := false; { flag positive }
+         3  { ifm   }: cpu.fs := true;  { flag minus }
+         4  { ifz   }: cpu.fz := true;  { flag zero }
+         5  { ifnz  }: cpu.fz := false; { flag not zero }
+         6  { ifa   }: cpu.fa := true;  { flag arithmetic carry }
+         7  { ifna  }: cpu.fa := false; { flag no arithmetic carry }
+         8  { ifc   }: cpu.fc := true;  { flag carry }
+         9  { ifnc  }: cpu.fc := false; { flag no carry }
+         10 { ireg  }: display; { display cpu status/registers }
+         11 { ids   }: begin exeins; display end;
+         12 { iss   }: exeins; { execute single instruction }
+         13 { iquit }: goto 99; { terminate DB }
+         14 { ilist }: begin { list machine code } 
+
+            stkptr := stkptr-1; { pop ending address }
+            e := stack[stkptr];
+            stkptr := stkptr-1; { pop starting address }
+            s := stack[stkptr];
+            while s <= e do begin { list code }
+
+               listinst(s); { list instruction }
+               s := s+instlen(s) { skip instruction }
+ 
+            end
+
+         end;
+         15 { idump }: begin { dump memory } 
+
+            stkptr := stkptr-1; { pop ending address }
+            e := stack[stkptr];
+            stkptr := stkptr-1; { pop starting address }
+            s := stack[stkptr];
+            dump(s, e) { perform dump }
+
+         end;
+         16 { iass }: begin { variable assign }
+
+            stkptr := stkptr-1; { get value }
+            n := stack[stkptr];
+            getbyt(v); { get the variable code }
+            case v of { variable }
+
+                1  { va  }:  cpu.a := n and $ff; { cpu register a }
+                2  { vb  }:  cpu.b := n and $ff; { cpu register b }
+                3  { vc  }:  cpu.c := n and $ff; { cpu register c }
+                4  { vd  }:  cpu.d := n and $ff; { cpu register d }
+                5  { ve  }:  cpu.e := n and $ff; { cpu register e }
+                6  { vh  }:  cpu.h := n and $ff; { cpu register h }
+                7  { vl  }:  cpu.l := n and $ff; { cpu register l }
+                8  { vbc }: begin cpu.c := n and $ff; { cpu register bc }
+                                  cpu.b := (n div 256) and $ff end;
+                9  { vde }: begin cpu.e := n and $ff; { cpu register de }
+                                  cpu.d := (n div 256) and $ff end;
+                10 { vhl }: begin cpu.l := n and $ff; { cpu register hl }
+                                  cpu.h := (n div 256) and $ff end;
+                11 { vpc }: cpu.pc := n and $ffff; { cpu register pc }
+                12 { vsp }: cpu.sp := n and $ffff; { cpu register sp }
+                13 { vf  }: begin { cpu flags register }
+ 
+                   cpu.fs := (n and $80) <> 0; cpu.fz := (n and $40) <> 0;
+                   cpu.f5 := (n and $20) <> 0; cpu.fa := (n and $10) <> 0;
+                   cpu.f3 := (n and $08) <> 0; cpu.fp := (n and $04) <> 0;
+                   cpu.f1 := (n and $02) <> 0; cpu.fc := (n and $01) <> 0
+
+                end
+
+             end
+
+         end;
+         17 { iin   }: begin { input value from port }
+
+            stkptr := stkptr-1; { get address to input }
+            inpprt(stack[stkptr], v); { input value from port }
+            prtnum(16, 2, v); { print }
+            writeln { next line }
+
+         end;
+         18 { iout   }: begin { output value to port }
+
+            stkptr := stkptr-1; { get value to output }
+            n := stack[stkptr];
+            stkptr := stkptr-1; { get address to output }
+            outprt(stack[stkptr], n) { output value to port }
+
+         end;
+         19 { iei   }: cpu.ie := true; { enable interrupts }
+         20 { idi   }: cpu.ie := false; { disable interrupts }
+         21 { igo   }: begin { execute program }
+
+            stkptr := stkptr-1; { get address to execute }
+            goins(stack[stkptr]) { execute }
+
+         end;
+         22 { igop  }: goins(cpu.pc); { go present address }
+         23 { iprt  }: begin { print value }
+
+            stkptr := stkptr-1; { get value to print }
+            prtnum(16, 4, stack[stkptr]); { print }
+            writeln { next line }
+
+         end;
+         24 { idisb }: begin { display all breakpoints }
+
+            bp := brklst; { index top of breakpoint list }
+            while bp <> nil do begin { traverse list }
+
+               prtnum(16, 4, bp^.addr); { print address of breakpoint }
+               writeln; { next line }
+               bp := bp^.next { link next entry }
+
+            end
+
+         end;
+         25 { isetb }: begin { set permenent breakpoint }
+
+            stkptr := stkptr-1; { get address to set }
+            getbrk(bp); { get a new breakpoint entry }
+            bp^.next := brklst; { insert into permenent list }
+            brklst := bp;
+            bp^.addr := stack[stkptr] and $ffff { place address of breakpoint }
+
+         end;
+         26 { ihelp }: begin { help commands }
+
+             writeln('fpe                - Flag parity even');
+             writeln('fpo                - flag parity odd');
+             writeln('fp                 - flag positive');
+             writeln('fm                 - flag minus');
+             writeln('fz                 - flag zero');
+             writeln('fnz                - flag non-zero');
+             writeln('fa                 - flag arithmetic carrry');
+             writeln('fna                - flag no arithmetic carry');
+             writeln('fc                 - flag carry');
+             writeln('fnc                - flag no carry');
+             writeln('s                  - display step');
+             writeln('ss                 - single step');
+             writeln('cp                 - compare');
+             writeln('se                 - search');
+             writeln('sn                 - search not');
+             writeln('nbu                - no break until');
+             writeln('ret                - return');
+             writeln('ptr                - printer');
+             writeln('nptr               - no printer');
+             writeln('ht                 - halt trap');
+             writeln('nht                - no halt trap');
+             writeln('io port[,data]     - port input/output');
+             writeln('m                  - move');
+             pause;
+             writeln('f                  - fill');
+             writeln('r                  - registers');
+             writeln('d start[,end]      - dump');
+             writeln('e addr,val[,val].. - enter');
+             writeln('l start[,end]      - list');
+             writeln('g start[,brk]..    - go');
+             writeln('c [brk[,brk]..]    - clear');
+             writeln('b brk[,brk]..      - set breakpoints');
+             writeln('p val[,val]..      - print');
+             writeln('u cond             - until');
+             writeln('st                 - stop');
+             writeln('a var,val          - assign');
+             writeln('quit               - quit debugger');
+             writeln('ei                 - enable interrupts');
+             writeln('di                 - disable interrupts');
+             writeln('h                  - help commands');
+
+         end;
+         27 { ilodc }: begin getint(stack[stkptr]); { load constant }
+                              stkptr := stkptr+1 end;
+         28 { iloda }: begin { get entry address }
+
+            stkptr := stkptr-1; { get entry value }
+            ea := stack[stkptr] 
+
+         end;
+         29 { iputm }: begin { place memory value }
+
+            stkptr := stkptr-1; { get entry value }
+            memory[ea] := stack[stkptr]; { place in memory }
+            ea := ea+1 { next address }
+
+         end;
+         30 { iendl }: ; { end of line }
+   
+      end
+
+   end
+
+end;
+
+begin
+
+   writeln;
+   writeln('8080 debugger vs. 0.1 Copyright (C) 1994 S. A. Moore');
+   writeln;
+   writeln('Target:          Cross');
+   writeln('Mode:            Simulate');
+   writeln('Stepper:         Low');
+   writeln('Remote link:     Disabled');
+   writeln('Emulator:        Not found/disabled');
+   writeln('Memory:          64k');
+   writeln('Bank select:     None');
+
+   for addr := 0 to maxmem do memory[addr] := 0; { clear memory }
+   { clear CPU registers }
+   cpu.a := 0;
+   cpu.b := 0;
+   cpu.c := 0;
+   cpu.d := 0;
+   cpu.e := 0;
+   cpu.h := 0;
+   cpu.l := 0;
+   cpu.pc := 0;
+   cpu.sp := 0;
+   cpu.fc := false;
+   cpu.fa := false;
+   cpu.fs := false;
+   cpu.fp := false;
+   cpu.f5 := false;
+   cpu.f3 := false;
+   cpu.f1 := false;
+   cpu.ie := true; { interrupts enabled }
+   memdis := 0; { clear settable view address }
+   brkadr := $0038; { address of simulated breakpoint address }
+   brkins := $ff; { instruction to cause a breakpoint }
+   brklst := nil; { clear permenent breakpoint list }
+   tmplst := nil; { clear temporary breakpoint list }
+   brkfre := nil; { clear free breakpoint entry list }
+   fstap := true; { allow system tap calls }
+   runcpu := true; { set run cpu flag }
+   { fill parity lookup table }
+   for i := 0 to 255 do begin
+
+      t := i; { place this value }
+      c := 0; { clear bit count }
+      for bi := 0 to 7 do begin
+
+         if odd(t) then c := c+1; { count bits in byte }
+         t := t div 2 { next bit }
+
+      end;
+      parity[i] := not odd(c) { set parity as even bit count }
+
+   end;
+   { initalize command table }
+   cmdtab[cnull] := '          ';
+   cmdtab[ cfpe] := 'fpe       ';
+   cmdtab[ cfpo] := 'fpo       ';
+   cmdtab[  cfp] := 'fp        ';
+   cmdtab[  cfm] := 'fm        ';
+   cmdtab[  cfz] := 'fz        ';
+   cmdtab[ cfnz] := 'fnz       ';
+   cmdtab[  cfa] := 'fa        ';
+   cmdtab[ cfna] := 'fna       ';
+   cmdtab[  cfc] := 'fc        ';
+   cmdtab[ cfnc] := 'fnc       ';
+   cmdtab[  cds] := 's         ';
+   cmdtab[  css] := 'ss        ';
+   cmdtab[  ccp] := 'cp        ';
+   cmdtab[  cse] := 'se        ';
+   cmdtab[  csn] := 'sn        ';
+   cmdtab[ cnbu] := 'nbu       ';
+   cmdtab[ cret] := 'ret       ';
+   cmdtab[ cptr] := 'ptr       ';
+   cmdtab[cnptr] := 'nptr      ';
+   cmdtab[  cht] := 'ht        ';
+   cmdtab[ cnht] := 'nht       ';
+   cmdtab[cport] := 'io        ';
+   cmdtab[cmove] := 'm         ';
+   cmdtab[cfill] := 'f         ';
+   cmdtab[ creg] := 'r         ';
+   cmdtab[cdump] := 'd         ';
+   cmdtab[centr] := 'e         ';
+   cmdtab[clist] := 'l         ';
+   cmdtab[  cgo] := 'g         ';
+   cmdtab[ cclr] := 'c         ';
+   cmdtab[ cbrk] := 'b         ';
+   cmdtab[ cprt] := 'p         ';
+   cmdtab[ cutl] := 'u         ';
+   cmdtab[ cstp] := 'st        ';
+   cmdtab[ cass] := 'a         ';
+   cmdtab[cquit] := 'quit      ';
+   cmdtab[  cei] := 'ei        ';
+   cmdtab[  cdi] := 'di        ';
+   cmdtab[chelp] := 'h         ';
+   cmdtab[ cend] := '          ';
+   { intalize predefined variables table }
+   vartab[vnull] := '          ';
+   vartab[   va] := 'a         ';
+   vartab[   vb] := 'b         ';
+   vartab[   vc] := 'c         ';
+   vartab[   vd] := 'd         ';
+   vartab[   ve] := 'e         ';
+   vartab[   vh] := 'h         ';
+   vartab[   vl] := 'l         ';
+   vartab[  vbc] := 'bc        ';
+   vartab[  vde] := 'de        ';
+   vartab[  vhl] := 'hl        ';
+   vartab[  vpc] := 'pc        ';
+   vartab[  vsp] := 'sp        ';
+   vartab[   vf] := 'f         ';
+   vartab[ vend] := '          ';
+   { clear open program files table }
+   for fi := 1 to maxfid do fidtab[fi].sta := fmfree; { set file closed }
+
+   { load target program }
+   tarnam := 'test.obj            ';
+   assign(objfil, tarnam); { open target .obj file }
+   reset(objfil);
+   addr := 0; { set 1st location in address space }
+   { read in object file }
+   while not eof(objfil) do begin
+
+      read(objfil, memory[addr]); { read file byte }
+      addr := addr+1 { next address }
+
+   end;
+   proglen := addr; { save last address }
+   write  ('Program name:    '); 
+   prtfil(tarnam);
+   writeln;
+   writeln('Program status:  Loaded');
+   writeln('Program length:  ', proglen:1);
+   writeln('Program symbols: Disabled');
+   writeln;
+   
+   loop: ; { loop next line }
+   
+      { get command lines from console }
+      88: { resume next line }
+      write('> ');
+      getlin(input); { get a command line }
+      parlin; { parse command line }
+      exclin; { execute command line }
+
+   goto loop; { forever for now }
+
+   99: { terminate debugger }
+
+end.

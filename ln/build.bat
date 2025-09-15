@@ -1,0 +1,50 @@
+parse common=common /u=.,\ip\windows\i80386\lib
+parse utl=utl /u=.,\ip\windows\i80386\lib
+parse link=link /u=.,\ip\windows\i80386\lib
+parse main=main /u=.,\ip\windows\i80386\lib
+
+rem
+rem Encode with character translation and disassembly countermeasures
+rem
+rem ec common=common/noc/nrc/nac/nclcl/scxt/discm
+rem ec utl=utl/noc/nrc/nac/nclcl/scxt/discm
+rem ec link=link/noc/nrc/nac/nclcl/scxt/discm     
+rem ec main=main/noc/nrc/nac/nclcl/scxt/discm     
+
+rem
+rem Encode plain. Use this mode ONLY for debugging
+rem
+ec common=common/noc/nrc/nac/nclcl
+ec utl=utl/noc/nrc/nac/nclcl
+ec link=link/noc/nrc/nac/nclcl
+ec main=main/noc/nrc/nac/nclcl
+
+rem
+rem Windows link
+rem
+
+rem
+rem Use this link to get the general linker, with character translation
+rem
+rem c:\ip\windows\i80386\bin\ln runfile=c:\ip\windows\i80386\lib\blotter c:\ip\windows\i80386\lib\serlibx c:\ip\windows\i80386\lib\strlibx c:\ip\windows\i80386\lib\extlibx common utl link c:\ip\windows\i80386\lib\main c:\ip\windows\i80386\lib\reglockx c:\ip\windows\i80386\lib\timelockx main c:\ip\windows\i80386\lib\cap/nu
+
+rem
+rem Use this link to get the local linker, with character translation
+rem
+rem ln runfile=c:\ip\windows\i80386\lib\blotter c:\ip\windows\i80386\lib\serlibx c:\ip\windows\i80386\lib\strlibx c:\ip\windows\i80386\lib\extlibx common utl link c:\ip\windows\i80386\lib\main c:\ip\windows\i80386\lib\reglockx c:\ip\windows\i80386\lib\timelockx main c:\ip\windows\i80386\lib\cap/nu
+
+rem
+rem Use this link to get the local linker, with no character translation
+rem
+c:\ip\windows\i80386\bin\ln runfile=c:\ip\windows\i80386\lib\blotter c:\ip\windows\i80386\lib\serlib c:\ip\windows\i80386\lib\strlib c:\ip\windows\i80386\lib\extlib common utl link c:\ip\windows\i80386\lib\main c:\ip\windows\i80386\lib\reglock c:\ip\windows\i80386\lib\timelock main c:\ip\windows\i80386\lib\cap/nu
+
+genpe ln=runfile/v
+rem del runfile.*
+
+rem
+rem Linux link
+rem
+
+rem ln runfile=c:\ip\linux\i80386\lib\serlib c:\ip\linux\i80386\lib\strlib c:\ip\linux\i80386\lib\extlib common utl link main c:\ip\linux\i80386\lib\cap #ps=$8048074 #vs=$8054678 #ll #lv #lm > ln.lst
+rem genelf ln=runfile/v
+rem del runfile.*

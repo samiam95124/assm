@@ -1,0 +1,6 @@
+c
+c link ld.obj and form db.com.
+c
+ln ld=loader #p=$100;
+pip db.com=ld.obj[o],db.obj[o];
+

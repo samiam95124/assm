@@ -1,0 +1,6 @@
+c
+c Link DB and prepare the db.com file.
+c
+ln db=dbb dbc dbd dbe dbf dbg dbh dbi dbj dbk dbl #p=$dd00;
+pip db.com=ld.obj[o],db.obj[o];
+

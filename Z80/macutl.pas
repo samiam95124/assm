@@ -1,0 +1,385 @@
+{*******************************************************************************
+*                                                                              *
+*                      MACHINE SPECIFIC UTILTITIES MODULE                      *
+*                                                                              *
+*                       Copyright (C) 2007 S. A. Moore                         *
+*                            All rights reserved                               *
+*                                                                              *
+* PURPOSE:                                                                     *
+*                                                                              *
+* Gives all the machine specific utilities for this assembler. The general     *
+* assembler module performs calls to the machine specific section via this     *
+* module. The following interface calls exist:                                 *
+*                                                                              *
+* procedure mexpr(var sym: symptr); forward;                                   *
+* procedure msexpr(var sym: symptr); forward;                                  *
+* procedure mterm(var sym: symptr); forward;                                   *
+* procedure mfactor(var sym: symptr); forward;                                 *
+*                                                                              *
+* All of these routines handle parsing of various expression constructs,       *
+* the expression, simple expression, term and factor levels. The reason the    *
+* main assembler module calls these routines is that it allows the machine     *
+* specific module to implement special expression constructs for the           *
+* particular assembly language being implemented. After performing special     *
+* processing, the calls are sent back to the main assembler calls which        *
+* the same purpose.                                                            *
+*                                                                              *
+* We also implement several machine specific support functions here.           *
+*                                                                              *
+*******************************************************************************}
+
+module macutl(output);
+
+uses asdef,  { generic definitions }
+     common, { global variables }
+     utl,    { generic utilities }
+     macdef, { processor specific definitions }
+     opcdef, { opcode definitions }
+     opcini; { initalize reserved table }
+
+procedure prtreg(r: regc); forward; { print register code }
+procedure inidep; forward; { initalize processor module }
+procedure regcod(var reg: regc); forward; { process register code }
+procedure concod(var cc: condc); forward; { process condition code }
+function fndres(var s: string) : opcodet; forward; { find reserved word }
+procedure mexpr(var sym: symptr); forward; { parse expression }
+procedure msexpr(var sym: symptr); forward; { parse simple expression }
+procedure mterm(var sym: symptr); forward; { parse term }
+procedure mfactor(var sym: symptr); forward; { parse factor }
+
+private
+
+{*******************************************************************************
+
+Print register or mode
+
+Prints out the contents of a register or mode code. Used for diagnostics.
+
+*******************************************************************************}
+
+procedure prtreg(r: regc);
+
+begin
+
+   case r of { register or mode }
+
+      rgnl:  write('none');
+      rga:   write('a');
+      rgb:   write('b');
+      rgc:   write('c');
+      rgd:   write('d');
+      rge:   write('e');
+      rgh:   write('h');
+      rgl:   write('l');
+      rgbc:  write('bc');
+      rgde:  write('de');
+      rghl:  write('dl');
+      rgaf:  write('af');
+      rgafa: write('af''');
+      rgix:  write('ix');
+      rgiy:  write('iy');
+      rgsp:  write('sp');
+      rgi:   write('i');
+      rgr:   write('r');
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Initalize CPU dependent module
+
+*******************************************************************************}
+
+procedure inidep;
+
+var i: opcodet;
+
+begin
+
+   { output sign - on }
+   writeln;
+   writeln('Z80 assembler vs. 1.4.00 Copyright (C) 2006 S. A. Moore');
+   writeln;
+   alignment := cpualign; { set CPU alignment }
+   bigend := cpubigend; { set CPU endian status }
+   wrdsiz := cpuwrdsiz; { set CPU word size }
+   { clear and initalize reserved table }
+   for i := opnull to opdefdw do begin
+
+      copy(ressym[i].reslab, '');
+      ressym[i].reschn := opnull
+
+   end;
+   resini { initalize reseved symbols }
+
+end;
+
+{*******************************************************************************
+
+Find reserved word
+
+Finds the reserved code corresponding to a given label. The hash value is found 
+for the label, then a sequential search of the entry list for a match with the 
+label. The result is a code equvalent to the index for the matching label, or 0 
+if none is found. See inires for more reserved table details.
+
+*******************************************************************************}
+
+function fndres(var s: string) { label to find }
+                :opcodet;      { resulting opcode }
+
+var i: opcodet; { reserved table index }
+    b: boolean;
+    { free variant to convert opcodes to integers }
+    r: record case boolean of
+
+          false: (a: opcodet);
+          true:  (b: integer)
+
+       end;
+
+begin
+
+   r.b := hash(s, ord(pred(oplast))); { find hash value }
+   i := r.a;
+   { traverse chain at hash entry looking for a match }
+   b := compp(s, ressym[i].reslab); { check equal }
+   while not b and (ressym[i].reschn <> opnull) do begin { traverse }
+
+      i := ressym[i].reschn; { next entry }
+      b := compp(s, ressym[i].reslab) { check equal }
+
+   end;
+   { check match was found }
+   if not b then i := opnull;
+   fndres := i { return resulting index }
+
+end;
+
+{*******************************************************************************
+
+Process register code
+
+A register is one of the following: a, b, c, d, e, h, l, i, r, af, bc, de, hl, 
+ix, iy, sp, or af'. The input is checked for any of these sequences, and the 
+code for the sequence is returned. If no sequence is found, the 'nop' code is 
+returned, and the input position left unchanged. Otherwise, the input positon 
+will be just past the code.
+
+*******************************************************************************}
+
+procedure regcod(var reg: regc); { register return }
+
+var inpsav: inpinx; { input postion save for backtrack }
+
+begin
+
+   inpsav := cmdrot^.inp; { save current input position }
+   skpspc; { skip input spaces }
+   if alpha(chkchr) then begin { possible register }
+
+      getlab; { get register }
+      if compp(labbuf, 'a') then
+         reg := rga { a }
+      else if compp(labbuf, 'b') then
+         reg := rgb { b }
+      else if compp(labbuf, 'c') then
+         reg := rgc { c }
+      else if compp(labbuf, 'd') then
+         reg := rgd { d }
+      else if compp(labbuf, 'e') then
+         reg := rge { e }
+      else if compp(labbuf, 'h') then
+         reg := rgh { h }
+      else if compp(labbuf, 'l') then
+         reg := rgl { l }
+      else if compp(labbuf, 'i') then
+         reg := rgi { i }
+      else if compp(labbuf, 'r') then
+         reg := rgr { r }
+      else if compp(labbuf, 'af') then
+         reg := rgaf { af }
+      else if compp(labbuf, 'bc') then
+         reg := rgbc { bc }
+      else if compp(labbuf, 'de') then
+         reg := rgde { de }
+      else if compp(labbuf, 'hl') then
+         reg := rghl { hl }
+      else if compp(labbuf, 'ix') then
+         reg := rgix { ix }
+      else if compp(labbuf, 'iy') then
+         reg := rgiy { iy }
+      else if compp(labbuf, 'sp') then
+         reg := rgsp { sp }
+      else begin
+
+         reg := rgnl; { set null register }
+         cmdrot^.inp := inpsav { restore input position }
+
+      end
+
+   end else begin
+
+      reg := rgnl; { set null register }
+      cmdrot^.inp := inpsav { restore input postion }
+
+   end;
+   if (reg = rgaf) and (chkchr = '''') then begin { af' }
+
+      getchr; { next character }
+      reg := rgafa { set af' }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Process next condition code
+
+A condition code is one of the following:
+
+     z  - zero
+     nz - not zero
+     c  - carry
+     nc - no carry
+     nv - no overflow
+     po - parity odd
+     v  - overflow
+     pe - parity even
+     p  - positive
+     m  - minus
+
+The input is checked for any of these sequences. It's code is returned, or 
+'nop' if none is found. If none is found, the input will be returned to the 
+state it was found.
+
+*******************************************************************************}
+
+procedure concod(var cc: condc); { condition code ret }
+
+var inpsav : inpinx; { input position save }
+
+begin
+
+   inpsav := cmdrot^.inp; { save current input position }
+   skpspc; { skip spaces }
+   if alpha(chkchr) then begin { possible code }
+
+      getlab; { get code string }
+      { not zero }
+      if compp(labbuf, 'nz') then cc := ccnz
+      { zero }
+      else if compp(labbuf, 'z') then cc := ccz
+      { no carry }
+      else if compp(labbuf, 'nc') then cc := ccnc
+      { carry }
+      else if compp(labbuf, 'c') then cc := ccc
+      { no overflow }
+      else if compp(labbuf, 'nv') then cc := ccpo
+      { parity odd }
+      else if compp(labbuf, 'po') then cc := ccpo
+      { overflow }
+      else if compp(labbuf, 'v') then cc := ccpe
+      { parity even }
+      else if compp(labbuf, 'pe') then cc := ccpe
+      { positive }
+      else if compp(labbuf, 'p') then cc := ccp
+      { minus }
+      else if compp(labbuf, 'm') then cc := ccm
+      else begin
+
+         cc := ccnl; { set null code }
+         cmdrot^.inp := inpsav { restore input position }
+
+      end
+
+   end else begin
+
+      cc := ccnl; { set null code }
+      cmdrot^.inp := inpsav { restore input position }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Parse expression
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+*******************************************************************************}
+
+procedure mexpr(var sym: symptr);
+
+begin
+
+   expri(sym) { pass call to assembler main }
+
+end;
+
+{*******************************************************************************
+
+Parse simple expression
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+*******************************************************************************}
+
+procedure msexpr(var sym: symptr);
+
+begin
+
+   sexpri(sym) { pass call to assembler main }
+
+end;
+
+{*******************************************************************************
+
+Parse term
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+*******************************************************************************}
+
+procedure mterm(var sym: symptr);
+
+begin
+
+   termi(sym) { pass call to assembler main }
+
+end;
+
+{*******************************************************************************
+
+Parse factor
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+*******************************************************************************}
+
+procedure mfactor(var sym: symptr);
+
+begin
+
+   factori(sym) { pass call to assembler main }
+
+end;
+
+begin
+
+   inidep { initalize processor dependent module }
+
+end.
+

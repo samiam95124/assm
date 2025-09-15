@@ -1,0 +1,22 @@
+#
+# Construct ELF generator
+#
+
+parse genelf=genelf
+ce genelf=genelf
+
+#
+# perform link for windows
+#
+
+ln runfile=/mnt/windrv/ip/windows/i80386/lib/serlib /mnt/windrv/ip/windows/i80386/lib/strlib /mnt/windrv/ip/windows/i80386/lib/extlib genelf /mnt/windrv/ip/windows/i80386/lib/cap
+genpe genelf=runfile /mnt/windrv/windows/system/kernel32 /mnt/windrv/windows/system/user32 /mnt/windrv/windows/system/gdi32 /mnt/windrv/windows/system/winmm -v
+rm runfile.*
+
+#
+# perform link for linux
+#
+
+ln runfile=/mnt/windrv/ip/linux/i80386/lib/serlib /mnt/windrv/ip/linux/i80386/lib/strlib /mnt/windrv/ip/linux/i80386/lib/extlib genelf /mnt/windrv/ip/linux/i80386/lib/cap
+genelf genelf=runfile -v
+rm runfile.*

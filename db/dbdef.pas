@@ -1,0 +1,215 @@
+{******************************************************************************
+*                                                                             *
+*                          DB MACHINE CODE DEBUGGER                           *
+*                                                                             *
+*                       Copyright (C) 1994 S. A. Moore                        *
+*                            All rights reserved                              *
+*                                                                             *
+* DB is a generic "remote partition" debugger for machine code. It is         *
+* completely portable and CPU indenpendent. It is designed to be very         *
+* flexible in methods to access the target. To this end, DB, via, the CPU     *
+* dependent module attached, can perform full emulation, list, assembly and   *
+* even relink (hot move). Because this code is portable, DB may serve as a    *
+* machine simulator, but these capabilities serve in any environment.         *
+* The following target modes are envisioned:                                  *
+*                                                                             *
+* 1. Self-contained. The program runs entirely within DB, using simulated     *
+* memory space and instructions. Since DB is portable, this means that        *
+* programs for any given CPU can be developed on any other CPU (where DB is   *
+* ported). For full portability, the emulation engine is in HLL. But where    *
+* DB runs on a 386 or RISC machine, it will typically run 8 bit               *
+* microprocessor development at or better than real speed. Other machines     *
+* will be slower than realtime, but simulation still allows speed enough for  *
+* debug work. It is also possible to create an assembly module to execute     *
+* the target processor code, in which case the speed is less of a problem.    *
+* The trade off here is that N combinations of host-target custom modules     *
+* are possible.                                                               *
+* DB also implements a "virtual port" system, whereby an extremely simplfied  *
+* interface for screen, print, file and other I/O is given the target to      *
+* simulate I/O. The target program can be written with stubs to perform this  *
+* I/O on the host, then change to I/O drivers for the actual target.          *
+* The CPU specific module can also implement simulation for custom hardware   *
+* such as an onboard serial I/O system.                                       *
+* Using the virtual port system, it is also possible to make "run modules"    *
+* which are programs that load into the simulated CPU, load a operating       *
+* system specific program, and run and translate OS calls to an from the      *
+* target program.                                                             *
+*                                                                             *
+* 2. Remote partition. Advanced operating systems such as os/2, Unix and      *
+* Windows NT have cross-partition debugger control API's. DB can plug into    *
+* this interface and debug the target program at full speed with full         *
+* protection.                                                                 *
+*                                                                             *
+* 3. Via serial link. Many controller microprocessors have at least one       *
+* built in serial channel. We can use the serial channel to perform remote    *
+* debugging. The target hardware only need set up the interface, and execute  *
+* three commands by code from the host: read, write and execute. Using these  *
+* commands, DB will be able to download a program, examine and modify the     *
+* address space, and branch to the program. Break in mode via interrupt is    *
+* also possible. DB can provide single step mode by simulating the target     *
+* instructions locally, or can use whatever hardware single step arrangements *
+* are available on the target.                                                *
+* Because the "tap" program is a very small peice of code, it is an easy      *
+* matter to prepare the target "boot" prom, or to include the tap in the      *
+* actual target code itself. DB will also pipe the serial port to the screen  *
+* so that the target may use the serial port for general purpose              *
+* input/output.                                                               *
+*                                                                             *
+* 4. As a hardware emulator driver. It is not expected, but certainly         *
+* possible to have the CPU specific module directly drive an emulator with    *
+* advanced tracing capabilities.                                              *
+*                                                                             *
+* DB's internal command execution is performed by translating all input       *
+* command lines to an efficient internal coded form. This means that DB can   *
+* be used for high-speed tracing. It is further possible to translate the     *
+* intermediate form to actual machine code, either for the host processor     *
+* or the target processor. On the host, this will serve to speed up DB's      *
+* execution in general. On the target, this will serve to facillitate         *
+* tracing and trapping that could not otherwise be done.                      *
+*                                                                             *
+* History:                                                                    *
+*                                                                             *
+* DB is named the same as and has a command set nearly identical to a         *
+* Z80/8080 debugger originally designed in 1980 in Z80 assembly language.     *
+* That debugger was unique for compiling all it's commands into machine       *
+* language. This, coupled with a fast stepping module, made possible target   *
+* tracing with complex formulas that would normally be possible only using    *
+* hardware, and sometimes not even then.                                      *
+* DB is in every sense of the word a successor to that effort.                *
+*                                                                             *
+* 2/1994 -                                                                    *
+*                                                                             *
+* Creation and test of the inital version of DB.                              *
+*                                                                             *
+******************************************************************************}
+
+module dbdef;
+
+const
+
+   maxwrd  = 65535; { highest value in 16 bit word }
+   maxfil  = 20;    { number of characters in a file name }
+   maxlin  = 200;   { maximum length of command line }
+   maxlab  = 20;    { maximum length of a label }
+   maxexc  = 200;   { maximum length of intermediate buffer }
+   maxstk  = 100;   { maximum dept of executive operand stack }
+   maxfid  = 10;    { maximum number of program open files }
+
+type 
+
+   word   = 0..maxwrd; { unsigned 16 bit word }
+   filinx = 1..maxfil; { index for filenames }
+   filnam = packed array [filinx] of char; { filename }
+   lininx = 1..maxlin; { index for command line }
+   excinx = 1..maxexc; { index for intermediate buffer }
+   labinx = 1..maxlab; { index for label }
+   labl   = packed array [labinx] of char; { label }
+   stkinx = 1..maxstk; { index for operand stack }
+   { command entries }
+   cdfptr = ^cdfrec;
+   cdfrec = record
+
+      name:  labl;  { name of command }
+      ccodg: byte;  { global compile code, or 0 if none }
+      ccodm: byte;  { machine specific compile code, or 0 if none }
+      next:  cdfptr { next list entry }
+
+   end;
+   { command codes }
+   cmdcod = (cnull, { no command }
+             cds,   { display step }
+             css,   { single step }
+             ccp,   { compare }
+             cse,   { search }
+             csn,   { search not }
+             cnbu,  { no break until }
+             cret,  { return }
+             cptr,  { printer }
+             cnptr, { no printer }
+             cht,   { halt trap }
+             cnht,  { no halt trap }
+             cport, { port }
+             cmove, { move }
+             cfill, { fill }
+             creg,  { registers }
+             cdump, { dump }
+             centr, { enter }
+             clist, { list }
+             cgo,   { go }
+             cclr,  { clear }
+             cbrk,  { breakpoints }
+             cprt,  { print }
+             cutl,  { until }
+             cstp,  { stop }
+             cass,  { assign }
+             cquit, { quit debugger }
+             cei,   { enable interrupts }
+             cdi,   { disable interrupts }
+             chelp, { help commands }
+             cend); { end sentry }
+   { intermediate codes }
+   intcod = (ireg,   { display cpu status/registers }
+             ids,    { single step with display }
+             iss,    { single step quietly }
+             iquit,  { quit debugger }
+             ilist,  { list code }
+             idump,  { dump memory }
+             iass,   { assign variable }
+             iin,    { input value }
+             iout,   { output value }
+             iei,    { enable interrupts }
+             idi,    { disable interrupts }
+             igo,    { go program }
+             igop,   { go program present address }
+             iprt,   { print value }
+             idisb,  { display breakpoints }
+             isetb,  { set breakpoint }
+             ihelp,  { help commands }
+             ilodc,  { load constant }
+             iloda,  { load entry address }
+             iputm,  { place memory value }
+             iendl); { end of line }
+   brkptr = ^brkrec; { breakpoint record pointer }
+   brkrec = record { breakpoint record entry }
+
+               addr: integer; { address of breakpoint }
+               data: byte;    { data under breakpoint }
+               next: brkptr   { next entry link }
+
+            end;
+   { predefined variables }
+   varcod = (vnull, { no variable }
+             va,    { cpu register a }
+             vb,    { cpu register b }
+             vc,    { cpu register c }
+             vd,    { cpu register d }
+             ve,    { cpu register e }
+             vh,    { cpu register h }
+             vl,    { cpu register l }
+             vbc,   { cpu register bc }
+             vde,   { cpu register de }
+             vhl,   { cpu register hl }
+             vpc,   { cpu register pc }
+             vsp,   { cpu register sp }
+             vf,    { cpu flags register }
+             vend); { end sentry }
+   errcod = (elabtl,   { Label too long }
+             ecmdend,  { End of command expected }
+             ecmdexp,  { Command expected }
+             elabexp,  { Label expected }
+             ecmdnf,   { Command not found }
+             ecmdnimp, { Command not implemented yet }
+             ecodovf,  { Code buffer overflow }
+             edbr,     { Digit beyond radix specified }
+             enfmt,    { Invalid numeric format }
+             ecmaexp,  { ',' expected }
+             evarnf,   { Variable not found }
+             einvprt,  { I/O port accessed does not exist }
+             einvins,  { Invalid instruction executed }
+             ehltins,  { Halt instruction executed }
+             eunmapio, { unmapped I/O addresses were accessed }
+             einvacl,  { invalid access length }
+             esys);    { System error: notify S. A. Moore }
+
+begin
+end.

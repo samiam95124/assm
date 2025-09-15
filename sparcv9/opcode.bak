@@ -1,0 +1,759 @@
+module opcode;
+
+uses asdef,  { generic definitions }
+     common, { global variables }
+     utl,    { generic utilities }
+     direct, { generic assembler directives }
+     asmain, { error handling }
+     macdef, { processor specific definitions }
+     macutl; { processor specific utilities }
+
+procedure mprcopc; forward; { process opcode }
+
+private
+
+{*******************************************************************************
+
+Process three register instruction
+
+Generates instructions of the form:
+
+op rrs1, rs2, rd
+
+Note: uses 'and' of signed numbers.
+
+*******************************************************************************}
+
+procedure dothreg(i: opcodet);
+
+var rs1, rs2, rd: parrec; { registers }
+    oc:           integer; { opcode preparation }
+ 
+begin
+
+   parcod(rs1); { get source }
+   if not (rs1.m in gprset) then prterr(eregt); { wrong register type }
+   skpspc; { skip spaces }
+   prcnxt(',', ecmaexp); { skip ',' }
+   parcod(rs2); { get reg or immediate }
+   if not (rs2.m in gprset+[rgimm]) then prterr(eregt); { wrong register type }
+   skpspc; { skip spaces }
+   prcnxt(',', ecmaexp); { skip ',' }
+   parcod(rd); { get destination }
+   if not (rd.m in gprset) then prterr(eregt); { wrong register type }
+   { form opcode with rd and rs1 in place }
+   oc := opcbas[i] or reg(rd.m)*$02000000 or reg(rs1.m)*$00004000;
+   if rs2.m = rgimm then begin { source 2 is immediate }
+
+      oc := oc or $00002000; { set immediate bit }
+      if absolute(rs2.vl) then begin { output as fixed value }
+
+         chkbit(rs2.vl^.symval, 13); { check fits within field }
+         { output with offset to fit in signed 13 bits }
+         outval(oc or (rs2.vl^.symval+$2000), 4, true)
+
+      end else begin { output as symbolic value with instruction as backing }
+
+         outval(oc div $10000, 2, true); { output high 16 bits }
+         gensym32(rs2.vl, oc, imnorm, 13)
+
+      end
+
+   end else { source 2 is register }
+      outval(oc or reg(rs2.m), 4, true)
+
+end;
+
+{*******************************************************************************
+
+Branch condition code
+
+Creates instructions of the form:
+
+br [cc],loc
+
+There are actually two format opcodes merged into one memnemonic set. We handle
+this by making a small adjustment to the base code from the table.
+
+*******************************************************************************}
+
+procedure brncc(i: opcodet);
+
+var l, r: parrec;  { left and right parameters }
+    oc:   integer; { opcode preparation }
+
+begin
+
+   parcod(l); { get jump location }
+   if (l.m = rgicc) or (l.m = rgxcc) then begin 
+
+      { it's a branch with prediction }
+      prcnxt(',', ecmaexp); { skip ',' }
+      parcod(r); { get location }
+      if r.m <> rgimm then prterr(epart); { bad parameter }
+      oc := opcbas[i]-$400000; { find opcode adjusted for prediction }
+      { output displacement with %icc or %xcc code }
+      gensym32(r.vl, oc or reg(l.m)*$100000, imssof, 19)
+
+   end else begin { standard branch }
+
+      if l.m <> rgimm then prterr(epart); { bad parameter }
+      { output instruction with displacement }
+      gensym32(l.vl, opcbas[i], imssof, 24)
+
+   end;
+
+end;
+
+{*******************************************************************************
+
+Branch on integer register
+
+*******************************************************************************}
+
+procedure brir(i: opcodet);
+
+var l, r: parrec;  { left and right parameters }
+
+begin
+
+   parcod(l); { get left }
+   if not (l.m in gprset) then prterr(eregt); { wrong register type }
+   skpspc; { skip spaces }
+   prcnxt(',', ecmaexp); { skip ',' }
+   parcod(r); { get immediate }
+   if r.m <> rgimm then prterr(epart); { bad parameter }
+   { output instruction with displacement }
+   gensym32(r.vl, opcbas[i] or reg(l.m)*$00004000, imsbsof, 14)
+
+end;
+
+{*******************************************************************************
+
+Bit instructions
+
+Handles the btst, bset, bclr and btog instructions. These are synthetic
+instructions.
+
+*******************************************************************************}
+
+procedure bopr(i: opcodet);
+
+var l, r: parrec;  { left and right parameters }
+    oc:   integer; { opcode preparation }
+
+begin
+
+   case i of { opcode }
+ 
+      opbtst: oc := opcbas[opandcc]; { bit test is and }
+      opbset: oc := opcbas[opor];    { bit set is or }
+      opbclr: oc := opcbas[opandn];  { bit clear is and }
+      opbtog: oc := opcbas[opxor]    { bit toggle is xor }
+
+   end;
+   parcod(l); { get left }
+   if not (l.m in gprset+[rgimm]) then prterr(eregt); { wrong register type }
+   skpspc; { skip spaces }
+   prcnxt(',', ecmaexp); { skip ',' }
+   parcod(r); { get right }
+   if not (r.m in gprset) then prterr(eregt); { wrong register type }
+   { place source 1 register }
+   oc := oc or reg(r.m)*$00004000;
+   { if not a bit test, place destination register }
+   if i <> opbtst then oc := oc or reg(r.m)*$02000000;
+   if l.m = rgimm then begin { source 2 is immediate }
+
+      oc := oc or $00002000; { set immediate bit }
+      if absolute(l.vl) then begin { output as fixed value }
+
+         chkbit(l.vl^.symval, 13); { check fits within field }
+         { output with offset to fit in signed 13 bits }
+         outval(oc or (l.vl^.symval+$2000), 4, true)
+
+      end else begin { output as symbolic value with instruction as backing }
+
+         outval(oc div $10000, 2, true); { output high 16 bits }
+         gensym32(l.vl, oc, imnorm, 13)
+
+      end
+
+   end else { source 2 is register }
+      outval(oc or reg(l.m), 4, true)
+    
+end;
+
+{*******************************************************************************
+
+Call and link
+
+*******************************************************************************}
+
+procedure call(i: opcodet);
+
+var l: parrec;  { left parameter }
+
+begin
+
+   parcod(l); { get left }
+   if l.m <> rgimm then prterr(emodt); { wrong mode }
+   gensym32(l.vl, opcbas[i], imnorm, 30) { output instruction }
+
+end;
+
+{*******************************************************************************
+
+Compare and swap
+
+*******************************************************************************}
+
+procedure cas(i: opcodet);
+
+var rs1, rs2, rd: parrec; { registers }
+
+begin
+
+   parcod(rs1); { get source }
+   if rs1.m = rgirr then prterr(emodt); { wrong mode }
+   skpspc; { skip spaces }
+   prcnxt(',', ecmaexp); { skip ',' }
+   parcod(rs2); { get reg or immediate }
+   if not (rs2.m in gprset) then prterr(eregt); { wrong register type }
+   skpspc; { skip spaces }
+   prcnxt(',', ecmaexp); { skip ',' }
+   parcod(rd); { get destination }
+   if not (rd.m in gprset) then prterr(eregt); { wrong register type }
+
+end;
+
+{*******************************************************************************
+
+Process opcode
+
+Expects the opcode in labbuf. A search is done for the opcode, and a handler is 
+executed for the opcode.
+Note that the entire process may be carried out here (for simple instructions), 
+and that multiple opcodes are sometimes assigned to a single handler. In the 
+multiple opcode case, the actuall 'code' for the instruction is passed to the 
+handler.
+
+for all opcodes except 'equ', 'glbl', 'extl', 'macro' and 'dv' a default line 
+label declaration is performed.
+
+*******************************************************************************}
+
+procedure mprcopc;
+
+var i: opcodet; { code to execute }
+
+begin
+
+
+   i := fndres(labbuf); { get reserved code }
+   if i = opnull then prterr(eopcnf); { none found }
+   { check perform label equation }
+   if (i <> opequ) and (i <> opsetequ) and (i <> opglobal) and
+      (i <> opextern) and (i <> opmacro) and (i <> opdefvs) then prclab;
+   skpspc; { skip spaces }
+   case i of { opcode }
+
+      opadd, opaddcc, opaddc, opaddccc, opand, opandcc, opandn, opandncc,
+      opmulscc, opmulx, opor, oporcc, oporn, oporncc, oprestore, opsave, opsdiv,
+      opsdivcc, opsdivx, opsmul, opsmulcc, opsub, opsubcc, opsubc, opsubccc,
+      optaddcc, optaddcctv, optsubcc, optsubcctv, opudiv, opudivcc, opudivx,
+      opumul, opumulcc, opxor, opxorcc, opxnor,  
+      opxnorcc: dothreg(i); { xor rs1, rs2/imm, rd }
+
+      opba, opbn, opbne, opbnz, opbe, opbz, opbg, opble, opbge, opbl, opbgu,
+      opbleu, opbcc, opbgeu, opbcs, opblu, opbpos, opbneg, opbvc, opbvs, opbaa,
+      opbna, opbnea, opbnza, opbea, opbza, opbga, opblea, opbgea, opbla, opbgua,
+      opbleua, opbcca, opbgeua, opbcsa, opblua, opbposa, opbnega, opbvca,
+      opbvsa, opbapt, opbnpt, opbnept, opbnzpt, opbept, opbzpt, opbgpt, opblept,
+      opbgept, opblpt, opbgupt, opbleupt, opbccpt, opbgeupt, opbcspt, opblupt,
+      opbpospt, opbnegpt, opbvcpt, opbvspt, opbaapt, opbnapt, opbneapt, opbnzapt,
+      opbeapt, opbzapt, opbgapt, opbleapt, opbgeapt, opblapt, opbguapt,
+      opbleuapt, opbccapt, opbgeuapt, opbcsapt, opbluapt, opbposapt, opbnegapt,
+      opbvcapt, opbvsapt, opbapn, opbnpn, opbnepn, opbnzpn, opbepn, opbzpn,
+      opbgpn, opblepn, opbgepn, opblpn, opbgupn, opbleupn, opbccpn, opbgeupn,
+      opbcspn, opblupn, opbpospn, opbnegpn, opbvcpn, opbvspn, opbaapn, opbnapn,
+      opbneapn, opbnzapn, opbeapn, opbzapn, opbgapn, opbleapn, opbgeapn, 
+      opblapn, opbguapn, opbleuapn, opbccapn, opbgeuapn, opbcsapn, opbluapn,
+      opbposapn, opbnegapn, opbvcapn, 
+      opbvsapn: brncc(i); { br [cc],loc }
+
+      opbrz, opbrlez, opbrlz, opbrnz, opbrgz, opbrgez, opbrza, opbrleza, 
+      opbrlza, opbrnza, opbrgza, opbrgeza, opbrzpt, opbrlezpt, opbrlzpt, 
+      opbrnzpt, opbrgzpt, opbrgezpt, opbrzapt, opbrlezapt, opbrlzapt, opbrnzapt,
+      opbrgzapt, opbrgezapt, opbrzpn, opbrlezpn, opbrlzpn, opbrnzpn, opbrgzpn,
+      opbrgezpn, opbrzapn, opbrlezapn, opbrlzapn, opbrnzapn, opbrgzapn,     
+      opbrgezapn:  brir(i); { br r,loc } 
+
+      opbtst, opbset, opbclr, opbtog: bopr(i); { op reg/imm,reg } 
+      opcall: call(i); { call loc } 
+      opcas, opcasl, opcasx, opcasxl: cas(i);  { cas [rs1],rs2,rd };  
+      opcasa:      ;  
+      opcasxa:     ;  
+      opclr:       ;  
+      opclrb:      ;  
+      opclrh:      ;  
+      opclrx:      ;  
+      opcmp:       ;  
+      opdec:       ;  
+      opdeccc:     ;  
+      opdone:      ;  
+      opfabss:     ;  
+      opfabsd:     ;  
+      opfabsq:     ;  
+      opfba,       
+      opfbn,       
+      opfbu,       
+      opfbg,       
+      opfbug,      
+      opfbl,       
+      opfbul,      
+      opfblg,      
+      opfbne,      
+      opfbnz,      
+      opfbe,       
+      opfbz,       
+      opfbue,      
+      opfbge,      
+      opfbuge,     
+      opfble,      
+      opfbule,     
+      opfbo,       
+      opfbaa,      
+      opfbna,      
+      opfbua,      
+      opfbga,      
+      opfbuga,     
+      opfbla,      
+      opfbula,     
+      opfblga,     
+      opfbnea,     
+      opfbnza,     
+      opfbea,      
+      opfbza,      
+      opfbuea,     
+      opfbgea,     
+      opfbugea,    
+      opfblea,     
+      opfbulea,    
+      opfboa:      brncc(i);  
+      opfbapt:     ;  
+      opfbnpt:     ;  
+      opfbupt:     ;  
+      opfbgpt:     ;  
+      opfbugpt:    ;  
+      opfblpt:     ;  
+      opfbulpt:    ;  
+      opfblgpt:    ;  
+      opfbnept:    ;  
+      opfbnzpt:    ;  
+      opfbept:     ;  
+      opfbzpt:     ;  
+      opfbuept:    ;  
+      opfbgept:    ;  
+      opfbugept:   ;  
+      opfblept:    ;  
+      opfbulept:   ;  
+      opfbopt:     ;  
+      opfbaapt:    ;  
+      opfbnapt:    ;  
+      opfbuapt:    ;  
+      opfbgapt:    ;  
+      opfbugapt:   ;  
+      opfblapt:    ;  
+      opfbulapt:   ;  
+      opfblgapt:   ;  
+      opfbneapt:   ;  
+      opfbnzapt:   ;  
+      opfbeapt:    ;  
+      opfbzapt:    ;  
+      opfbueapt:   ;  
+      opfbgeapt:   ;  
+      opfbugeapt:  ;  
+      opfbleapt:   ;  
+      opfbuleapt:  ;  
+      opfboapt:    ;  
+      opfbapn:     ;  
+      opfbnpn:     ;  
+      opfbupn:     ;  
+      opfbgpn:     ;  
+      opfbugpn:    ;  
+      opfblpn:     ;  
+      opfbulpn:    ;  
+      opfblgpn:    ;  
+      opfbnepn:    ;  
+      opfbnzpn:    ;  
+      opfbepn:     ;  
+      opfbzpn:     ;  
+      opfbuepn:    ;  
+      opfbgepn:    ;  
+      opfbugepn:   ;  
+      opfblepn:    ;  
+      opfbulepn:   ;  
+      opfbopn:     ;  
+      opfbaapn:    ;  
+      opfbnapn:    ;  
+      opfbuapn:    ;  
+      opfbgapn:    ;  
+      opfbugapn:   ;  
+      opfblapn:    ;  
+      opfbulapn:   ;  
+      opfblgapn:   ;  
+      opfbneapn:   ;  
+      opfbnzapn:   ;  
+      opfbeapn:    ;  
+      opfbzapn:    ;  
+      opfbueapn:   ;  
+      opfbgeapn:   ;  
+      opfbugeapn:  ;  
+      opfbleapn:   ;  
+      opfbuleapn:  ;  
+      opfboapn:    ;  
+      opfcmps:     ;  
+      opfcmpd:     ;  
+      opfcmpq:     ;  
+      opfcmpes:    ;  
+      opfcmped:    ;  
+      opfcmpeq:    ;  
+      opfdivs:     ;  
+      opfdivd:     ;  
+      opfdivq:     ;  
+      opfdmulq:    ;  
+      opfitos:     ;  
+      opfitod:     ;  
+      opfitoq:     ;  
+      opflush:     ;  
+      opflushw:    ;  
+      opfmovs:     ;  
+      opfmovd:     ;  
+      opfmovq:     ;  
+      opfmovsa:    ;  
+      opfmovsn:    ;  
+      opfmovsne:   ;  
+      opfmovsnz:   ;  
+      opfmovse:    ;  
+      opfmovsz:    ;  
+      opfmovsg:    ;  
+      opfmovsle:   ;  
+      opfmovsge:   ;  
+      opfmovsl:    ;  
+      opfmovsgu:   ;  
+      opfmovsleu:  ;  
+      opfmovscc:   ;  
+      opfmovsgeu:  ;  
+      opfmovscs:   ;  
+      opfmovslu:   ;  
+      opfmovspos:  ;  
+      opfmovsneg:  ;  
+      opfmovsvc:   ;  
+      opfmovsvs:   ;  
+      opfmovda:    ;  
+      opfmovdn:    ;  
+      opfmovdne:   ;  
+      opfmovdnz:   ;  
+      opfmovde:    ;  
+      opfmovdz:    ;  
+      opfmovdg:    ;  
+      opfmovdle:   ;  
+      opfmovdge:   ;  
+      opfmovdl:    ;  
+      opfmovdgu:   ;  
+      opfmovdleu:  ;  
+      opfmovdcc:   ;  
+      opfmovdgeu:  ;  
+      opfmovdcs:   ;  
+      opfmovdlu:   ;  
+      opfmovdpos:  ;  
+      opfmovdneg:  ;  
+      opfmovdvc:   ;  
+      opfmovdvs:   ;  
+      opfmovqa:    ;  
+      opfmovqn:    ;  
+      opfmovqne:   ;  
+      opfmovqnz:   ;  
+      opfmovqe:    ;  
+      opfmovqz:    ;  
+      opfmovqg:    ;  
+      opfmovqle:   ;  
+      opfmovqge:   ;  
+      opfmovql:    ;  
+      opfmovqgu:   ;  
+      opfmovqleu:  ;  
+      opfmovqcc:   ;  
+      opfmovqgeu:  ;  
+      opfmovqcs:   ;  
+      opfmovqlu:   ;  
+      opfmovqpos:  ;  
+      opfmovqneg:  ;  
+      opfmovqvc:   ;  
+      opfmovqvs:   ;  
+      opfmovsu:    ;  
+      opfmovsug:   ;  
+      opfmovsul:   ;  
+      opfmovslg:   ;  
+      opfmovsue:   ;  
+      opfmovsuge:  ;  
+      opfmovsule:  ;  
+      opfmovso:    ;  
+      opfmovdu:    ;  
+      opfmovdug:   ;  
+      opfmovdul:   ;  
+      opfmovdlg:   ;  
+      opfmovdue:   ;  
+      opfmovduge:  ;  
+      opfmovdule:  ;  
+      opfmovdo:    ;  
+      opfmovqu:    ;  
+      opfmovqug:   ;  
+      opfmovqul:   ;  
+      opfmovqlg:   ;  
+      opfmovque:   ;  
+      opfmovquge:  ;  
+      opfmovqule:  ;  
+      opfmovqo:    ;  
+      opfmovrse:   ;  
+      opfmovrsz:   ;  
+      opfmovrslez: ;  
+      opfmovrslz:  ;  
+      opfmovrsne:  ;  
+      opfmovrsnz:  ;  
+      opfmovrsgz:  ;  
+      opfmovrsgez: ;  
+      opfmovrde:   ;  
+      opfmovrdz:   ;  
+      opfmovrdlez: ;  
+      opfmovrdlz:  ;  
+      opfmovrdne:  ;  
+      opfmovrdnz:  ;  
+      opfmovrdgz:  ;  
+      opfmovrdgez: ;  
+      opfmovrqe:   ;  
+      opfmovrqz:   ;  
+      opfmovrqlez: ;  
+      opfmovrqlz:  ;  
+      opfmovrqne:  ;  
+      opfmovrqnz:  ;  
+      opfmovrqgz:  ;  
+      opfmovrqgez: ;  
+      opfmuls:     ;  
+      opfmuld:     ;  
+      opfmulq:     ;  
+      opfnegs:     ;  
+      opfnegd:     ;  
+      opfnegq:     ;  
+      opfsmuld:    ;
+      opfsqrts:    ;  
+      opfsqrtd:    ;  
+      opfsqrtq:    ;  
+      opfstoi:     ;  
+      opfdtoi:     ;  
+      opfqtoi:     ;  
+      opfstod:     ;  
+      opfstoq:     ;  
+      opfdtos:     ;  
+      opfdtoq:     ;  
+      opfqtos:     ;  
+      opfqtod:     ;  
+      opfstox:     ;  
+      opfdtox:     ;  
+      opfqtox:     ;  
+      opfsubs:     ;  
+      opfsubd:     ;  
+      opfsubq:     ;  
+      opfxtos:     ;  
+      opfxtod:     ;  
+      opfxtoq:     ;  
+      opilltrap:   ;  
+      opimpdep1:   ;  
+      opimpdep2:   ;
+      opinc:       ;  
+      opinccc:     ;  
+      opiprefetch: ;  
+      opjmp:       ;  
+      opjmpl:      ;  
+      opldd:       ;  
+      opldda:      ;  
+      opld:        ;  
+      oplda:       ;  
+      opldq:       ;  
+      opldqa:      ;  
+      opldsb:      ;  
+      opldsba:     ;  
+      opldsh:      ;  
+      opldsha:     ;  
+      opldstub:    ;  
+      opldstuba:   ;  
+      opldsw:      ;  
+      opldswa:     ;  
+      opldub:      ;  
+      oplduba:     ;  
+      oplduh:      ;  
+      oplduha:     ;  
+      oplduw:      ;  
+      oplduwa:     ;  
+      opldx:       ;  
+      opldxa:      ;  
+      opmembar:    ;  
+      opmov:       ;
+      opmova:      ;  
+      opmovn:      ;  
+      opmovne:     ;  
+      opmovnz:     ;  
+      opmove:      ;  
+      opmovz:      ;  
+      opmovg:      ;  
+      opmovle:     ;  
+      opmovge:     ;  
+      opmovl:      ;  
+      opmovgu:     ;  
+      opmovleu:    ;  
+      opmovcc:     ;  
+      opmovgeu:    ;  
+      opmovcs:     ;  
+      opmovlu:     ;  
+      opmovpos:    ;  
+      opmovneg:    ;  
+      opmovvc:     ;  
+      opmovvs:     ;  
+      opmovrne:    ;  
+      opmovrnz:    ;  
+      opmovre:     ;  
+      opmovrz:     ;  
+      opmovrgez:   ;  
+      opmovrlz:    ;  
+      opmovrlez:   ;  
+      opmovrgz:    ;  
+      opneg:       ;  
+      opnop:       ;
+      opnot:       ;  
+      oppopc:      ;  
+      opprefetch:  ;  
+      opprefetcha: ;  
+      oprd:        ;  
+      oprdpr:      ;  
+      oprestored:  ;  
+      opretry:     ;
+      opret:       ;  
+      opretl:      ;  
+      opreturn:    ;  
+      opsaved:     ;  
+      opsethi:     ;  
+      opset:       ;  
+      opsetuw:     ;  
+      opsetsw:     ;  
+      opsetx:      ;  
+      opsignx:     ;  
+      opsir:       ;  
+      opsll:       ;  
+      opsllx:      ;  
+      opsra:       ;  
+      opsrax:      ;  
+      opsrl:       ;  
+      opsrlx:      ;  
+      opstb:       ;  
+      opstba:      ;  
+      opstub:      ;  
+      opstuba:     ;  
+      opstsb:      ;  
+      opstsba:     ;  
+      opstbar:     ;  
+      opstd:       ;  
+      opstda:      ;  
+      opst:        ;  
+      opsta:       ;  
+      opsth:       ;  
+      opstha:      ;  
+      opstuh:      ;  
+      opstuha:     ;  
+      opstsh:      ;  
+      opstsha:     ;  
+      opstq:       ;  
+      opstqa:      ;  
+      opstw:       ;  
+      opstwa:      ;  
+      opstuw:      ;  
+      opstuwa:     ;  
+      opstsw:      ;  
+      opstswa:     ;  
+      opstx:       ;  
+      opstxa:      ;  
+      opswap:      ;  
+      opswapa:     ;  
+      opta:        ;  
+      optn:        ;  
+      optne:       ;  
+      optnz:       ;  
+      opte:        ;  
+      optz:        ;  
+      optg:        ;  
+      optle:       ;  
+      optge:       ;  
+      optl:        ;  
+      optgu:       ;  
+      optleu:      ;  
+      optcc:       ;  
+      optgeu:      ;  
+      optcs:       ;  
+      optlu:       ;  
+      optpos:      ;  
+      optneg:      ;  
+      optvc:       ;  
+      optvs:       ;
+      optst:       ;  
+      opwr:        ;  
+      opwrpr:      ;  
+      
+      { SPARC specific pseudo operations }
+
+      opfloat:     float := true; { set floating point enabled }
+      opnfloat:    float := false; { set floating point disabled }
+      opmsv7:      cmachine := mtv7; { restrict to SPARC V7 }
+      opmsv8:      cmachine := mtv8; { restrict to SPARC V8 }
+      opmsv9:      cmachine := mtv9; { restrict to SPARC V9 }
+      
+      { assembler pseudo operations }
+
+      opmacro:   macro;   { lab: macro x }
+      opendmac:  endmac;  { endmac }
+      opinclude: include; { include file }
+      opequ:     equlab;  { lab: equ n }
+      opsetequ:  setlab;  { lab: setequ n }
+      opglobal:  gbllab;  { lab: global }
+      opextern:  extlab;  { lab: extern }
+      opalignp:  alignp;  { align program }
+      opalignv:  alignv;  { align variable }
+      opif:      iftr;    { if n }
+      opelse:    elsec;   { else }
+      opelseif:  elseif;  { elseif }
+      opendif:   endif;   { endif }
+      opassm:    assm;    { assm string }
+      opprint:   asprint(false); { print user message }
+      operror:   asprint(true); { print user error }
+      opstop:    asstop;  { stop assembly }
+      opbendian: prterr(encend); { SPARC is not endian configurable }
+      oplendian: prterr(encend); { SPARC is not endian configurable }
+      opdefb:    defvall(true, false, 1); { defb b/str[,b/str]... }
+      opdefps:   defps;   { defps n }
+      opdefvs:   defvs;   { defvs n }
+      opdefbe:   defval(true, false); { defbe l, n }
+      opdefle:   defval(false, false); { defle l, n }
+      opdefbef:  defval(true, true); { defbef l, n }
+      opdeflef:  defval(false, true); { deflef l, n }
+      opdeff:    defvall(cpubigend, true, 8); { deff n }
+      opdefsf:   defvall(cpubigend, true, 4); { defsf n }
+      opdeflf:   defvall(cpubigend, true, 10); { deflf n }
+      opdefef:   defvall(cpubigend, true, 16); { defef n }
+      opdefhw:   defvall(cpubigend, false, cpuwrdsiz div 2); { defhw n }
+      opdefw:    defvall(cpubigend, false, cpuwrdsiz); { defw w[,w]... }
+      opdefdw:   defvall(cpubigend, false, cpuwrdsiz*2); { defdw n }
+      opdefqw:   defvall(cpubigend, false, cpuwrdsiz*4); { defqw n }
+
+   end
+
+end;
+
+begin
+end.

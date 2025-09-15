@@ -1,0 +1,302 @@
+program main(command, output);
+
+uses 
+
+   stddef, { standard defines }
+   strlib, { string functions }
+   extlib, { os support functions }
+   lndef,  { global definitions file }
+   common, { global variables file }
+   utl,    { utilities file }
+   link;   { link process file }
+
+label 99; { terminate program }
+
+var i:  integer; { index }
+    fn: packed array [1..20] of char;
+
+{******************************************************************************
+
+Abort program
+
+Aborts LN, closing all open files.
+
+******************************************************************************}
+
+procedure abort;
+
+begin
+
+   if fverb then writeln('Link aborted');
+   if not fsupp and (srclst <> nil) then begin 
+
+      if len(srclst^.nam) > 0 then begin { the source name is not blank }
+
+         { If there is an output file present, then remove it. }
+         addext(srclst^.nam, 'obj', true); { set .obj file }
+         if exists(srclst^.nam) then delete(srclst^.nam);
+         addext(srclst^.nam, 'sym', true); { set .sym file }
+         if exists(srclst^.nam) then delete(srclst^.nam)
+
+      end
+
+   end;
+   goto 99 { abort link }
+
+end;
+
+begin { ln }
+
+   writeln;
+   writeln('Code module linker vs. 1.14.0001 Copyright (C) 2005 S. A. Moore');
+   writeln;
+
+   srclst := nil; { clear source files list }
+   srclas := nil; { clear last source entry }
+   cursrc := nil; { clear current source entry }
+   fresym := nil; { clear free symbol entries list }
+   frerld := nil; { clear free rld entries list }
+   blkfre := nil; { clear free block list }
+   bicfre := nil; { clear free block inclusion list }
+   linlst := nil; { clear line tracking list }
+   linlas := nil; { clear line tracking last entry }
+   linfre := nil; { clear free line tracking list }
+   symtab := nil; { clear current symbols table }
+   symsav := nil; { clear saved symbols table }
+   rldtab := nil; { clear current rlds table }
+   rldsav := nil; { clear saved rlds table }
+   blktab := nil; { clear block list }
+   blkstk := nil; { clear block stack }
+   blksav := nil; { clear saved block list }
+   pstr   := nil; { clear program start symbol link }
+   pend   := nil; { clear program end symbol link }
+   vstr   := nil; { clear variable start symbol link }
+   vend   := nil; { clear varaible end symbol link }
+   rldinx := nil; { clear rld index }
+   pgmloc := 0; { set 0 as default program base }
+   varloc := 0; { set 0 as default variables base }
+   poff   := 0; { set current program frame offset to 0 }
+   voff   := 0; { set current variable frame offset to 0 }
+   pstrnw := 0; { clear program start value, new }
+   pstrod := 0; { clear program start value, old }
+   pendnw := 0; { clear program end value, new }
+   pendod := 0; { clear program end value, old }
+   vstrnw := 0; { clear variable start value, new }
+   vstrod := 0; { clear variable start value, old }
+   vendnw := 0; { clear variable end value, new }
+   vendod := 0; { clear variable end value, old }
+   prgmc  := 0; { final output program counter }
+   symlen := 0; { clear symbol length maximum }
+   srclen := 0; { clear filename length maximum }
+   syminx := 1; { clear symbols cache index }
+   symtop := 1; { clear symbols cache top }
+   obiinx := 1; { clear input object cache index }
+   obitop := 1; { clear input object cache top }
+   oboinx := 1; { clear output object cache index }
+   syoinx := 1; { clear output symbol cache index }
+   pstrf  := false; { set program start found false }
+   pendf  := false; { set program end found false }
+   vstrf  := false; { set variable start found false }
+   vendf  := false; { set variable end found false }
+   lstlen := maxout; { length of listing output lines }
+   lstpag := maxpag; { length of listing page }
+   symrecycle := true; { set recycle symbols }
+   fsupp := false; { set no suppress output }
+   fverb := true; { set verbose flag }
+   ferrf := false; { set no error file requested }
+   ftrim := false; { set no symbols trimming }
+   fsecr := false; { set not secure mode }
+   fundf := true; { produce undefined symbols listing }
+   fsdmp := false; { don't produce symbols dump }
+   fvset := false; { variable space start not set }
+   fllab := false; { don't output label listing }
+   flval := false; { don't output value listing }
+   flmod := false; { don't output module listing }
+   flxrf := false; { don't output cross reference listing }
+   fldub := false;  { don't delete unused blocks }
+   nxtobj := obnull; { set no next object }
+   nxtsym := nil; { set no next symbol }
+   nxtrld := nil; { set no next rld }
+   nxtblk := nil; { set no next block }
+   nxtbic := nil; { set no next block inclusion }
+   linnxt := 0; { clear line counter }
+   pgmnxt := 0; { clear program counter }
+   varnxt := 0; { clear variable counter }
+   srcnxt := nil; { clear source name }
+   { determine the number of bits and bytes in an integer, not including the
+     sign }
+   i := maxint; { set 1st bit }
+   bits := 0;
+   while i <> 0 do begin i := i div 2; bits := bits + 1 end;
+   bytes := bits div 8; { set bytes in integer }
+   if (bits mod 8) <> 0 then bytes := bytes + 1; { round up }
+   digits := bytes*2; { set number of digits in integer }
+   { precalculate the top byte power, or the maximum $01 byte that an
+     integer can hold. Used for integer to byte output convertions,
+     we save time by precalculating it }
+   toppow := 1; { find top power }
+   for i := 1 to bytes-1 do toppow := toppow * 256;
+   { Form character to ASCII value translation array from ASCII value to 
+     character translation array. }
+   for i := 1 to 255 do trnchr[chr(i)] := 0; { null out array }
+   for i := 1 to 127 do trnchr[chrtrn[i]] := i; { form translation }
+
+   filchr(valfch); { get the filename valid characters }
+   valfch := valfch-['=']; { remove parsing characters }
+   { get command line }
+   reads(command, cmdlin, cmdovf);
+   if cmdovf then fprterr(ecmdovf); { too long }
+   cmdlen := len(cmdlin); { find length }
+   cmdptr := 1; { set 1st character }
+   parcmd; { parse command line }
+   { sweep files list for non-existant files }
+   cursrc := srclst; { index top of source list }
+   if not fsupp then cursrc := cursrc^.next; { skip output if exists }
+   while cursrc <> nil do begin { traverse list }
+
+      addext(cursrc^.nam, 'sym', true); { try to find .sym file }
+      if not exists(cursrc^.nam) then begin { non-existant }
+
+         errfil := cursrc^.nam; { place filename for errors }
+         fprterr(efilnf) { file not found error }
+
+      end;
+      addext(cursrc^.nam, 'obj', true); { try to find .obj file }
+      if not exists(cursrc^.nam) then begin { non-existant }
+
+         errfil := cursrc^.nam; { place filename for errors }
+         fprterr(efilnf) { file not found error }
+
+      end;
+      cursrc := cursrc^.next { next file }
+
+   end;
+   { perform symbols deck merge pass }
+   cursrc := srclst; { index top of source list }
+   if not fsupp then cursrc := cursrc^.next; { skip output if exists }
+   while cursrc <> nil do begin { read all symbols files }
+
+      symsav := symtab; { move current symbols to saved symbols }
+      symtab := nil; { clear current symbols table }
+      rldsav := rldtab; { move current rlds to saved rlds }
+      rldtab := nil; { clear current rlds table }
+      blksav := blktab; { move current blocks to saved blocks }
+      blktab := nil; { clear current block table }
+      linsav := linlst; { move current line tracking to saved }
+      linlst := nil; { clear current line save list }
+      addext(cursrc^.nam, 'sym', true); { set .sym file }
+      assign(symfil, cursrc^.nam); { open symbols file }
+      reset(symfil);
+      if fverb then begin { output status message }
+
+         write('Processing ');
+         write(output, cursrc^.nam:0); { output current .sym file }
+         writeln { terminate }
+
+      end;
+      rdsyms; { read symbols deck }
+      close(symfil); { close symbols file }
+      apnsym; { append new program and variable spaces to old }
+      mrgsym; { merge old symbols and rld decks with new }
+      reduce; { reduce symbols deck }
+      { if the diagnostic is requested, output the symbols and rld tables
+        each time a new deck is merged }
+      if fsdmp then begin dumpsym; dumprld end;
+      cursrc := cursrc^.next { next file }
+
+   end;
+   srtrld;
+   origin; { set origin of output program }
+   reduce; { recalculate }
+   chkrld; { check rld consistency }
+   if fsdmp then begin dumpsym; dumprld end;
+   if not fsupp then begin { output files are to be produced }
+
+      { if blocks are to be deleted, count inbound block references }
+      if fldub then blkref;
+      { open the output under a temp file. this allows the output filename
+        to also be used in the input list }
+      for i := 1 to maxfil do nambuf[i] := ' ';
+      fn := 'lntemp.obj          '; { set .obj to temp }
+      for i := 1 to 20 do nambuf[i] := fn[i];
+      assign(objout, nambuf); { open output object file }
+      rewrite(objout);
+      cursrc := srclst^.next; { index 1st source file }
+      rldinx := rldtab; { set 1st rld entry for output }
+      prgmc := pgmloc; { set 1st program count }
+      while cursrc <> nil do begin { process objects }
+
+         addext(cursrc^.nam, 'obj', true); { set .obj file }
+         assign(objinp, cursrc^.nam); { open source object }
+         reset(objinp);
+         if fverb then begin { output status message }
+   
+            write('Processing ');
+            write(output, cursrc^.nam:0); { output current .obj file }
+            writeln { terminate }
+   
+         end;
+         prcobj; { process single object }
+         close(objinp); { close source object }
+         cursrc := cursrc^.next { link next input object }
+
+      end;
+      flushout; { flush object output }
+      close(objout); { close output object }
+      { move the temp output files to the final name }
+      addext(nambuf, 'sym', true);
+      assign(symfil, nambuf); { open output symbols file }
+      rewrite(symfil);
+      outsym; { output symbols and rlds }
+      flushsym; { flush symbols output }
+      close(symfil); { close output symbols file }
+      addext(nambuf, 'obj', true); { set .obj temp }
+      addext(srclst^.nam, 'obj', true); { set .obj file }
+      { rename to final }
+      if exists(srclst^.nam) then delete(srclst^.nam);
+      change(srclst^.nam, nambuf);
+      addext(srclst^.nam, 'sym', true); { set .sym file }
+      addext(nambuf, 'sym', true); { set .sym temp }
+      { rename to final }
+      if exists(srclst^.nam) then delete(srclst^.nam);
+      change(srclst^.nam, nambuf)
+
+   end;
+   { find maximum symbol length for listings }
+   if fundf or fllab or flxrf or flval then fndmax;
+   { list undefineds, labels or xref, sort symbols alphabetically }
+   if fundf or fllab or flxrf then srtalp;
+   if fundf then report; { output report of undefineds }
+   if fllab then begin { output label order symbols listing }
+
+      writeln;
+      writeln('Symbols listing in label acending order:');
+      listsym { list symbols }
+
+   end;
+   if flxrf then listxrf; { output cross reference listing }
+   if flval then begin { output value order symbols listing }
+
+      writeln;
+      writeln('Symbols listing in value acending order:');
+      srtval; { sort for acending value order }
+      listsym { list symbols }
+
+   end;
+   if flmod then begin { perform module parameters listing }
+
+      srcmax; { find length of filenames }
+      listmod { perform modules listing }
+
+   end;
+
+   99: { terminate program }
+
+   if fverb then begin { print end message }
+
+      writeln; 
+      writeln('Function complete') 
+
+   end
+
+end. { ln }

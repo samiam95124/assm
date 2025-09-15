@@ -1,0 +1,20 @@
+                      ASSEMBLY LANGUAGE SYSTEM UTILITIES
+
+
+ps <file.sym>   - Prints, in diagnostic form, the contents of a link .sym file.
+
+al <file> [#e]  - Expects to find a .lin file and .obj file by that name. The
+                  .lin file information is used to contruct a listing using
+                  the original source files and the final code.
+                  If the expand option is enabled, multiple lines in the
+                  listing may appear for each line in the source, so that
+                  all the object code corresponding to a given source line
+                  can appear.
+
+ab <file>       - Expects to find a .asm file by that name. The file is
+                  reflowed using standard tabs and printed on the standard
+                  output.
+
+hashtab <file>  - Expects to find a .lab file by that name. The labels in the
+                  file are converted to a hash table suitable for inclusion in
+                  an assembler processor specific module.

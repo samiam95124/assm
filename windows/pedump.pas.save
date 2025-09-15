@@ -1,0 +1,1156 @@
+{******************************************************************************
+*                                                                             *
+*                        PORTABLE EXECUTIVE FILE DUMPER                       *
+*                                                                             *
+*                            95/04 S. A. Moore                                *
+*                                                                             *
+* Works on Microsoft Portable Executive (PE) files, which are the common      *
+* currency of Win 32 based systems. This program was tested with win95.       *
+* Dumps sundry information from the file.                                     *
+*                                                                             *
+******************************************************************************}
+
+program pedump(command, output);
+
+label 99; { abort program }
+
+const
+
+   hdrfix = 176;  { number of bytes in the fixed portion of the header }
+   maxlab = 30;   { number of characters in label }
+   maxext = 4;    { number of characters in an extention }
+   maxlin  = 200; { number of characters in a text line }
+   maxfil  = 100; { number of characters in a file name }
+
+type 
+
+   byte    = 0..255; { byte }
+   bytfil  = file of byte; { byte file }
+   objptr = ^objrec; { pointer to object record }
+   { file object records }
+   objrec = record
+
+      name: packed array [1..8] of char; { name of object }
+      vsiz: integer; { virtual size }
+      rva:  integer; { location in memory }
+      psiz: integer; { physical size }
+      poff: integer; { physical offset }
+      prel: integer; { pointer to relocations }
+      plin: integer; { pointer to line numbers }
+      rels: integer; { relocation count }
+      lins: integer; { line count }
+      oflg: integer; { object flags }
+      next: objptr   { next entry }
+
+   end;
+   labt = packed array [1..maxlab] of char; { label }
+   extinx  = 1..maxext; { index for file extentions }
+   extbuf  = packed array [extinx] of char; { extention }
+   lininx  = 1..maxlin;  { index for text line }
+   linbuf  = packed array [lininx] of char; { a text line }
+   filinx  = 1..maxfil; { index for file names }
+   filnam  = packed array [filinx] of char; { a file name }
+   { errors }
+   errcod = (efilovf,  { filename too long }
+             einvfil,  { write('Invalid filename }
+             einvcmd,  { command line syntax invalid }
+             einvffm,  { invalid PE file format }
+             edsymtl,  { DLL symbol too long }
+             efilnf);  { input file not found }
+
+var 
+
+   exefil:  bytfil; { .exe file to read from }
+   objects: integer; { number of objects in file }
+   hdrsiz:  integer; { size of header }
+   objlst:  objptr; { object directory list }
+   objend:  objptr; { end of object list }
+   import:  integer; { inport table RVA }
+   export:  integer; { export table RVA }
+   cmdlin:  linbuf; { command line buffer }
+   cmdptr:  lininx; { command line index }
+   cmdlen:  lininx; { command line length }
+   dmpfil:  filnam; { file to dump }
+   fopnsrc: boolean; { source file is open }
+   w:       integer;
+   i:       integer;
+   b:       byte;
+
+{******************************************************************************
+
+Process error
+
+Prints the given error code, and aborts the program.
+
+******************************************************************************}
+
+procedure prterr(e: errcod);
+
+begin
+
+   write('*** ');
+   case e of { error }
+
+      efilovf: write('Filename too long');
+      einvfil: write('Invalid filename');
+      einvcmd: write('Command line invalid');
+      einvffm: write('Invalid input PE file format or not 32 bit PE');
+      edsymtl: write('DLL symbol too long');
+      efilnf:  write('Input file not found');
+
+   end;
+   writeln; { terminate line }
+   goto 99 { terminate program }
+
+end;
+
+{******************************************************************************
+
+Get command line
+
+The command line is loaded to the given buffer. In SVS, this is reconstructed
+from the command line arguments with spaces between.
+
+******************************************************************************}
+
+procedure getcmd(var lin: linbuf);
+
+var i:  lininx;  { command line index }
+
+begin
+
+   for i := 1 to maxlin do lin[i] := ' '; { clear input line }
+   i := 1; { set 1st line position }
+   while not eoln(command) do begin { load command line }
+
+     read(command, lin[i]); { get next character }
+     if i = maxlin then begin { overflow }
+ 
+        writeln('*** Command input line overflow');
+        goto 99
+
+     end;
+     i := i + 1 { next character position }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Check end of line
+
+Checks if the end of the command buffer has been reached.
+
+******************************************************************************}
+
+function endlin: boolean;
+
+begin
+
+   endlin := cmdptr > cmdlen { input pointer past end of line }
+
+end;
+
+{******************************************************************************
+
+Check next command line character
+
+Returns the next character in the command line, or a space if past the end.
+
+******************************************************************************}
+
+function chkchr: char;
+
+begin
+
+   if not endlin then chkchr := cmdlin[cmdptr] { return current character }
+   else chkchr := ' ' { else return space }
+
+end;
+
+{******************************************************************************
+
+Get next command line character
+
+If not at the end of the command line, skip to the next command line
+character.
+
+******************************************************************************}
+
+procedure getchr;
+
+begin
+
+   if not endlin then cmdptr := cmdptr+1 { advance position if not end }
+
+end;
+
+{******************************************************************************
+
+Skip spaces
+
+Skips spaces in the command line.
+
+******************************************************************************}
+
+procedure skpspc;
+
+begin
+
+   while (chkchr = ' ') and not endlin do getchr { skip spaces, not end }
+
+end;
+{}
+{******************************************************************************
+
+Parse filename
+
+Parses a MSDOS format filename from the given line. We only
+allow a proper subset of DOS names, with alphabetical, digit,
+and '_' characters. The primary must begin with a alphabetical
+character.
+
+******************************************************************************}
+
+procedure parfil(var n: filnam); 
+
+const
+
+   { valid MSDOS filename characters }
+   valid = ['A'..'Z', 'a'..'z', '0'..'9', '_'];
+   leading = ['A'..'Z', 'a'..'z', '_'];
+
+var fi:  filinx;  { index for filename }
+    dp:  boolean; { drive parsed flag }
+    ext: boolean; { name has extention }
+    nam: boolean; { filename was parsed }
+
+{ place filename result character }
+
+procedure plcchr(c: char);
+
+begin
+
+   if fi = maxfil then prterr(einvfil); { overflow }
+   n[fi] := c; { place character }
+   fi := fi + 1
+
+end;
+
+{ parse section }
+
+procedure parsec;
+
+var len: 0..maxfil; { length of name }
+
+{ parse character sequence }
+
+procedure parseq(max: filinx); { maximum length of sequence }
+
+begin
+
+   len := 0; { set no characters processed }
+   while chkchr in valid do begin { place valid character }
+
+      if len > max then prterr(einvfil); { too long }
+      plcchr(chkchr); { place character }
+      getchr; { next character }
+      len := len+1 { count }
+
+   end
+
+end;
+   
+begin
+
+   if chkchr = '.' then begin
+
+      { process special symbols, '.' or '..' }
+      plcchr(chkchr); { place }
+      getchr; { skip }
+      if chkchr = '.' then begin 
+
+         plcchr(chkchr); { place }
+         getchr { skip }
+
+      end;
+      dp := true { set no drive spec allowed }
+
+   end else begin
+
+      { check valid leading character }
+      if not (chkchr in leading) then prterr(einvfil);
+      parseq(8); { parse primary }
+      nam := true; { set name was processed }
+      if chkchr = '.' then begin { extention exists }
+
+         plcchr(chkchr); { place '.' character }
+         getchr; { next }
+         parseq(3); { parse extention }
+         ext := true { set extention found }
+
+      end else if chkchr = ':' then begin { was drive spec }
+
+         if dp then prterr(einvfil); { flag invalid drive position }
+         if len > 1 then prterr(einvfil); { drive too long }
+         plcchr(chkchr); { place ':' character }
+         getchr; { next }
+
+      end
+
+   end
+
+end;
+
+begin
+
+   for fi := 1 to maxfil do n[fi] := ' '; { clear result }
+   fi := 1; { index 1st file character }
+   dp := false; { set no drive parsed }
+   skpspc; { skip spaces }
+   ext := false; { set no extention processed }
+   while (chkchr in valid+['\\', '.']) and not ext do begin
+
+      { evaluate sections }
+      nam := false; { set no name parsed }
+      if chkchr = '\\' then begin { section mark }
+
+         plcchr(chkchr); { place }
+         getchr; { next }
+         dp := true { set drive spec not allowed }
+
+      end;
+      parsec; { parse filename section }
+      dp := true { set no more drive parse }
+
+   end;
+   if (fi = 1) or not nam then prterr(einvfil) { no characters processed }
+
+end;
+
+{******************************************************************************
+
+Append file extention
+
+Appends a given extention, in place, to the given file name. The extention is
+usually in the form: '.ext'. The extention is placed within the file name at
+the first space or period from the left hand side. This allows extention of
+either an unextended filename or an extended one (in which case the new 
+extention simply overlays the old). The overlay is controlled via flag: if
+overwrite is true, the extention will overwrite any existing, if not, any
+existing extention will be left in place.
+Note: this routine is MSDOS dependant.
+
+******************************************************************************}
+
+procedure addext(var str:    filnam;   { filename to extend }
+                     ext:    extbuf;   { filename extention }
+                     extend: boolean); { overwrite flag }
+
+var i: filinx; { filename index }
+    x: extinx; { label index }
+
+begin
+
+   i := 1; { initalize index }
+   { skip to first character ' ' or '.' }
+   while (str[i] <> ' ') and (str[i] <> '.') do i := succ(i);
+   if extend or (str[i] = ' ') then
+      for x := 1 to maxext do begin { append file extention }
+
+         str[i] := ext[x]; { transfer extention character }
+         i := i+1 { count }
+
+      end
+
+end;
+
+{******************************************************************************
+
+Parse command line
+
+The structure of a command line is:
+
+     file
+
+The first file is the input .exe file.
+
+******************************************************************************}
+
+procedure parcmd;
+
+begin
+
+   parfil(dmpfil); { parse file to dump }
+   skpspc; { skip spaces }
+   if not endlin then prterr(einvcmd) { invalid command line }
+
+end;
+
+{******************************************************************************
+
+Find line length
+
+Returns the length of the given line, which is the size of the line without
+the trailing blanks.
+
+******************************************************************************}
+
+function linlen(var lin: linbuf): lininx;
+
+var i: lininx; { index for line }
+
+begin
+
+   i := maxlin; { set maximum length }
+   while (lin[i] = ' ') and (i > 1) do i := i - 1;
+   linlen := i { return result }
+
+end;   
+
+{ read a 16 bit word from file }
+
+procedure readwrd(var f: bytfil; var w: integer);
+
+var b1, b2: byte;
+    i1, i2: integer;
+
+begin
+
+   read(f, b1); { get low byte }
+   read(f, b2); { get high byte }
+   i1 := b1; { expand the value }
+   i2 := b2;
+   w := i2*256+i1 { place result }
+
+end;
+    
+{ read a 32 bit word from file }
+
+procedure readdwd(var f: bytfil; var w: integer);
+
+var b1, b2, b3, b4: byte;
+    i1, i2, i3, i4: integer;
+
+begin
+
+   read(f, b1); { get low byte }
+   read(f, b2); { get mid low byte }
+   read(f, b3); { get mid high byte }
+   read(f, b4); { get high byte }
+   i1 := b1; { expand the value }
+   i2 := b2;
+   i3 := b3;
+   i4 := b4;
+   w := i4*16777216+i3*65536+i2*256+i1 { place result }
+
+end;
+
+{ print hex }
+
+procedure prthex(f: byte; w: integer);
+ 
+var i, j: byte;
+    v:    integer;
+ 
+begin
+
+   for i := 1 to f do begin { output digits }
+
+      v := w; { save word }
+      for j := 1 to f - i do v := v div 16; { extract digit }
+      v := v mod 16; { mask }
+      { convert ascii }
+      if v >= 10 then v := v + (ord('A') - 10)
+      else v := v + ord('0');
+      write(chr(v)) { output }
+
+   end
+
+end;
+
+{ load the object table }
+
+procedure lodobj(objects: integer);
+
+var i: integer;
+    b: byte;
+    x: integer;
+    op: objptr; { pointer for object list }
+
+begin
+
+   for i := 1 to objects do begin { objects }
+    
+      new(op); { create new object entry }
+      op^.next := nil; { clear next }
+      if objlst = nil then begin { insert as first }
+     
+         objlst := op; { set as first entry }
+         objend := op { set as last entry }
+   
+      end else begin { insert as last }
+   
+         objend^.next := op; { link to last }
+         objend := op { set new last }
+   
+      end;   
+      for x := 1 to 8 do begin { read object name }
+
+         read(exefil, b); { get character }
+         op^.name[x] := chr(b) { place character }
+
+      end;
+      readdwd(exefil, op^.vsiz); { get virtual size }
+      readdwd(exefil, op^.rva); { get RVA }
+      readdwd(exefil, op^.psiz); { get physical size }
+      readdwd(exefil, op^.poff); { get physical offset }
+      readdwd(exefil, op^.prel); { get relocations }
+      readdwd(exefil, op^.plin); { get lines }
+      readwrd(exefil, op^.rels); { get reloc count }
+      readwrd(exefil, op^.lins); { get line count }
+      readdwd(exefil, op^.oflg) { get object flags }
+
+   end
+
+end;
+
+{ print the object table }
+
+procedure prtobj;
+
+var x: integer;
+    op: objptr; { pointer for object list }
+
+begin
+
+   op := objlst; { index top of objects list }
+   writeln;
+   writeln('Objects:');
+   while op <> nil do begin { objects }
+    
+      writeln;  
+      write('Name:                                   ');
+      for x := 1 to 8 do write(op^.name[x]);
+      writeln;
+      write('Virtual size:                           $'); prthex(8, op^.vsiz);
+      writeln(' (', op^.vsiz:1, ')');
+      write('RVA:                                    $'); prthex(8, op^.rva); 
+      writeln;
+      write('Physical size:                          $'); prthex(8, op^.psiz);
+      writeln(' (', op^.psiz:1, ')');
+      write('Physical offset:                        $'); prthex(8, op^.poff); 
+      writeln;
+      write('Pointer to relocations:                 $'); prthex(8, op^.prel); 
+      writeln;
+      write('Pointer to line numbers:                $'); prthex(8, op^.plin); 
+      writeln;
+      write('Number of relocations:                  $'); prthex(8, op^.rels); 
+      writeln(' (', op^.rels:1, ')');
+      write('Number of line numbers:                 $'); prthex(8, op^.lins); 
+      writeln(' (', op^.lins:1, ')');
+      write('Code object:                            ');
+      if (op^.oflg and $00000020) <> 0 then writeln('Y') else writeln('N');
+      write('Initalized data object:                 ');
+      if (op^.oflg and $00000040) <> 0 then writeln('Y') else writeln('N');
+      write('Uninitalized data object:               ');
+      if (op^.oflg and $00000080) <> 0 then writeln('Y') else writeln('N');
+      write('Object is discardable:                  ');
+      if (op^.oflg and $02000000) <> 0 then writeln('Y') else writeln('N');
+      write('Object must not be cached:              ');
+      if (op^.oflg and $04000000) <> 0 then writeln('Y') else writeln('N');
+      write('Object is not pageable:                 ');
+      if (op^.oflg and $08000000) <> 0 then writeln('Y') else writeln('N');
+      write('Object is shared:                       ');
+      if (op^.oflg and $10000000) <> 0 then writeln('Y') else writeln('N');
+      write('Executable object:                      ');
+      if (op^.oflg and $20000000) <> 0 then writeln('Y') else writeln('N');
+      write('Readable object:                        ');
+      if (op^.oflg and $40000000) <> 0 then writeln('Y') else writeln('N');
+      write('Writeable object:                       ');
+      if (op^.oflg and not $7fffffff {$80000000}) <> 0 then
+         writeln('Y') else writeln('N');
+      op := op^.next
+
+   end
+
+end;
+
+{ find object by RVA }
+
+function fndrva(rva: integer): objptr;
+
+var op, fp: objptr; { pointers for objects }
+
+begin
+
+   { find object corresponding to the import section }
+   fp := nil; { clear target object }
+   op := objlst; { index top of object list }
+   while op <> nil do begin
+
+      {if op^.rva = rva then fp := op;} { found it, set }
+      if (op^.rva >= rva) and (op^.rva < (op.rva+vsiz)) then
+         fp := op; { found it, set }
+      op := op^.next { next entry }
+
+   end;
+   if fp = nil then prterr(einvffm); { does not link up to an object, bad }
+   fndrva := fp { return result }
+
+end;
+
+{******************************************************************************
+
+Print import table
+
+  Well, microsoft's documentation is WILDLY wrong about the format of
+  the inport section. What it really looks like is this. The import section
+  will be in the object that you can find by matching the RVA from the
+  header to the RVA of each object, then the object header tells you
+  where it lives in the file. The format of the import section is:
+
+     -------------------------
+     | Import dll descriptor |
+     -------------------------
+     | Import dll descriptor |
+     -------------------------
+     | Import dll descriptor |
+     ~                       ~
+     ~                       ~
+     | Import dll descriptor |
+     -------------------------
+     | 0 (32 bits)           |
+     -------------------------
+     | dll label list        |
+     -------------------------
+     | 0 (32 bits)           |
+     -------------------------
+     | dll label list        |
+     -------------------------
+     | 0 (32 bits)           |
+     ~                       ~
+     ~                       ~
+     | dll label list        |
+     -------------------------
+     | 0 (32 bits)           |
+     -------------------------
+     | Hint-name entry       |
+     -------------------------
+     | Hint-name entry       |
+     ~                       ~
+     ~                       ~
+     | Hint-name entry       |
+     -------------------------
+     
+  The import dll descriptor looks like:
+
+     0:  RVA pointer to dll label list (32)
+     4:  Date/time stamp (32)
+     8:  Major/minor revision ($ffffffff for any revision)
+     12: RVA pointer to dll name string (32)
+     16: I don't know what the hell this is
+
+   The dll label list is simply a zero terminated list of 32 bit RVA pointers
+   to hint-name entries.
+   The format of a hint-name entry is:
+
+     0: Hint (16)
+     2: Name, zero terminated
+
+******************************************************************************}
+
+procedure prtimp;
+
+var w, w1:          integer;
+    op:             objptr; { pointer for object }
+    ver:            integer; { version number of dll }
+    chs:            integer; { "characteristics" }
+    name:           integer; { dll name RVA }
+    fthunk:         integer; { "first thunk" }
+    hint:           integer; { "hint" }
+    dllno:          integer; { dll sequence number }
+    ordin:          boolean; { ordinal flag }
+    i:              integer;
+    b:              byte;
+    b1, b2, b3, b4: byte;
+
+begin
+
+   writeln;
+   writeln('Imports:');
+   op := fndrva(import); { index object entry }
+   dllno := 0; { set dll offset number }
+   repeat { read dll sections }
+
+      position(exefil, op^.poff+dllno*20+1); { position to import directory }
+      readdwd(exefil, chs); { get "characteristics" }
+      if chs <> 0 then begin { not end of section }
+
+         readdwd(exefil, w); { discard date/time stamp }
+         readdwd(exefil, ver); { get major version/minor version }
+         readdwd(exefil, name); { get name rva }
+         readdwd(exefil, fthunk); { get "first thunk" }
+         { to find the RVA's in the table, we must find their
+           relative offset to the object they are in, then add
+           that to the file offset }
+         position(exefil, name-op^.rva+op^.poff+1); { seek to module name }
+         writeln;
+         write('Target name:                            ');
+         repeat { print module name }
+
+            read(exefil, b); { get a character }
+            if b <> 0 then write(chr(b)) { print }
+
+         until b = 0; { until end of string } 
+         writeln;
+         write('Target version:                         ');
+         if ver = -1 then writeln('Any')
+         else writeln(ver mod 65535:1, '.', ver div 65535:1);
+         { now dump the import list. this code comes from Schulman, because
+           the Microsoft documentation is wildly incorrect }
+         i := 0; { clear entry counter }
+         writeln;
+         writeln('Symbols:');
+         writeln;
+         repeat { import entries }
+
+            { print import table addresses ? }
+            position(exefil, fthunk-op^.rva+op^.poff+i*4+1); { seek to thunk array }
+            read(exefil, b1); { read an address }
+            read(exefil, b2);
+            read(exefil, b3);
+            read(exefil, b4);
+            if not ((b1 = 0) and (b2 = 0) and (b3 = 0) and (b4 = 0)) then begin
+
+               write('$');
+               prthex(2, b4);
+               prthex(2, b3);
+               prthex(2, b2);
+               prthex(2, b1);
+               write(' ')
+
+            end;
+            { print name table entries }
+            position(exefil, chs-op^.rva+op^.poff+i*4+1); { seek to thunk array }
+            { pull in the next value expecting that it might be
+              negative. The high bit is a flag }
+            readwrd(exefil, w); { get thunk }
+            read(exefil, b);
+            w1 := b;
+            w := w+w1*65536;
+            read(exefil, b);
+            ordin := false;
+            if b > 127 then begin b := b-128; ordin := true end;
+            w1 := b;
+            w := w+w1*16777216;
+            if w <> 0 then begin { not end of table }
+
+               if ordin then begin
+
+                  write('ord ');
+                  prthex(4, w and $ffff);
+                  writeln(' (', w and $ffff:1, ')')
+
+               end else if w-op^.rva < $ffff then begin
+
+                  position(exefil, w-op^.rva+op^.poff+1); { seek to thunk array }
+                  readwrd(exefil, hint); { get "hint" }
+                  prthex(4, hint);
+                  write(' (', hint:1, ') '); { output }
+                  if hint < 10000 then write(' ');
+                  if hint < 1000 then write(' ');
+                  if hint < 100 then write(' ');
+                  if hint < 10 then write(' ');
+                  repeat { print name }
+
+                     read(exefil, b); { get label character }
+                     if b <> 0 then write(chr(b)) { output }
+
+                  until b = 0; { until label end }
+                  writeln
+            
+               end else prterr(einvffm) { invalid PE format }
+
+            end;
+            i := i+1 { next entry }
+
+         until w = 0
+
+      end;
+      dllno := dllno+1 { next dll section }
+
+   until chs = 0 { no more dlls }
+
+end;
+
+{ print the export table }
+
+procedure prtexp;
+
+type expptr = ^expnam; { export name entry pointer }
+     expnam = record
+
+        nam:  labt;    { symbol name }
+        nrva: integer; { RVA for symbol name (used while loading) }
+        ordn: integer; { ordinal number }
+        rva:  integer; { rva }
+        next: expptr   { next entry }
+
+     end;
+
+var op:  objptr; { pointer for object }
+    dir: record { export header }
+
+       flags: integer; { export flags }
+       tdat:  integer; { date/time }
+       rev:   integer; { user version }
+       nrva:  integer; { name RVA }
+       bord:  integer; { ordinal base }
+       eatc:  integer; { EAT count }
+       namc:  integer; { name count }
+       atrva: integer; { address table RVA }
+       ntrva: integer; { name table RVA }
+       otrva: integer; { ordinal table RVA }
+       slist: expptr   { export symbol list }
+
+    end;
+    sp: expptr; { export symbol pointer }
+    sc: integer; { symbol count }
+    li: 1..maxlab;
+    i: integer;
+
+begin
+
+   writeln;
+   writeln('Exports:');
+   writeln;
+writeln('0');
+   op := fndrva(export); { index object entry }
+writeln('0.1');
+   position(exefil, op^.poff+1); { position to export directory }
+writeln('0.2');
+   { load export header }
+   readdwd(exefil, dir.flags); { get flags }
+   readdwd(exefil, dir.tdat); { get date/time }
+   readdwd(exefil, dir.rev); { get user version }
+   readdwd(exefil, dir.nrva); { get name RVA }
+   readdwd(exefil, dir.bord); { get ordinal base }
+   readdwd(exefil, dir.eatc); { get EAT count }
+   readdwd(exefil, dir.namc); { get name count }
+   readdwd(exefil, dir.atrva); { get address table RVA }
+   readdwd(exefil, dir.ntrva); { get name table RVA }
+   readdwd(exefil, dir.otrva); { get ordinal table RVA }
+   dir.slist := nil; { clear symbols list }
+writeln('1');
+   { create export symbols, including anonymous }
+   for sc := 1 to dir.eatc do begin
+
+      new(sp); { get a symbol entry }
+      { clear label }
+      for li := 1 to maxlab do sp^.nam[li] := ' ';
+      sp^.next := dir.slist; { insert to list }
+      dir.slist := sp;
+      sp^.rva := 0 { clear rva }
+
+   end;
+   { load symbols }
+   position(exefil, dir.ntrva-op^.rva+op^.poff+1);
+   sp := dir.slist; { index 1st symbol }
+   for sc := 1 to dir.namc do begin { read symbol rvas }
+
+      if sp = nil then prterr(einvffm);
+      readdwd(exefil, sp^.nrva); { get the RVA for the name }
+      sp := sp^.next { next symbol }
+
+   end;
+writeln('2');
+   sp := dir.slist; { index 1st symbol }
+   for sc := 1 to dir.namc do begin { read symbols }
+
+      if sp = nil then prterr(einvffm);
+      position(exefil, sp^.nrva-op^.rva+op^.poff+1); { seek to name }
+      for i := 1 to maxlab do sp^.nam[i] := ' '; { clear name }
+      i := 1; { set 1st label character }
+      repeat { get next symbol character }
+
+         read(exefil, b); { get a character }
+         if b <> 0 then begin { symbol character }
+
+            if i > maxlab then prterr(edsymtl); { overflow }
+            sp^.nam[i] := chr(b); { place character }
+            i := i+1 { next character }
+
+         end
+
+      until b = 0; { until end of string } 
+      sp := sp^.next { next symbol entry }
+
+   end;
+writeln('3');
+   { load ordinals }
+   position(exefil, dir.otrva-op^.rva+op^.poff+1);
+   sp := dir.slist; { index 1st symbol }
+   for i := 1 to dir.eatc do begin { read ordinals }
+
+      if sp = nil then prterr(einvffm);
+      readwrd(exefil, sp^.ordn); { get ordinal }
+      sp := sp^.next { next symbol }
+
+   end;
+writeln('4');
+   { load export addresses }
+   position(exefil, dir.atrva-op^.rva+op^.poff+1);
+   sp := dir.slist; { index 1st symbol }
+   for i := 1 to dir.eatc do begin { read addresses }
+
+      if sp = nil then prterr(einvffm);
+      readdwd(exefil, sp^.rva); { get the RVA }
+      sp := sp^.next { next symbol }
+
+   end;
+   { print module name }
+   position(exefil, dir.nrva-op^.rva+op^.poff+1);
+   write('Module name:                            ');
+   repeat { print module name }
+
+      read(exefil, b); { get a character }
+      if b <> 0 then write(chr(b)) { print }
+
+   until b = 0; { until end of string } 
+writeln('5');
+   writeln;
+   write('Export flags:                           $'); prthex(8, dir.flags); 
+   writeln;
+   write('Date/time stamp:                        $'); prthex(8, dir.tdat);
+   writeln;
+   writeln('User version:                           ', dir.rev mod 65536:1,
+           '.', dir.rev div 65536:1);
+   writeln('Ordinal base:                           ', dir.bord:1);
+   writeln('EAT entry count:                        ', dir.eatc:1);
+   writeln('Name pointer count:                     ', dir.namc:1);
+   writeln;
+   writeln('Symbols:');
+   writeln;
+   sp := dir.slist; { index top symbol }
+writeln('6');
+   while sp <> nil do begin { print symbols }
+
+      for i := 1 to maxlab do write(sp^.nam[i]); { print name }
+      write(' ', sp^.ordn:5, ' '); { print ordinal }
+      prthex(8, sp^.rva); { print RVA }
+      writeln; { next line }
+      sp := sp^.next { next symbol }
+
+   end
+   
+end;
+
+begin
+
+   objlst := nil; { clear object list }
+   objend := nil; { set no end }
+   fopnsrc := false; { set source file not open }
+
+   getcmd(cmdlin); { get command line }
+   cmdlen := linlen(cmdlin); { find length }
+   cmdptr := 1; { set 1st character }
+   parcmd; { parse command line }
+
+   addext(dmpfil, '.exe', false); { add default extention }
+   if not exists(dmpfil) then prterr(efilnf);
+   assign(exefil, dmpfil); { open the dump file }
+   reset(exefil);
+   fopnsrc := true; { set source file is open }
+   readwrd(exefil, w);
+   if w <> $5a4d then prterr(einvffm); { must be 'MZ' (.exe magic number) }
+   for i := 1 to 128-2 do read(exefil, b); { discard the MSDOS header }
+   readdwd(exefil, w); { check 'PE<0><0>' signiture }
+   if w <> $00004550 then prterr(einvffm); { invalid file format }
+   readwrd(exefil, w); { get the machine type }
+   write('Machine:                                ');
+   if w = $0000 then writeln('Unknown')
+   else if w = $014c then writeln('I80386')
+   else if w = $014d then writeln('I80486')
+   else if w = $014e then writeln('I80586')
+   else if w = $0162 then writeln('R2000/R3000')
+   else if w = $0163 then writeln('R6000')
+   else if w = $0166 then writeln('R4000')
+   else if w = $0184 then writeln('Alpha AXP')
+   else writeln('Undefined (could be from later version of PE specification)');
+   readwrd(exefil, objects); { get the number of objects }
+   write('Number of objects:                      $'); prthex(8, objects);
+   writeln(' (', objects:1, ')');
+   readdwd(exefil, w); { date/time }
+   write('Date/time stamp:                        $'); prthex(8, w); 
+   writeln;
+   readdwd(exefil, w); { symbols pointer }
+   write('Symbols pointer:                        $'); prthex(8, w); 
+   writeln;
+   readdwd(exefil, w); { symbols count }
+   write('Number of symbols:                      $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readwrd(exefil, hdrsiz); { get NT header size }
+   write('NT header size:                         $'); prthex(8, hdrsiz);
+   writeln(' (', hdrsiz:1, ')');
+   readwrd(exefil, w); { get flags }
+   write('Relocation info stripped from file      ');
+   if (w and $0001) <> 0 then writeln('Y') else writeln('N');
+   write('File is executable                      ');
+   if (w and $0002) <> 0 then writeln('Y') else writeln('N');
+   write('Line numbers stripped from file         ');
+   if (w and $0004) <> 0 then writeln('Y') else writeln('N');
+   write('Local symbols stripped from file        ');
+   if (w and $0008) <> 0 then writeln('Y') else writeln('N');
+   write('16 bit word machine                     ');
+   if (w and $0040) <> 0 then writeln('Y') else writeln('N');
+   write('Bytes of machine word are reversed      ');
+   if (w and $0080) <> 0 then writeln('Y') else writeln('N');
+   write('32 bit word machine                     ');
+   if (w and $0100) <> 0 then writeln('Y') else writeln('N');
+   write('Debugging info stripped from file       ');
+   if (w and $0200) <> 0 then writeln('Y') else writeln('N');
+   write('System file                             ');
+   if (w and $1000) <> 0 then writeln('Y') else writeln('N');
+   write('File is a DLL                           ');
+   if (w and $2000) <> 0 then writeln('Y') else writeln('N');
+   write('Bytes of machine word are reversed      ');
+   if (w and $8000) <> 0 then writeln('Y') else writeln('N');
+   readwrd(exefil, w); { get nt header magic }
+   if w <> $10b then prterr(einvffm); { invalid file format }
+   readwrd(exefil, w); { get DB ver }
+   writeln('linker version:                         ', w mod 256:1, '.', w div 256:1);
+   readdwd(exefil, w); { get size of code }
+   write('Size of code:                           $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { get size of initalized data }
+   write('Size of initalized data:                $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { get size of uninitalized data }
+   write('Size of uninitalized data:              $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { get entry point }
+   write('Entry point:                            $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { get base of code }
+   write('Base of code:                           $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { get base of data }
+   write('Base of data:                           $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { get base }
+   write('Image base:                             $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { get object align }
+   write('Object align:                           $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { get file align }
+   write('File align:                             $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { get OS ver }
+   writeln('OS version:                             ', w mod 65536:1, '.', w div 65536:1);
+   readdwd(exefil, w); { get user ver }
+   writeln('User version:                           ', w mod 65536:1, '.', w div 65536:1);
+   readdwd(exefil, w); { get subsystem ver }
+   writeln('Subsystem version:                      ', w mod 65536:1, '.', w div 65536:1);
+   readdwd(exefil, w); { res }
+   readdwd(exefil, w); { image size }
+   write('Image size:                             $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { header size }
+   write('header size:                            $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { file checksum }
+   write('File checksum:                          $'); prthex(8, w); writeln;
+   readwrd(exefil, w); { subsystem type }
+   write('Subsystem type:                         ');
+   if w = $0000 then writeln('Unknown')
+   else if w = $0001 then writeln('Native')
+   else if w = $0002 then writeln('Windows GUI')
+   else if w = $0003 then writeln('Windows Character')
+   else if w = $0005 then writeln('OS/2 Character')
+   else if w = $0007 then writeln('Posix Character')
+   else writeln('Undefined (could be from later version of PE specification)');
+   readwrd(exefil, w); { DLL flags }
+   write('Per-Process Library Initalization:      ');
+   if (w and $0001) <> 0 then writeln('Y') else writeln('N');
+   write('Per-Process Library Termination:        ');
+   if (w and $0002) <> 0 then writeln('Y') else writeln('N');
+   write('Per-Thread Library Initalization:       ');
+   if (w and $0004) <> 0 then writeln('Y') else writeln('N');
+   write('Per-Thread Library Termination:         ');
+   if (w and $0008) <> 0 then writeln('Y') else writeln('N');
+   readdwd(exefil, w); { stack reserve size }
+   write('Stack reserve size:                     $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { stack commit size }
+   write('Stack commit size:                      $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { heap reserve size }
+   write('Heap reserve size:                      $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { heap commit size }
+   write('Heap commit size:                       $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { get loader flags }
+   write('Loader flags:                           $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { interesting va/sizes }
+   write('RVA/size table length:                  $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, export); { export table RVA }
+   write('Export table RVA:                       $'); prthex(8, export); writeln;
+   readdwd(exefil, w); { total export data size }
+   write('Total export data size:                 $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, import); { import table RVA }
+   write('Import table RVA:                       $'); prthex(8, import); writeln;
+   readdwd(exefil, w); { total import data size }
+   write('Total import data size:                 $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { resource table RVA }
+   write('Resource table RVA:                     $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { total resource data size }
+   write('Total resource data size:               $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { exception table RVA }
+   write('Exception table RVA:                    $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { total exception data size }
+   write('Total exception data size:              $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { security table RVA }
+   write('Security table RVA:                     $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { total security data size }
+   write('Total security data size:               $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { fixup table RVA }
+   write('Fixup table RVA:                        $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { Total fixup data size }
+   write('Total fixup data size:                  $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { debug table RVA }
+   write('Debug table RVA:                        $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { Total debug data size }
+   write('Total debug directories:                $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { image description RVA }
+   write('Image description RVA:                  $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { Total image description data size }
+   write('Total image description data size:      $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { machine specific RVA }
+   write('Machine specific RVA:                   $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { machine specific size }
+   write('Machine specific size:                  $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { thread local storage RVA }
+   write('Thread local storage RVA:               $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { total thread local storage size }
+   write('Total thread local storage size:        $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   { skip the remaining bytes in the header }
+   for i := 1 to hdrsiz-hdrfix do read(exefil, b);
+   lodobj(objects); { load the object directory }
+   prtobj; { print the object table }
+   if import <> 0 then prtimp; { print the import table }
+   if export <> 0 then prtexp; { print the export table }
+   
+   99:; { abort program }
+
+   if fopnsrc then close(exefil) { close input file }
+
+end.

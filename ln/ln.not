@@ -1,0 +1,40 @@
+                              LN LINKER NOTES
+
+1. Add verbosity, equivalent to AS.
+
+2. Add overflow checking on operators as possible.
+
+3. Add "image link" mode.
+
+4. Add "error file" output.
+
+5. WHen undefined labels are longer than an output line, the listing mode
+should fall back to one line, one label mode as was done for genpe.
+
+6. The next step in blocks is to implement symbol scoping using them:
+
+q:  lblock
+y: local
+x: ...
+y: ...
+   endlblk
+
+The symbols defined in a local block are only valid within that block, and
+cease to exist outside the block. References from within the block to outside
+are automatic if the symbol has not been locally defined. This is overridden
+by the "local" statement, which forces a symbol to be local even if it is 
+defined later in the program.
+
+Because inbound references are no longer possible, and cannot be used to qualify
+the block, the block itself gets a label, "q" above, that is used to qualify
+it, and it is equivalent to the entry point. This means that such blocks can
+only be qualified by code references.
+
+Scoping allows the compiler to then output a sculped structure for symbols, and
+solves the ambiguity that exists with coining.
+
+7. The symbols file format needs a signature as per other modules, such as "lnk"
+or similar.
+
+8. The output symbols and map options don't seem to work on the current program.
+

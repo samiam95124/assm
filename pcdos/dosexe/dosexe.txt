@@ -1,0 +1,2 @@
+This directory is reserved for files concerning the DOS .exe
+or 20 bit segmented mode model.

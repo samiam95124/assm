@@ -1,0 +1,645 @@
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!                                                                             !
+! 80586 ASSEMBER OPERATION LABELS                                             !
+!                                                                             !
+! Defines the operator labels used in the 80586 assembler, both machine codes !
+! and pseudo operators.                                                       !
+! Use the following command to convert this file:                             !
+!                                                                             !
+!    hashtab op80586                                                          !
+!                                                                             !
+! The resulting file, op80586.res, will contain an opcode type definition,    !
+! to be merged into md80586.pas, and a resym table initalizer, to be placed   !
+! in ut80586.pas.                                                             !
+! You also need to take the last value of opcode, and place this in the       !
+! hash call at fndres in ut80586.pas.                                         !
+!                                                                             !
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+! 80586 Machine codes
+
+aaa
+aad
+aam
+aas
+adc
+adcb
+adcw
+adcd
+add
+addb
+addw
+addd
+and
+andb
+andw
+andd
+arpl
+bound
+bsf
+bsr
+bswap
+bt
+btw
+btd
+btc
+btcw
+btcd
+btr
+btrw
+btrd
+bts
+btsw
+btsd
+call
+callm
+calll
+callf
+callmf
+calllf
+cbw
+cwde
+clc
+cld
+cli
+clts
+cmc
+cmp
+cmpb
+cmpw
+cmpd
+cmpsb
+cmpsw
+cmpsd
+cmpxchg
+cmpxchg8b
+cpuid
+cwd
+cdq
+daa
+das
+dec
+decb
+decw
+decd
+div
+divb
+divw
+divd
+enter
+f2xm1
+fabs
+fadd
+fadds
+faddd
+faddp
+fiadd
+fiaddw
+fiaddd
+fbld
+fbstp
+fchs
+fclex
+fnclex
+fcom
+fcoms
+fcomd
+fcomp
+fcomps
+fcompd
+fcompp
+fcos
+fdecstp
+fdisi
+fndisi
+fdiv
+fdivs
+fdivd
+fdivp
+fidiv
+fidivw
+fidivd
+fdivr
+fdivrs
+fdivrd
+fdivrp
+feni
+fneni
+fidivr
+fidivrw
+fidivrd
+ffree
+ficom
+ficomw
+ficomd
+ficomp
+ficompw
+ficompd
+fild
+fildw
+fildd
+fildq
+fincstp
+finit
+fninit
+fist
+fistw
+fistd
+fistp
+fistpw
+fistpd
+fistpq
+fld
+flds
+fldd
+fldl
+fld1
+fldl2t
+fldl2e
+fldpi
+fldlg2
+fldln2
+fldz
+fldcw
+fldenvw
+fldenvd
+fmul
+fmuls
+fmuld
+fmulp
+fimul
+fimulw
+fimuld
+fnop
+fpatan
+fprem
+fprem1
+fptan
+frndint
+frstorw
+frstord
+fsavew
+fsaved
+fnsavew
+fnsaved
+fscale
+fsetpm
+fsin
+fsincos
+fsqrt
+fst
+fsts
+fstd
+fstp
+fstps
+fstpd
+fstpl
+fstcw
+fnstcw
+fstenvw
+fstenvd
+fnstenvw
+fnstenvd
+fstsw
+fnstsw
+fsub
+fsubs
+fsubd
+fsubp
+fisub
+fisubw
+fisubd
+fsubr
+fsubrs
+fsubrd
+fsubrp
+fisubr
+fisubrw
+fisubrd
+ftst
+fucom
+fucomp
+fucompp
+fwait
+fxam
+fxch
+fxtract
+fyl2x
+fyl2xp1
+hlt
+idiv
+idivb
+idivw
+idivd
+imul
+imulb
+imulw
+imuld
+in
+inc
+incb
+incw
+incd
+insb
+insw
+insd
+int
+into
+invd
+invlpg
+iret
+iretd
+ja
+jae
+jb
+jbe
+jc
+jcxz
+jecxz
+je
+jz
+jg
+jge
+jl
+jle
+jna
+jnae
+jnb
+jnbe
+jnc
+jne
+jng
+jnge
+jnl
+jnle
+jno
+jnp
+jns
+jnz
+jo
+jp
+jpe
+jpo
+js
+jas
+jaes
+jbs
+jbes
+jcs
+jes
+jzs
+jgs
+jges
+jls
+jles
+jnas
+jnaes
+jnbs
+jnbes
+jncs
+jnes
+jngs
+jnges
+jnls
+jnles
+jnos
+jnps
+jnss
+jnzs
+jos
+jps
+jpes
+jpos
+jss
+jam
+jaem
+jbm
+jbem
+jcm
+jcxzm
+jecxzm
+jem
+jzm
+jgm
+jgem
+jlm
+jlem
+jnam
+jnaem
+jnbm
+jnbem
+jncm
+jnem
+jngm
+jngem
+jnlm
+jnlem
+jnom
+jnpm
+jnsm
+jnzm
+jom
+jpm
+jpem
+jpom
+jsm
+jal
+jael
+jbl
+jbel
+jcl
+jel
+jzl
+jgl
+jgel
+jll
+jlel
+jnal
+jnael
+jnbl
+jnbel
+jncl
+jnel
+jngl
+jngel
+jnll
+jnlel
+jnol
+jnpl
+jnsl
+jnzl
+jol
+jpl
+jpel
+jpol
+jsl
+jmp
+jmps
+jmpm
+jmpl
+jmpf
+jmpmf
+jmplf
+lahf
+lar
+lds
+les
+lfs
+lgs
+lss
+lea
+leave
+leavew
+leaved
+lgdtw
+lgdtd
+lidtw
+lidtd
+lldt
+lmsw
+lock
+lodsb
+lodsw
+lodsd
+loop
+loopw
+loopd
+loope
+loopew
+looped
+loopz
+loopzw
+loopzd
+loopne
+loopnew
+loopned
+loopnz
+loopnzw
+loopnzd
+lsl
+ltr
+mov
+movb
+movw
+movd
+movsb
+movsw
+movsd
+movsx
+movsxb
+movsxw
+movzx
+movzxb
+movzxw
+mul
+mulb
+mulw
+muld
+neg
+negb
+negw
+negd
+nop
+not
+notb
+notw
+notd
+or
+orb
+orw
+ord
+out
+outsb
+outsw
+outsd
+pop
+popw
+popd
+popa
+popad
+popf
+popfd
+push
+pushb
+pushw
+pushd
+pusha
+pushad
+pushf
+pushfd
+rcl
+rclb
+rclw
+rcld
+rcr
+rcrb
+rcrw
+rcrd
+rol
+rolb
+rolw
+rold
+ror
+rorb
+rorw
+rord
+rdmsr
+rep
+repe
+repz
+repne
+repnz
+ret
+retf
+rsm
+sahf
+sal
+salb
+salw
+sald
+sar
+sarb
+sarw
+sard
+shl
+shlb
+shlw
+shld
+shr
+shrb
+shrw
+shrd
+sbb
+sbbb
+sbbw
+sbbd
+scasb
+scasw
+scasd
+seta
+setae
+setb
+setbe
+setc
+sete
+setg
+setge
+setl
+setle
+setna
+setnae
+setnb
+setnbe
+setnc
+setne
+setng
+setnge
+setnl
+setnle
+setno
+setnp
+setns
+setnz
+seto
+setp
+setpe
+setpo
+sets
+setz
+sgdtw
+sgdtd
+sidtw
+sidtd
+shldw
+shldd
+shrdw
+shrdd
+sldt
+smsw
+stc
+std
+sti
+stosb
+stosw
+stosd
+str
+sub
+subb
+subw
+subd
+test
+testb
+testw
+testd
+verr
+verw
+wait
+wbinvd
+wrmsr
+xadd
+xchg
+xlatb
+xor
+xorb
+xorw
+xord
+cs
+ds
+es
+fs
+gs
+ss
+
+! Special pseudo-ops
+
+large   ! set default model to large
+small   ! set default model to small
+float   ! enable floating point instructions
+nfloat  ! disable floating point instructions
+m86     ! restrict to 8086 instructions
+m186    ! restrict to 80186 instructions
+m286    ! restrict to 80286 instructions
+m386    ! restrict to 80386 instructions
+m486    ! restrict to 80486 instructions
+m586    ! restrict to 80586 instructions (default)
+
+! Assembler pseudo-ops
+
+macro   ! define macro
+endmac  ! terminate macro
+include ! include file
+equ     ! equate symbol
+setequ  ! set symbol
+global  ! set symbol global
+extern  ! set symbol external
+alignp  ! align program counter
+alignv  ! align variable counter
+if      ! if conditional assembly
+else    ! else conditional assembly
+elseif  ! elseif conditional assembly
+endif   ! end conditional assembly
+assm    ! assemble string
+block   ! start block
+endblk  ! end block
+print   ! print from source
+error   ! print error from source
+stop    ! stop assembly
+bendian ! set big endian
+lendian ! set little endian
+defb    ! define byte
+defps   ! define program space
+defvs   ! define variable space
+defbe   ! define big endian
+defle   ! define little endian
+defbef  ! define big endian floating point
+deflef  ! define little endian floating point
+deff    ! define ansi 64 bit floating point
+defsf   ! define ansi 32 bit floating point
+deflf   ! define ansi 80 bit floating point
+defw    ! define 80586 specific format word (16 bits, little endian)
+defhw   ! define 80586 specific format half word (same as byte)
+defdw   ! define 80586 specific double word (32 bits, little endian)
+defqw   ! define 80586 specific quad word (64 bits, little endian)
+defseg  ! define segmented address (using current model)
+defsegm ! define segmented address medium (32 bits)
+defsegl ! define segmented address long (48 bits)

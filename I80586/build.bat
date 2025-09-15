@@ -1,0 +1,57 @@
+rem @echo off
+rem
+rem Compile assembler
+rem
+rem The files have the following meanings:
+rem
+rem opcdef.pas - Contains the opcode definitions.
+rem macdef.pas - Contains the processor specific declarations.
+rem opcini.pas - Contains the reserved symbol initalization.
+rem macutl.pas - Contains processor specific utilities.
+rem opcode.pas - Contains processor specific instruction handlers.
+rem
+
+parse opcini=opcini /u=.,..\as,c:\ip\windows\i80386\lib
+parse macutl=macutl /u=.,..\as,c:\ip\windows\i80386\lib
+parse opcode=opcode /u=.,..\as,c:\ip\windows\i80386\lib
+parse machine=machine /u=.,..\as,c:\ip\windows\i80386\lib
+
+rem
+rem Its not nice, but right now there are tricks with signed/unsigned numbers
+rem that don't work if we enable overflow checking.
+rem
+
+rem
+rem Build the charcter translation version.
+rem
+rem ec opcini=opcini/noc/nrc/nac/nclcl/scxt/discm
+rem ec macutl=macutl/noc/nrc/nac/nclcl/scxt/discm
+rem ec opcode=opcode/noc/nrc/nac/nclcl/scxt/discm
+rem ec machine=machine/noc/nrc/nac/nclcl/scxt/discm
+
+rem
+rem Build the "plain" character version. Use this ONLY for debugging.
+rem
+ec opcini=opcini/noc/nrc/nac/nclcl
+ec macutl=macutl/noc/nrc/nac/nclcl
+ec opcode=opcode/noc/nrc/nac/nclcl
+ec machine=machine/noc/nrc/nac/nclcl
+
+rem
+rem Link Windows
+rem
+
+ln runfile=c:\ip\windows\i80386\lib\blotter c:\ip\windows\i80386\lib\serlib c:\ip\windows\i80386\lib\strlib c:\ip\windows\i80386\lib\extlib ..\as\common ..\as\utl ..\as\direct opcini macutl opcode machine c:\ip\windows\i80386\lib\main c:\ip\windows\i80386\lib\reglock c:\ip\windows\i80386\lib\timelock ..\as\asmain c:\ip\windows\i80386\lib\cap/nu
+rem ln runfile=c:\ip\windows\i80386\lib\blotter c:\ip\windows\i80386\lib\serlibx c:\ip\windows\i80386\lib\strlibx c:\ip\windows\i80386\lib\extlibx ..\as\common ..\as\utl ..\as\direct opcini macutl opcode machine c:\ip\windows\i80386\lib\main c:\ip\windows\i80386\lib\reglockx c:\ip\windows\i80386\lib\timelockx ..\as\asmain c:\ip\windows\i80386\lib\cap/nu
+rem ln runfile=c:\ip\windows\i80386\lib\blotter c:\ip\windows\i80386\lib\serlib c:\ip\windows\i80386\lib\strlib c:\ip\windows\i80386\lib\extlib ..\as\common ..\as\utl ..\as\direct opcini macutl opcode machine c:\ip\windows\i80386\lib\main c:\ip\windows\i80386\lib\reglock c:\ip\windows\i80386\lib\timelock ..\as\asmain c:\ip\windows\i80386\lib\cap #ps=$401000 #ll #lv #lm > as80586.lst
+genpe as=runfile/v
+del runfile.*
+
+@echo off
+rem
+rem Link Linux
+rem
+
+rem ln runfile=c:\ip\linux\i80386\lib\serlib ..\as\common ..\as\utl ..\as\direct macutl opcode machine c:\ip\windows\i80386\lib\main ..\as\main c:\ip\linux\i80386\lib\cap
+rem genelf as=runfile/v
+rem del runfile.*

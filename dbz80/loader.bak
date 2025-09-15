@@ -1,0 +1,563 @@
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!                                                        !
+!       SYMBOLS/PROGRAM LOADER FOR DB                    !
+!                                                        !
+!       4/85 S. A. Moore                                 !
+!                                                        !
+!       Loads and locates DB, then loads the specified   !
+!       symbols deck and program decks.                  !
+!       DB is placed just under the CP/M BDOS module.    !
+!       In this version, it is hard-located at $bc00,    !
+!       and relocation just consists of moving into      !
+!       place.                                           !
+!       In the production version, DB will be actually   !
+!       corrected to reside below an arbitrary CP/M      !
+!       location.                                        !
+!       The symbols deck (if present) is located just    !
+!       under DB, and grows downwards limited by the     !
+!       end of this loader (the symbols are loaded       !
+!       backwards to facillitate that).                  !
+!       The program deck (if present) is loaded starting !
+!       at the CP/M TPA area at $0100, and grows         !
+!       upwards limited by the (already loaded)          !
+!       bottom of the symbol table (or DB if there is    !
+!       none).                                           !
+!       The program deck may be loaded over this         !
+!       module because the actual load code is placed    !
+!       on the stack under the symbols.                  !
+!       After this module has done it's job, DB is       !
+!       started.                                         !
+!       Command line: the file for symbols and object    !
+!       can optionaly be specified on the command line.  !
+!       if an extention is NOT present, file extentions  !
+!       are searched in the order:                       !
+!                                                        !
+!            .sym - symbols file                         !
+!            .obj - object deck                          !
+!            .com - system runnable object deck          !
+!                                                        !
+!       Note that .obj and .com are mutually exclusive.  !
+!       As specified above, both symbols and object      !
+!       files may be present. Only one may be loaded,    !
+!       however, and not cause an error (load of only    !
+!       .sym if .obj or .com is not present).            !
+!       If an extention IS present, it is loaded as      !
+!       an object file, and no further action is taken.  !
+!       In this case the extention itself has no         !
+!       meaning, ex., a .sym file will be treated as an  !
+!       object file.                                     !
+!       All of the command line after the optional file  !
+!       parameter is 'moved back' or adjusted so that    !
+!       the command line looks as it would as if the     !
+!       program had been activated from CP/M. Example:   !
+!                                                        !
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!                                                        !
+!            'db runme thisfile thatfile #new'           !
+!                                                        !
+!       would end up in the command buffer as:           !
+!                                                        !
+!            ' thisfile thatfile #new'                   !
+!                                                        !
+!       This allows entry of the command tail for the    !
+!       program under debug.                             !
+!                                                        !
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+! Equates for loader
+
+_bdos:  equ     $0005           ! entry point for CP/M
+
+cprtstr: equ    9               ! print string command
+copnfil: equ    15              ! open file command
+cclsfil: equ    16              ! close file command
+csetdma: equ    26              ! set dma command
+crdseq: equ     20              ! read sequential command
+fcb1:   equ     $005c           ! 1st CP/M fcb
+fex:    equ     12              ! CP/M fcb entries
+fs1:    equ     13
+fs2:    equ     14
+frc:    equ     15
+fcr:    equ     32
+
+dblen:  equ     8192            ! length of DB
+dbloc:  equ     $fd00-dblen     ! location of DB
+stable: equ     $14             ! $fcde ! location of symbols pointer
+
+cr:     equ     $0d             ! carriage return
+lf:     equ     $0a             ! line feed
+
+! Start of loader, located at CP/M TPA area.
+
+lodstr:
+
+! Locate DB.
+! DB is moved into position, the BDOS vector is linked
+! around it, the symbols table nulled and if there is
+! no command parameter, DB started.
+! Otherwise, we proceed to load symbols and program.
+
+        ld      sp,(_bdos+1)    ! set stack just after DB
+        ld      hl,start        ! index stored DB
+        ld      de,dbloc        ! index final position
+        ld      bc,dblen        ! set length
+        ldir                    ! move into place
+        ld      hl,0            ! set symbols null
+        ld      (stable),hl
+        ld      hl,dbloc        ! index bottom of allocation
+        ld      (symbtm),hl     ! set pointer
+        xor     a
+        ld      (filfnd),a      ! set no file
+        ld      (nosym),a       ! set no symbols file
+        ld      hl,$80          ! index command line
+        ld      c,(hl)          ! get length
+        inc     hl              ! next
+        ld      e,l             ! copy to de
+        ld      d,h
+        ld      a,c             ! check end
+        or      a
+        jr      z,movlin03      ! yes, skip
+        ld      a,(hl)          ! get character
+        cp      ' '             ! check space
+        jr      nz,movlin01     ! no, skip
+        inc     hl              ! skip space
+        dec     c
+movlin01: ld    a,c             ! check done
+        or      a
+        jr      z,movlin02      ! yes, skip
+        ld      a,(hl)          ! get character
+        cp      ' '             ! check space
+        jr      z,movlin02      ! yes, skip
+        inc     hl              ! next
+        dec     c
+        jr      movlin01        ! loop
+movlin02: ld    a,c             ! set length
+        ld      ($80),a
+movlin020: ld   a,c             ! check done
+        or      a
+        jr      z,movlin03      ! yes, skip
+        ld      a,(hl)          ! transfer character
+        ld      (de),a
+        inc     hl              ! next
+        inc     de
+        dec     c
+        jr      movlin020       ! loop
+movlin03: ld    a,(fcb1+1)      ! check file present
+        cp      ' '
+        jr      z,plcvec        ! go place vector
+
+! Open symbols file and load.
+
+        ld      a,(fcb1+8+1)    ! check extention present
+        cp      ' '
+        jr      z,opnsym01      ! no, skip
+        xor     a               ! set no symbols true
+        dec     a
+        ld      (nosym),a
+        jr      plcvec          ! go
+opnsym01: ld    a,'S'           ! place 'sym' extention
+        ld      (fcb1+8+1),a
+        ld      a,'Y'
+        ld      (fcb1+8+1+1),a
+        ld      a,'M'
+        ld      (fcb1+8+1+2),a
+        call    cfopen          ! open file
+        jr      z,plcvec        ! file not found, skip
+        xor     a               ! set file found
+        dec     a
+        ld      (filfnd),a
+        ld      de,buffer       ! set to buffer address
+        ld      c,csetdma
+        call    _bdos
+        xor     a               ! clear buffer index
+        ld      (finx),a
+        call    plachr          ! place symbols end
+        call    rdsyms          ! read in symbols
+        ld      de,fcb1         ! index fcb
+        ld      c,cclsfil       ! set "close file" command
+        call    _bdos           ! perform system call
+        ld      hl,(symbtm)     ! get symbols table
+        ld      (stable),hl     ! set pointer
+
+! Place BDOS vector
+
+plcvec: ld      a,(_bdos+2)     ! place high
+        call    plachr
+        ld      a,(_bdos+1)     ! place low
+        call    plachr
+        ld      a,$c3           ! set jump
+        call    plachr
+        ld      hl,(symbtm)     ! get the location of that jump
+        ld      (_bdos+1),hl    ! place address
+        ld      a,(fcb1+1)      ! check no file
+        cp      ' '
+        jp      z,godb          ! yes, go start DB
+
+! Open object file and load.
+
+lodprg: ld      a,(nosym)       ! check no symbols
+        or      a
+        jr      nz,lodprg01     ! go if so
+        ld      a,'O'           ! place 'obj' extention
+        ld      (fcb1+8+1),a
+        ld      a,'B'
+        ld      (fcb1+8+1+1),a
+        ld      a,'J'
+        ld      (fcb1+8+1+2),a
+        call    cfopen          ! open file
+        jp      nz,lodprg02     ! found, go
+        ld      a,'C'           ! place '.com' extention
+        ld      (fcb1+8+1),a
+        ld      a,'O'
+        ld      (fcb1+8+1+1),a
+        ld      a,'M'
+        ld      (fcb1+8+1+2),a
+lodprg01: call  cfopen          ! open file
+        jr      nz,lodprg02     ! found, skip
+        ld      a,(filfnd)      ! check any file found
+        or      a
+        jp      nz,godb         ! yes, go
+        ld      de,fnfmsg       ! index error message
+        ld      c,cprtstr       ! print
+        call    _bdos
+        jp      0               ! exit to CP/M
+lodprg02: xor   a               ! set file found
+        dec     a
+        ld      (filfnd),a
+        ld      hl,(symbtm)     ! get current top
+        ld      de,128          ! allocate space
+        or      a
+        sbc     hl,de
+        push    hl              ! save bottom
+        ex      de,hl           ! place
+        ld      hl,doprg        ! index loader
+        ld      bc,doprgl       ! set length
+        ldir                    ! move into place
+        ld      de,$0100        ! set 1st load location
+        pop     hl              ! restore bottom
+        jp      (hl)            ! go loader
+
+! Actual program loader, relocated under symbol table.
+!
+!      In parameters: top address (this routine) - hl,
+!                     program load address - de
+!
+
+doprg:  push    hl              ! save top
+        push    de              ! save program address
+        ld      c,csetdma       ! set "set dma" command
+        call    _bdos           ! perform system call
+        ld      de,fcb1         ! index fcb
+        ld      c,crdseq        ! set "read sequential" command
+        call    _bdos           ! perform system call
+        or      a               ! check eof
+        jr      nz,clsprg       ! yes, skip
+        pop     hl              ! restore program address
+        ld      de,$80          ! offset to next record
+        add     hl,de
+        pop     de              ! restore top
+        push    hl              ! save program address
+        or      a               ! check past maximum
+        sbc     hl,de
+        ex      de,hl           ! place top
+        pop     de              ! restore program address
+        jr      c,doprg         ! loop if not
+        ld      de,ovfmsg-doprg  ! index error message
+        add     hl,de
+        ex      de,hl
+        ld      c,cprtstr       ! set "print string" command
+        call    _bdos           ! perform system call
+        jp      0               ! go reboot
+clsprg: ld      de,fcb1         ! index fcb
+        ld      c,cclsfil       ! set "close file" command
+        call    _bdos           ! perform system call
+        pop     de              ! restore program address
+        pop     hl              ! restore top
+!
+! go DB
+!
+godb:   ld      sp,(_bdos+1)    ! set up stack
+        ld      bc,0            ! initalize registers
+        ld      de,0
+        ld      ix,0
+        ld      iy,0
+        push    bc
+        pop     af
+        ld      hl,$100+1       ! set pc
+        push    hl
+        ld      hl,0
+        jp      dbloc+3         ! go DB
+
+ovfmsg: defb    '*** Program space overflow', cr, lf, '$'
+doprgl: equ     128             ! !!! (bad) _-doprg ! length of loader
+
+!
+! Here we read from the input file.
+! and convert each line to a packed symbol.
+! a packed symbol is the label name with bit 7 high
+! followed by the 16-bit value.
+! Each symbol is buffered, then placed end to start
+! at the bottom of the symbols table.
+! Only simple symbols are used from the symbols
+! file, the rest being discarded.
+!
+rdsyms: call    readb           ! get a type byte
+        or      a               ! check eof
+        ret     z               ! if so, exit
+        cp      1               ! check symbol entry
+        jp      nz,rdsyms04     ! no
+
+        ld      de,symbuf       ! index symbol buffer
+        call    readb           ! get operation
+        ld      c,a
+        ld      b,10            ! set label count
+rdsyms01: call  readb           ! get a label character
+        ld      (de),a          ! place
+        inc     de              ! next
+        djnz    rdsyms01        ! loop
+        call    readb           ! get the flags
+        bit     0,a             ! check undefined
+        jp      z,rdsyms        ! yes, loop (ignore)
+        ld      a,c             ! check operation
+        or      a
+        jp      nz,rdsyms       ! yes, loop
+        call    readb           ! get the value (low)
+        ld      c,a             ! save
+        call    readb           ! high
+        call    plachr          ! place
+        ld      a,c             ! get low
+        call    plachr          ! place
+        ld      hl,symbuf+9     ! index symbol end
+        ld      b,10            ! set length
+        ld      c,$80           ! set terminate on
+rdsyms02: ld    a,(hl)          ! get a symbol character
+        dec     hl              ! backup one
+        cp      ' '             ! check past end
+        jr      z,rdsyms030     ! yes, skip
+        call    lcase           ! convert lower case
+        cp      '_'             ! check valid character
+        jr      z,rdsyms03      ! yes
+        call     alpha
+        jr      z,rdsyms03      ! yes
+        call    digit
+        ld      de,ivcmsg       ! index error message
+        jp      nz,error        ! no, error
+rdsyms03: or    c               ! terminate if set
+        res     7,c             ! set no terminate
+        call    plachr          ! place symbol character
+rdsyms030: djnz rdsyms02        ! loop
+        jp      rdsyms          ! loop for next
+
+rdsyms04: cp    2               ! check anonymuos entry
+        jr      nz,rdsyms05     ! no
+
+        call    readb           ! get operation
+        ld      c,a             ! save
+        call    readb           ! get flags
+        bit     0,a             ! check defined
+        jp      z,rdsyms        ! yes, loop
+        ld      a,c             ! check operation
+        or      a
+        jp      nz,rdsyms       ! yes, loop
+        call    readb           ! get value
+        call    readb
+        jp      rdsyms          ! loop
+rdsyms05: cp    3               ! rld
+        jp      nz,rdsyms06     ! no
+
+        call    readb           ! get it
+        call    readb           ! address low
+        call    readb           ! address high
+        jp      rdsyms          ! loop
+rdsyms06: cp    4               ! constant rld
+        ld      de,ivfmsg       ! index error message
+        jp      nz,error        ! no, go error
+
+        call    readb           ! it
+        call    readb           ! adress low
+        call    readb           ! address high
+        call    readb           ! fl
+        call    readb           ! value low
+        call    readb           ! value high
+        jp      rdsyms          ! loop
+
+! Convert lower case
+
+! Converts the character in a to lower case.
+
+! In parameters: character - a
+! Out parameters: lower case character - a
+! Modifies: af
+
+lcase:  cp      'A'             ! check 'A'-'Z'
+        ret     c               ! no
+        cp      'Z'+1
+        ret     nc              ! no
+        add     a,' '           ! yes, convert to lower case
+        ret                     ! and exit
+
+! Check alphabetical
+
+! Checks if the character in a lies in the set
+! ['A'-'Z', 'a'-'z']. Returns z if so.
+
+! In parameters: character - a
+! Out parameters: status - z
+! Modifies: f
+
+alpha:  push    bc
+        ld      c,a             ! save character
+        call    lcase           ! find lower case
+        cp      'a'             ! check 'a'-'z'
+        jr      c,alpha01       ! no
+        cp      'z'+1
+        jr      nc,alpha01      ! no
+        xor     a               ! set false
+        jr      alpha02         ! exit
+alpha01: xor    a               ! set false
+        inc     a
+alpha02: ld     a,c             ! restore character
+        pop     bc              ! clean up and return
+        ret
+
+! Check digit
+
+! Checks if the character in a lies in the set
+! ['0'-'9']. Returns z if so.
+
+! In parameters: character - a
+! Out parameters: status - z
+! Modifies: f
+
+digit:  push    bc
+        ld      c,a             ! save character
+        cp      '0'             ! check '0'-'9'
+        jr      c,digit01       ! no
+        cp      '9'+1
+        jr      nc,digit01      ! no
+        xor     a               ! set true
+        jr      digit02         ! exit
+digit01: xor    a               ! set false
+        inc     a
+digit02: ld     a,c             ! restore character
+        pop     bc              ! clean up and return
+        ret
+
+! Place symbol character
+
+! Places a single character in a to the symbols table.
+! The character is placed at the symbols bottom - 1,
+! and the current bottom decremented.
+! If the symbols table passes the end of this module,
+! overflow occurs.
+
+! In parameters: character - a
+! Out parameters: none
+! Modifies: af
+
+plachr: push    de
+        push    hl
+        ld      hl,(symbtm)     ! get symbols pointer
+        dec     hl              ! back up
+        ld      (hl),a          ! place character
+        ld      (symbtm),hl     ! update
+        ld      de,lodend       ! index loader end
+        or      a               ! check ptr >= end
+        sbc     hl,de
+        ld      de,sofmsg       ! index error message
+        jp      c,error         ! no, go error
+        pop     hl              ! clean up and return
+        pop     de
+        ret
+
+! Read file byte
+
+! Reads a single byte from the current fcb1 file to a.
+! This file is expected to be open, and the default dma
+! address $100 in effect. $100 is used to deblock the file.
+! Note that the first part of this loader is overwritten.
+
+! In parameters: none
+! Out parameters: none
+! Modifies: af
+
+readb:  push    bc
+        push    de
+        push    hl
+        ld      a,(finx)        ! get buffer index
+        or      a               ! check null
+        jr      nz,readb01      ! no, skip
+        ld      de,fcb1         ! index fcb
+        ld      c,crdseq        ! set "read sequential" command
+        call    _bdos           ! perform system call
+        or      a               ! check eof
+        ld      de,eofmsg       ! index error message
+        jp      nz,error        ! yes, go error
+readb01: ld     a,(finx)        ! get buffer index
+        ld      e,a             ! set up
+        ld      d,0
+        ld      hl,buffer       ! index buffer
+        add     hl,de           ! offset
+        inc     a               ! increment index
+        ld      (finx),a        ! update
+        cp      $80             ! check buffer end
+        jr      c,readb02       ! no, go
+        xor     a               ! clear index
+        ld      (finx),a
+readb02: ld     a,(hl)          ! get buffer byte
+        pop     hl              ! clean up and return
+        pop     de
+        pop     bc
+        ret
+
+! Process error
+
+! Prints the error message at de, closes the fcb1 file,
+! and reboots CP/M. The string at de is terminated by a '$'.
+
+! In parameters: string - de
+! Out parameters: none
+! Modifies: all
+
+error:  ld      c,cprtstr       ! set "print string" command
+        call    _bdos           ! perform system call
+        ld      de,fcb1         ! index fcb
+        ld      c,cclsfil       ! set "close file" command
+        call    _bdos           ! perform system call
+        jp      0               ! reboot
+
+!
+! open CP/M file
+!
+cfopen: ld      ix,fcb1         ! index fcb
+        ld      (ix+fex),0      ! initalize parameters
+        ld      (ix+fs1),0
+        ld      (ix+fs2),0
+        ld      (ix+frc),0
+        ld      (ix+fcr),0
+        ld      de,fcb1         ! index fcb
+        ld      c,copnfil       ! set "open file" command
+        call    _bdos           ! execute
+        inc     a               ! check "file not found"
+        ret                     ! exit
+
+! Strings and data
+
+sofmsg: defb    '*** Symbol table overflow', cr, lf, '$'
+ivfmsg: defb    '*** Invalid symbols file format', cr, lf, '$'
+ivcmsg: defb    '*** Invalid symbol character', cr, lf, '$'
+eofmsg: defb    '*** Eof encounted', cr, lf, '$'
+fnfmsg: defb    '*** File not found', cr, lf, '$'
+symbuf: defb    0,0,0,0,0,0,0,0,0,0  ! buffer for symbol save
+
+finx:   defb    0               ! file buffer index
+symbtm: dw      0               ! symbols table bottom
+nosym:  defb    0               ! no symbols file flag
+filfnd: defb    0               ! file found flag
+buffer: dv      128             ! file access buffer
+
+lodend: dv                      ! end of loader code
+
+start:  equ     _ - (_ mod 128) + 128  ! start of DB

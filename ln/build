@@ -1,0 +1,24 @@
+parse common=common -u=.,/mnt/windrv/ip/linux/i80386/lib
+parse utl=utl -u=.,/mnt/windrv/ip/linux/i80386/lib
+parse link=link -u=.,/mnt/windrv/ip/linux/i80386/lib
+parse ln=ln -u=.,/mnt/windrv/ip/linux/i80386/lib
+ce common=common
+ce utl=utl
+ce link=link
+ce ln=ln
+
+#
+# Windows link
+#
+
+ln runfile=/mnt/windrv/ip/windows/i80386/lib/serlib /mnt/windrv/ip/windows/i80386/lib/strlib /mnt/windrv/ip/windows/i80386/lib/extlib common utl link /mnt/windrv/ip/windows/i80386/lib/main ln /mnt/windrv/ip/windows/i80386/lib/cap
+genpe ln=runfile /mnt/windrv/windows/system/kernel32 /mnt/windrv/windows/system/user32 /mnt/windrv/windows/system/gdi32 /mnt/windrv/windows/system/winmm -v -sc
+rm runfile.*
+
+#
+# Linux link
+#
+
+ln runfile=/mnt/windrv/ip/linux/i80386/lib/serlib /mnt/windrv/ip/linux/i80386/lib/strlib /mnt/windrv/ip/linux/i80386/lib/extlib common utl link ln /mnt/windrv/ip/linux/i80386/lib/cap
+genelf ln=runfile -v
+rm runfile.*

@@ -1,0 +1,41 @@
+{******************************************************************************
+*                                                                             *
+*                    Z80 ASSEMBLY MODULE VS. 1.1                              *                                                          
+*                   Copyright (C) 2006 S. A. Moore                            *
+*                       All rights reserved                                   *
+*                                                                             *
+* Purpose:                                                                    *
+*                                                                             *
+* Provides Z80 specific operations for AS. Contains all code that is          *
+* dependent on the Z80.                                                       *
+*                                                                             *
+******************************************************************************}
+
+module macdef;
+
+uses asdef,  { generic definitions }
+     opcdef; { opcode definitions }
+
+const
+
+cpualign  = 1;     { byte or none for Z80 }
+cpubigend = false; { Z80 is little endian }
+cpuwrdsiz = 2;     { Z80 has 16 bit words }
+
+type
+
+      restab = array [opcodet] of { reserved symbols }
+                  record
+                     reslab: lab;    { reserved symbol }
+                     reschn: opcodet { chain to next }
+                  end;
+      { condition codes for jump/call instructions }
+      condc = (ccnl, ccnz, ccz, ccnc, ccc, ccpo,
+               ccpe, ccp, ccm);
+      { registers in the Z80 }
+      regc = (rgnl, rga, rgb, rgc, rgd, rge, rgh,
+              rgl, rgbc, rgde, rghl, rgaf, rgafa,
+              rgix, rgiy, rgsp, rgi, rgr);
+
+begin
+end.

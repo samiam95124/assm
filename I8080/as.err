@@ -1,0 +1,3 @@
+        defb    'hi there\CR\LF
+                               ^
+*** test.asm:1 Quote expected

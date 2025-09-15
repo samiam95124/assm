@@ -1,0 +1,3 @@
+                                 I80586 ASSEMBLER NOTES
+
+2. jmpf (jump far) does not generate the correct segment address.

@@ -1,0 +1,11 @@
+@echo off
+rem
+rem Assemble the DOS .COM version of hello
+rem
+rem The source file is assembled, then linked to run at $100,
+rem the standard DOS .COM file address. A .COM file is just
+rem an image file, so we just copy that into place.
+rem
+as hello=hello
+ln hello=hello /ps=$100
+copy /b hello.obj hello.com

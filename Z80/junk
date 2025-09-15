@@ -1,0 +1,715 @@
+
+Code module lister vs. 1.13.00 Copyright (C) 2007 S. A. Moore
+
+
+
+                                                                 test                                                           Page 1
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      00000000 00000000                        1 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+      00000000 00000000                        2 !                                                              !
+      00000000 00000000                        3 !     DB Z80 DEBUGGER                                          !
+      00000000 00000000                        4 !                                                              !
+      00000000 00000000                        5 !     3/21/80 S. A. Moore                                      !
+      00000000 00000000                        6 !                                                              !
+      00000000 00000000                        7 !     This grandaddy program originates from my work at        !
+      00000000 00000000                        8 !     spacelabs, inc., and has proven to be my right-hand      !
+      00000000 00000000                        9 !     man for debugging scads of other programs.               !
+      00000000 00000000                       10 !     It is a testimony to what good structure and             !
+      00000000 00000000                       11 !     documenting habits can accomplish. It's successor        !
+      00000000 00000000                       12 !     will probabally be written in pascal, and use this       !
+      00000000 00000000                       13 !     program as a construction guide.                         !
+      00000000 00000000                       14 !     This is one program that seems to have given back        !
+      00000000 00000000                       15 !     more than the effort i ever put in to it.                !
+      00000000 00000000                       16 !                                                              !
+      00000000 00000000                       17 !     Version 1.0 3/80 on zilog's rio os                       !
+      00000000 00000000                       18 !                                                              !
+      00000000 00000000                       19 !     Version 1.0 4/80 on spacelabs 1400 terminal              !
+      00000000 00000000                       20 !                                                              !
+      00000000 00000000                       21 !     Version 1.3 7/80 on micropolis mdos                      !
+      00000000 00000000                       22 !                                                              !
+      00000000 00000000                       23 !     Version 1.3 6/81 on rsys os                              !
+      00000000 00000000                       24 !                                                              !
+      00000000 00000000                       25 !     Version 1.3 6/81 on cardkey d2000 terminal               !
+      00000000 00000000                       26 !                                                              !
+      00000000 00000000                       27 !     Version 2.1 2/84 on our system prom                      !
+      00000000 00000000                       28 !                                                              !
+      00000000 00000000                       29 !     Version 2.2 4/85 on CP/M                                 !
+      00000000 00000000                       30 !                                                              !
+      00000000 00000000                       31 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+      00000000 00000000                       32 
+      00000000 00000000                       33 ! Equates
+      00000000 00000000                       34 
+      00000000 00000000                       35 false:  equ     0               ! value of false
+      00000000 00000000                       36 true:   equ     1               ! not false ! value of true
+      00000000 00000000                       37 cr:     equ     $0d             ! carriage return
+      00000000 00000000                       38 lf:     equ     $0a             ! line feed
+      00000000 00000000                       39 bksp:   equ     $08             ! backspace (rubout)
+      00000000 00000000                       40 ctls:   equ     'S'-64          ! stop (ctl-s)
+      00000000 00000000                       41 ctlc:   equ     'C'-64          ! cancel (ctl-c)
+      00000000 00000000                       42 fhlt:   equ     0               ! halt trap flag
+      00000000 00000000                       43 frd:    equ     1               ! repeat display flag
+      00000000 00000000                       44 fpatt:  equ     0               ! printer attach switch
+      00000000 00000000                       45 fwsym:  equ     1               ! word list flag
+      00000000 00000000                       46 fbsym:  equ     2               ! byte list flag
+
+
+                                                                 test                                                           Page 2
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      00000000 00000000                       48 ! Errors/messages
+      00000000 00000000                       49         
+      00000000 00000000                       50 bsreg:  equ     0               ! disassembler messages
+      00000000 00000000                       51 bexreg: equ     8
+      00000000 00000000                       52 bdr:    equ     11
+      00000000 00000000                       53 bopr:   equ     19
+      00000000 00000000                       54 bccode: equ     27
+      00000000 00000000                       55 brx:    equ     35
+      00000000 00000000                       56 bbt:    equ     41
+      00000000 00000000                       57 mrhd:   equ     45              ! register display header
+      00000000 00000000                       58 eparm:  equ     46              ! missing parameter
+      00000000 00000000                       59 eparen: equ     47              ! missing ')'
+      00000000 00000000                       60 eindr:  equ     48              ! missing ']'
+      00000000 00000000                       61 eterm:  equ     49              ! invalid command termination
+      00000000 00000000                       62 ebrkf:  equ     50              ! breakpoint table full
+      00000000 00000000                       63 ecom:   equ     51              ! command not found
+      00000000 00000000                       64 erange: equ     52              ! value out of range
+      00000000 00000000                       65 eblock: equ     53              ! invalid block specification
+      00000000 00000000                       66 enovf:  equ     54              ! numeric overflow
+      00000000 00000000                       67 efact:  equ     55              ! invalid factor
+      00000000 00000000                       68 ecdovf: equ     56              ! code buffer overflow
+      00000000 00000000                       69 eicd:   equ     57              ! invalid machine instruction
+      00000000 00000000                       70 esymf:  equ     58              ! symbol/varible not found
+      00000000 00000000                       71 ehlt:   equ     59              ! halt trap
+      00000000 00000000                       72 ebrkc:  equ     60              ! breakpoint check error
+      00000000 00000000                       73 edivz:  equ     61              ! zero divide
+      00000000 00000000                       74 eivnum: equ     62              ! invalid numeric
+      00000000 00000000                       75 eunspc: equ     63              ! unspec error (must be last)
+
+
+                                                                 test                                                           Page 3
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      00000000 00000000                       77 ! Interface vectors for DB.
+      00000000 00000000                       78 ! These are here for ease of use as well as ease
+      00000000 00000000                       79 ! of change. DB uses two i/o devices, input and output
+      00000000 00000000                       80 ! primitive routines, with an optional third list output
+      00000000 00000000                       81 ! routine. In the present version of DB, these routines
+      00000000 00000000                       82 ! are right above DB in memory, but if DB is in ram,
+      00000000 00000000                       83 ! these can be dynamically changed to fit the debugging
+      00000000 00000000                       84 ! situation.
+      00000000 00000000                       85 ! The other entries are for use with general DB
+      00000000 00000000                       86 ! debugging (see user's manual).
+      00000000 00000000                       87 !
+
+
+                                                                 test                                                           Page 4
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      00000000 00000000                       89 ! Coldstart entry vector.
+      00000000 00000000                       90 ! This vector is always assumed to be the main entrance
+      00000000 00000000                       91 ! to DB. Here all registers, breakpoints and other
+      00000000 00000000                       92 ! data are cleared and the internal stack pair is reset.
+      00000000 00000000                       93         
+      00000000 00000000 C3 00 00              94 cstvec: jp      coldst
+
+
+                                                                 test                                                           Page 5
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      00000003 00000000                       96 ! Capture entry vector.
+      00000003 00000000                       97 ! This entry is for people who need DB's services but
+      00000003 00000000                       98 ! haven't been using DB. all breakpoints and other
+      00000003 00000000                       99 ! data are cleared, but the registers are saved as in a
+      00000003 00000000                      100 ! normal breakpoint re-entry. Note that the pc is assumed
+      00000003 00000000                      101 ! to be on the stack, and is decremented by one
+      00000003 00000000                      102 ! (to adjust for a restart).
+      00000003 00000000                      103         
+      00000003 00000000 C3 00 00             104 capvec: jp      captur
+
+
+                                                                 test                                                           Page 6
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      00000006 00000000                      106 ! Breakpoint entry vector.
+      00000006 00000000                      107 ! This is the re-entry DB uses for it's breakpoints.
+      00000006 00000000                      108 ! All registers are re-saved, the internal stack pair
+      00000006 00000000                      109 ! is restored (restored-not reset!!!) and an internal
+      00000006 00000000                      110 ! return is executed. The user should not use this entry,
+      00000006 00000000                      111 ! because zbug will be expecting items to have been set
+      00000006 00000000                      112 ! up within DB. The one exeption is when DB is
+      00000006 00000000                      113 ! expecting a breakpoint and the user is somehow able
+      00000006 00000000                      114 ! to re-enter DB (debugging another debugger,
+      00000006 00000000                      115 ! for instance).
+      00000006 00000000                      116         
+      00000006 00000000 C3 00 00             117 brkvec: jp      recovb
+
+
+                                                                 test                                                           Page 7
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      00000009 00000000                      119 ! Initalize vector.
+      00000009 00000000                      120 ! DB expects a routine here to do any initalization
+      00000009 00000000                      121 ! required.
+      00000009 00000000                      122 ! This routine should:
+      00000009 00000000                      123 !
+      00000009 00000000                      124 !     Do any console or list device initalization
+      00000009 00000000                      125 !     required. This routine is also responsible
+      00000009 00000000                      126 !     for the breakpoint set-up. The routine should
+      00000009 00000000                      127 !     place a vector to brkvec where it will be
+      00000009 00000000                      128 !     entered by a restart determined by the initalize
+      00000009 00000000                      129 !     routine. This routine should return the restart
+      00000009 00000000                      130 !     to be used in the a register.
+      00000009 00000000                      131 !     To re-iterate:
+      00000009 00000000                      132 !
+      00000009 00000000                      133 !     External initalization routine
+      00000009 00000000                      134 !     In parameters: none
+      00000009 00000000                      135 !     Out parameters: restart code - a
+      00000009 00000000                      136 !     Modifies: af only
+      00000009 00000000                      137 !
+      00000009 00000000 C3 00 00             138 inivec: jp      exinit
+
+
+                                                                 test                                                           Page 8
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      0000000C 00000000                      140 ! Input vector.
+      0000000C 00000000                      141 ! DB expects an idealized input routine here.
+      0000000C 00000000                      142 ! This routine should:
+      0000000C 00000000                      143 !
+      0000000C 00000000                      144 !     Check the input status. If it is null,
+      0000000C 00000000                      145 !     (no character waiting) the routine should
+      0000000C 00000000                      146 !     return a=0 (ascii null). If there is a character,
+      0000000C 00000000                      147 !     this should be returned in the a register.
+      0000000C 00000000                      148 !     DB exepects all control characters to be input,
+      0000000C 00000000                      149 !     and accepts only $08 (ctl-h) as a rubout.
+      0000000C 00000000                      150 !     This should be translated as aplicable,
+      0000000C 00000000                      151 !     probabally from the character $7f.
+      0000000C 00000000                      152 !     Any parity should be masked (bit 7 is false).
+      0000000C 00000000                      153 !     The input routine should save and restore all
+      0000000C 00000000                      154 !     registers except the a register.
+      0000000C 00000000                      155 !     To re-iterate:
+      0000000C 00000000                      156 !
+      0000000C 00000000                      157 !     General character input routine
+      0000000C 00000000                      158 !     In parameters: none
+      0000000C 00000000                      159 !     Out parameters: status or character in the a register
+      0000000C 00000000                      160 !     Modifies: af only
+      0000000C 00000000                      161         
+      0000000C 00000000 C3 00 00             162 inpvec: jp      conin
+
+
+                                                                 test                                                           Page 9
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      0000000F 00000000                      164 ! Console output vector.
+      0000000F 00000000                      165 ! DB expects an idealized console output routine here.
+      0000000F 00000000                      166 ! This routine should:
+      0000000F 00000000                      167 !
+      0000000F 00000000                      168 !     Output the character in the a register.
+      0000000F 00000000                      169 !     DB outputs rubouts as $08 (ctl-h) and expects
+      0000000F 00000000                      170 !     the last character to be erased and printout to
+      0000000F 00000000                      171 !     start over that character position. This should
+      0000000F 00000000                      172 !     be translated to the proper control sequence for
+      0000000F 00000000                      173 !     the device. The output routine should save and
+      0000000F 00000000                      174 !     restore all registers but the a register.
+      0000000F 00000000                      175 !     To re-iterate:
+      0000000F 00000000                      176 !
+      0000000F 00000000                      177 !     Console output routine
+      0000000F 00000000                      178 !     In parameters: character to be output in the a register
+      0000000F 00000000                      179 !     Out parameters: none
+      0000000F 00000000                      180 !     Modifies: af only
+      0000000F 00000000                      181         
+      0000000F 00000000 C3 00 00             182 cotvec: jp      conout
+
+
+                                                                 test                                                           Page 10
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      00000012 00000000                      184 ! List output vector.
+      00000012 00000000                      185 ! This is an optional vector, and should ethier be a
+      00000012 00000000                      186 ! return or point to a return if not used.
+      00000012 00000000                      187 ! If the routine is provided, it should:
+      00000012 00000000                      188 !
+      00000012 00000000                      189 !     Output the character in the a register.
+      00000012 00000000                      190 !     DB outputs rubouts as $08 (ctl-h) taken
+      00000012 00000000                      191 !     to mean that the last character is to be erased.
+      00000012 00000000                      192 !     Since not many printers can do that, the list
+      00000012 00000000                      193 !     routine should probably translate this to a
+      00000012 00000000                      194 !     back-arrow (different characters on different
+      00000012 00000000                      195 !     printers) to show that the previous character
+      00000012 00000000                      196 !     no longer matters. The list output routine
+      00000012 00000000                      197 !     should save and restore all registers except
+      00000012 00000000                      198 !     the a register.
+      00000012 00000000                      199 !     To re-iterate:
+      00000012 00000000                      200 !
+      00000012 00000000                      201 !     List output routine
+      00000012 00000000                      202 !     In parameters: character to be output in the a register
+      00000012 00000000                      203 !     Out parameters:none
+      00000012 00000000                      204 !     Modifies:af only
+      00000012 00000000                      205         
+      00000012 00000000 C3 00 00             206 lotvec: jp      lstout
+
+
+                                                                 test                                                           Page 11
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      00000015 00000000                      208 ! Capture entry.
+      00000015 00000000                      209 ! loads all outside registers, including the pc
+      00000015 00000000                      210 ! (off the stack). Resets the internal stack, then
+      00000015 00000000                      211 ! jumps to the executive.
+      00000015 00000000                      212 
+      00000015 00000000 ED 73 00 00          213 captur: ld      (spreg),sp      ! save the outside sp
+      00000019 00000000 31 00 00             214         ld      sp,istack       ! reset the internal sp
+      0000001C 00000000 E5                   215         push    hl              ! save outside hl
+      0000001D 00000000 2A 00 00             216         ld      hl,(spreg)      ! and save the outside sp
+      00000020 00000000 E5                   217         push    hl
+      00000021 00000000 CD 00 00             218         call    clearm
+      00000024 00000000 21 01 00             219         ld      hl,true         ! set true value
+      00000027 00000000 22 00 00             220         ld      (tvar),hl
+      0000002A 00000000 E1                   221         pop     hl              ! recover outside sp
+      0000002B 00000000 22 00 00             222         ld      (spreg),hl      ! save
+      0000002E 00000000 21 00 00             223         ld      hl,cold01       ! get re-entry address
+      00000031 00000000 E3                   224         ex      (sp),hl         ! put on the internal stack
+      00000032 00000000 ED 73 00 00          225         ld      (spsave),sp     ! save the internal sp
+      00000036 00000000 ED 7B 00 00          226         ld      sp,(spreg)      ! and get the external sp
+      0000003A 00000000 C3 00 00             227         jp      recovb          ! and go recover
+
+
+                                                                 test                                                           Page 12
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      0000003D 00000000                      229 ! Coldstart entry.
+      0000003D 00000000                      230 ! Clears everything, resets the stack,
+      0000003D 00000000                      231 ! prints the sign-on message and falls
+      0000003D 00000000                      232 ! through to the executive
+      0000003D 00000000                      233 
+      0000003D 00000000 31 00 00             234 coldst: ld      sp,istack       ! set the internal sp
+      00000040 00000000 CD 00 00             235         call    clearm          ! clear our ram
+      00000043 00000000 21 01 00             236         ld      hl,true         ! set true value
+      00000046 00000000 22 00 00             237         ld      (tvar),hl
+      00000049 00000000 CD 09 00             238 cold01: call    inivec          ! initalize zbug
+      0000004C 00000000 32 00 00             239         ld      (rstno),a       ! set restart to use
+      0000004F 00000000 CD 00 00             240         call    lprtst          ! print the sign-on message
+      00000052 00000000 5A 38 30 20 63 6F +  241         defb    'Z80 coresident debugger vs. 2.2 copyright (C) 1994 S. A. Moor'
+      0000008F 00000000 E5                   242         defb    'e' or $80
+
+
+                                                                 test                                                           Page 13
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      00000090 00000000                      244 ! Command executive.
+      00000090 00000000                      245 ! Prints DB's prompt ('*') and inputs a line,
+      00000090 00000000                      246 ! then procedes to compile the line.
+      00000090 00000000                      247         
+      00000090 00000000 31 00 00             248 cexec:  ld      sp,istack       ! reset stack
+      00000093 00000000 21 00 00             249         ld      hl,codbuf       ! index code buffer
+      00000096 00000000 22 00 00             250         ld      (codptr),hl     ! reset pointer
+      00000099 00000000 3A 00 00             251         ld      a,(extflg)      ! get execute flag
+      0000009C 00000000 B7                   252         or      a               ! check true
+      0000009D 00000000 C4 00 00             253         call    nz,crlf         ! next line if so
+      000000A0 00000000 AF                   254         xor     a               ! set flag false
+      000000A1 00000000 32 00 00             255         ld      (extflg),a
+      000000A4 00000000 CD 00 00             256         call    iline           ! input user line
+      000000A7 00000000 C2 00 00             257         jp      nz,dstep        ! single-step, go execute
+      000000AA 00000000 CD 00 00             258         call    skpspc          ! skip any spaces
+      000000AD 00000000 CA 90 00             259         jp      z,cexec         ! null line, restart
+      000000B0 00000000 18 00                260         jr      fndcom          ! go find command
+      000000B2 00000000                      261         
+      000000B2 00000000                      262 ! Check for multiple command(s).
+      000000B2 00000000                      263 ! Multiple commands are followed by a ';' character.
+      000000B2 00000000                      264 ! DB must find this or a cr to make a valid command
+      000000B2 00000000                      265 ! line.
+      000000B2 00000000                      266         
+      000000B2 00000000 31 00 00             267 next:   ld      sp,istack       ! reset stack
+      000000B5 00000000 CD 00 00             268         call    skpspc          ! skip any spaces
+      000000B8 00000000 CD 00 00             269         call    getchr          ! chk next character
+      000000BB 00000000 28 00                270         jr      z,rexec         ! end of line
+      000000BD 00000000 FE 3B                271         cp      ';'             ! check for multiple command
+      000000BF 00000000 3E 31                272         ld      a,eterm         ! termination error
+      000000C1 00000000 20 00                273         jr      nz,error        ! no, go error
+      000000C3 00000000 CD 00 00             274         call    skpspc          ! skip to next command
+      000000C6 00000000 11 00 00             275 fndcom: ld      de,cmdtbl       ! and go to it
+      000000C9 00000000 CD 00 00             276         call    search          ! find command entry
+      000000CC 00000000 3E 33                277         ld      a,ecom          ! flag error
+      000000CE 00000000 C2 00 00             278         jp      nz,error        ! command not found
+      000000D1 00000000 7E                   279         ld      a,(hl)          ! get command address
+      000000D2 00000000 23                   280         inc     hl
+      000000D3 00000000 66                   281         ld      h,(hl)
+      000000D4 00000000 6F                   282         ld      l,a
+      000000D5 00000000 E9                   283         jp      (hl)            ! go command
+      000000D6 00000000                      284         
+      000000D6 00000000                      285 ! Command line has been coded,
+      000000D6 00000000                      286 ! terminate and execute
+      000000D6 00000000                      287         
+      000000D6 00000000 21 90 00             288 rexec:  ld      hl,cexec        ! index command re-entry
+      000000D9 00000000 CD 00 00             289         call    genjmp          ! generate a jump
+      000000DC 00000000 C3 00 00             290         jp      codbuf          ! and go program
+      000000DF 00000000                      291         
+      000000DF 00000000                      292 ! Command error.
+      000000DF 00000000                      293 ! Prints 'error' and restarts the command executive.
+      000000DF 00000000                      294         
+      000000DF 00000000 31 00 00             295 error:  ld      sp,istack       ! reset stack
+      000000E2 00000000 FE 3F                296         cp      eunspc          ! check unspecified error
+      000000E4 00000000 38 00                297         jr      c,error01       ! no, skip
+      000000E6 00000000 3E 3F                298         ld      a,eunspc        ! yes, flag unspecified error
+      000000E8 00000000 CD 00 00             299 error01: call   prtstr          ! print preamble
+      000000EB 00000000 2A 2A 2A A0          300         defb    '***', ' ' or $80
+      000000EF 00000000 CD 00 00             301         call    lprtms          ! print error message
+      000000F2 00000000 18 9C                302         jr      cexec           ! go restart executive
+
+
+                                                                 test                                                           Page 14
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      000000F4 00000000                      304 ! Here are the command routines.
+      000000F4 00000000                      305 ! all of these are on a 'zero stack level',
+      000000F4 00000000                      306 ! and use only one possible exit, 'next'.
+      000000F4 00000000                      307 ! Each of the command routines are usually split into
+      000000F4 00000000                      308 ! two halves! one to parse the command line,
+      000000F4 00000000                      309 ! and one to actually execute the code.
+      000000F4 00000000                      310 ! The exception to this is when a command can be
+      000000F4 00000000                      311 ! coded without subroutine call(s).
+
+
+                                                                 test                                                           Page 15
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      000000F4 00000000                      313 ! Single-step with display.
+      000000F4 00000000                      314 ! First dissassembles an instruction at the current
+      000000F4 00000000                      315 ! outside pc, then if this instruction is a good one,
+      000000F4 00000000                      316 ! we will execute it then stop. Note that if the opcode
+      000000F4 00000000                      317 ! is invalid, we will trap with a fatal error and the
+      000000F4 00000000                      318 ! pc still pointing at the invalid opcode.
+      000000F4 00000000                      319 ! An optional 'count' parameter is allowed,
+      000000F4 00000000                      320 ! which is checked for zero and decremented on each loop.
+      000000F4 00000000                      321         
+      000000F4 00000000 CD 00 00             322 dstep:  call    chkend          ! check parameter
+      000000F7 00000000 20 00                323         jr      nz,dstep01      ! yes
+      000000F9 00000000 CD 00 00             324         call    genfnc          ! generate function call
+      000000FC 00000000                      325         
+      000000FC 00000000 CD 00 00             326         call    sstep           ! single step instruction
+      000000FF 00000000 CD 00 00             327         call    dsreg           ! display the registers
+      00000102 00000000 C9                   328         ret                     ! and exit
+      00000103 00000000                      329         
+      00000103 00000000 CD 00 00             330 dstep01: call   expr            ! parse count
+      00000106 00000000 CD 00 00             331         call    genfnc          ! generate function
+      00000109 00000000                      332         
+      00000109 00000000 7C                   333 dstep02: ld     a,h             ! test done
+      0000010A 00000000 B5                   334         or      l
+      0000010B 00000000 C8                   335         ret     z               ! yes, exit
+      0000010C 00000000 CD 00 00             336         call    sstep           ! else step one
+      0000010F 00000000 CD 00 00             337         call    dsreg           ! display registers
+      00000112 00000000 2B                   338         dec     hl              ! count
+      00000113 00000000 18 F4                339         jr      dstep02         ! and loop
+
+
+                                                                 test                                                           Page 16
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      00000115 00000000                      341 ! Single step without display.
+      00000115 00000000                      342 ! This does exactly the same thing as 'dstep',
+      00000115 00000000                      343 ! but does not print the disassembly.
+      00000115 00000000                      344         
+      00000115 00000000 CD 00 00             345 step:   call    chkend          ! check parameter
+      00000118 00000000 20 00                346         jr      nz,step01       ! yes
+      0000011A 00000000 CD 00 00             347         call    genfnc          ! generate function call
+      0000011D 00000000                      348         
+      0000011D 00000000 CD 00 00             349         call    sstep           ! single step instrunction
+      00000120 00000000 C9                   350         ret                     ! exit
+      00000121 00000000                      351         
+      00000121 00000000 CD 00 00             352 step01: call    expr            ! parse count
+      00000124 00000000 CD 00 00             353         call    genfnc          ! generate function
+      00000127 00000000                      354         
+      00000127 00000000 7C                   355 step02: ld      a,h             ! test done
+      00000128 00000000 B5                   356         or      l
+      00000129 00000000 C8                   357         ret     z               ! yes, exit
+      0000012A 00000000 CD 00 00             358         call    sstep           ! else step one
+      0000012D 00000000 2B                   359         dec     hl              ! count
+      0000012E 00000000 18 F7                360         jr      step02          ! loop
+
+
+                                                                 test                                                           Page 17
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      00000130 00000000                      362 ! Reset breakpoint.
+      00000130 00000000                      363 ! Resets the breakpoint at the command provided address.
+      00000130 00000000                      364 ! If the breakpoint does not exist, will do nothing
+      00000130 00000000                      365 ! (no error). If a parameter is not provided, will clear
+      00000130 00000000                      366 ! the entire breakpoint table.
+      00000130 00000000                      367         
+      00000130 00000000 CD 00 00             368 clr:    call    chkend          ! check parameter
+      00000133 00000000 28 00                369         jr      z,clr01         ! no
+      00000135 00000000 CD 00 00             370         call    expr            ! get address of breakpoint
+      00000138 00000000 21 00 00             371         ld      hl,cbrkt        ! index breakpoint clear
+      0000013B 00000000 CD 00 00             372         call    gencal          ! routine and produce call
+      0000013E 00000000 C3 B2 00             373         jp      next            ! exit
+      00000141 00000000 3E 00                374 clr01:  ld      a,0             ! get a clear byte
+      00000143 00000000 CD 00 00             375         call    genldi          ! to a
+      00000146 00000000 21 00 00             376         ld      hl,brkset       ! index breakpoint set byte
+      00000149 00000000 CD 00 00             377         call    gensta          ! produce a store to clear
+      0000014C 00000000 C3 B2 00             378         jp      next            ! exit
+
+
+                                                                 test                                                           Page 18
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      0000014F 00000000                      380 ! List/set breakpoints command.
+      0000014F 00000000                      381 ! If there is an address, a breakpoint will be
+      0000014F 00000000                      382 ! set there, unless it is already set, in which
+      0000014F 00000000                      383 ! case nothing will happen. If there is no address,
+      0000014F 00000000                      384 ! lists all non-free breakpoints one to a line.
+      0000014F 00000000                      385         
+      0000014F 00000000 CD 00 00             386 disb:   call    chkend          ! check parameter
+      00000152 00000000 20 00                387         jr      nz,disb04       ! yes, go set
+      00000154 00000000 CD 00 00             388 disb01: call    genfnc          ! generate function call
+      00000157 00000000                      389         
+      00000157 00000000 21 00 00             390         ld      hl,brktbl       ! index breakpoint table
+      0000015A 00000000 3A 00 00             391         ld      a,(brkset)      ! get breakpoint set byte
+      0000015D 00000000 4F                   392         ld      c,a             ! save
+      0000015E 00000000 06 08                393         ld      b,8             ! entries to do
+      00000160 00000000 5E                   394 disb02: ld      e,(hl)          ! get an entry address
+      00000161 00000000 23                   395         inc     hl
+      00000162 00000000 56                   396         ld      d,(hl)
+      00000163 00000000 23                   397         inc     hl
+      00000164 00000000 23                   398         inc     hl              ! point to next entry
+      00000165 00000000 CB 19                399         rr      c               ! chk null entry
+      00000167 00000000 30 00                400         jr      nc,disb03       ! yes, skip print
+      00000169 00000000 EB                   401         ex      de,hl           ! else print the address
+      0000016A 00000000 CD 00 00             402         call    prtsym          ! print possible symbol
+      0000016D 00000000 CD 00 00             403         call    crlf            ! next line
+      00000170 00000000 EB                   404         ex      de,hl
+      00000171 00000000 10 ED                405 disb03: djnz    disb02          ! loop if not end of table
+      00000173 00000000 C9                   406         ret                     ! exit
+      00000174 00000000                      407         
+      00000174 00000000 CD 00 00             408 disb04: call    expr            ! get address to set
+      00000177 00000000 CD 00 00             409         call    genfnc          ! generate function
+      0000017A 00000000                      410         
+      0000017A 00000000 CD 00 00             411         call    sbrkt           ! set breakpoint
+      0000017D 00000000 C9                   412         ret                     ! exit
+
+
+                                                                 test                                                           Page 19
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      0000017E 00000000                      414 ! Continue at the address.
+      0000017E 00000000                      415 ! Executes real instructions at the command address.
+      0000017E 00000000                      416 ! If there is no command address,
+      0000017E 00000000                      417 ! will execute at the current pc.
+      0000017E 00000000                      418         
+      0000017E 00000000 CD 00 00             419 cont:   call    chkend          ! chk no parameter
+      00000181 00000000 28 00                420         jr      z,cont01        ! yes
+      00000183 00000000 CD 00 00             421         call    expr            ! get the parameter
+      00000186 00000000 21 00 00             422         ld      hl,pcreg        ! index the pc
+      00000189 00000000 CD 00 00             423         call    genast          ! generate address store
+      0000018C 00000000 CD 00 00             424 cont01: call    genfnc          ! generate function
+      0000018F 00000000                      425         
+      0000018F 00000000 CD 00 00             426         call    goadd           ! execute
+      00000192 00000000 C9                   427         ret                     ! exit
+
+
+                                                                 test                                                           Page 20
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      00000193 00000000                      429 ! Display the registers
+      00000193 00000000                      430 ! See 'dsreg' routine
+      00000193 00000000                      431 !
+      00000193 00000000 21 00 00             432 disp:   ld      hl,dsreg        ! index display routine
+      00000196 00000000 CD 00 00             433         call    gencal          ! generate the call
+      00000199 00000000 C3 B2 00             434         jp      next            ! exit
+
+
+                                                                 test                                                           Page 21
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      0000019C 00000000                      436 ! Print value.
+      0000019C 00000000                      437 ! Prints out the command provided value,
+      0000019C 00000000                      438 ! one to a line. Prints decimal, binary, octal and hex.
+      0000019C 00000000                      439         
+      0000019C 00000000 CD 00 00             440 prt:    call    expr            ! get the value to print
+      0000019F 00000000 CD 00 00             441         call    genfnc          ! generate function call
+      000001A2 00000000                      442         
+      000001A2 00000000 0E 0A                443         ld      c,10            ! set decimal
+      000001A4 00000000 CD 00 00             444         call    prtnum          ! print
+      000001A7 00000000 3E 14                445         ld      a,20            ! tab to 1st
+      000001A9 00000000 CD 00 00             446         call    tab
+      000001AC 00000000 CD 00 00             447         call    prtstr          ! separate
+      000001AF 00000000 A5                   448         defb    '%' or $80
+      000001B0 00000000 0E 02                449         ld      c,2             ! set binary
+      000001B2 00000000 CD 00 00             450         call    prtnum          ! print
+      000001B5 00000000 3E 28                451         ld      a,40            ! tab to 2nd
+      000001B7 00000000 CD 00 00             452         call    tab
+      000001BA 00000000 CD 00 00             453         call    prtstr          ! separate
+      000001BD 00000000 C0                   454         defb    '@' or $80
+      000001BE 00000000 0E 08                455         ld      c,8             ! set octal
+      000001C0 00000000 CD 00 00             456         call    prtnum          ! print
+      000001C3 00000000 3E 3C                457         ld      a,60            ! tab to 3rd
+      000001C5 00000000 CD 00 00             458         call    tab
+      000001C8 00000000 CD 00 00             459         call    prtstr          ! separate
+      000001CB 00000000 A4                   460         defb    '$' or $80
+      000001CC 00000000 0E 10                461         ld      c,16            ! set hexadecimal
+      000001CE 00000000 CD 00 00             462         call    prtnum          ! print
+      000001D1 00000000 CD 00 00             463         call    crlf            ! terminate line
+      000001D4 00000000 C9                   464         ret                     ! exit
+
+
+                                                                 test                                                           Page 22
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      000001D5 00000000                      466 ! Until command.
+      000001D5 00000000                      467 ! Checks the command provided value for zero,
+      000001D5 00000000                      468 ! and restarts the command line if it is.
+      000001D5 00000000                      469 ! The loop value may be ommited, in which case
+      000001D5 00000000                      470 ! it becomes a loop forever. The standard 'until'
+      000001D5 00000000                      471 ! command generates a break check. An alternate
+      000001D5 00000000                      472 ! form is avalible which does not.
+      000001D5 00000000                      473         
+      000001D5 00000000 21 00 00             474 until:  ld      hl,inpchk       ! generate break check
+      000001D8 00000000 CD 00 00             475         call    gencal
+      000001DB 00000000                      476         
+      000001DB 00000000                      477 ! This entry is used for no break check.
+      000001DB 00000000                      478         
+      000001DB 00000000 CD 00 00             479 nbutl:  call    chkend          ! check parameter
+      000001DE 00000000 28 00                480         jr      z,nbutl01       ! no
+      000001E0 00000000 CD 00 00             481         call    expr            ! get the value to test
+      000001E3 00000000 CD 00 00             482         call    gentst          ! generate word test
+      000001E6 00000000 21 00 00             483         ld      hl,codbuf       ! index start of code
+      000001E9 00000000 CD 00 00             484         call    genjpz          ! generate a 'jp z,codbuf'
+      000001EC 00000000 C3 B2 00             485         jp      next            ! exit
+      000001EF 00000000 21 00 00             486 nbutl01: ld     hl,codbuf       ! generate unconditional
+      000001F2 00000000 CD 00 00             487         call    genjmp          ! restart
+      000001F5 00000000 C3 B2 00             488         jp      next            ! exit
+
+
+                                                                 test                                                           Page 23
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      000001F8 00000000                      490 ! Stop command.
+      000001F8 00000000                      491 ! Checks the provided value for non-zero,
+      000001F8 00000000                      492 ! and if so, restarts the command executive.
+      000001F8 00000000                      493 ! This is used to provide an 'easy exit' for
+      000001F8 00000000                      494 ! a given condition.
+      000001F8 00000000                      495         
+      000001F8 00000000 CD 00 00             496 stop:   call    expr            ! get the value to test
+      000001FB 00000000 CD 00 00             497         call    gentst          ! generate word test
+      000001FE 00000000 21 90 00             498         ld      hl,cexec        ! index command restart
+      00000201 00000000 CD 00 00             499         call    genjpnz         ! generate a 'jp nz,cexec'
+      00000204 00000000 C3 B2 00             500         jp      next            ! exit
+
+
+                                                                 test                                                           Page 24
+
+
+      Program  Variable Code              C Line Source
+      -----------------------------------------------------------------------------------------------------------------------------------
+      00000207 00000000                      502 ! Dump command.
+      00000207 00000000                      503 ! Dumps memory from the first command provided address
+      00000207 00000000                      504 ! to the secound command provided address in the following
+      00000207 00000000                      505 ! format! the address is printed followed by a ':', then
+      00000207 00000000                      506 ! up to 16 bytes are displayed separated by a space.
+      00000207 00000000                      507 ! This is followed by the ascii version of the data,
+      00000207 00000000                      508 ! in single quotes.
+      00000207 00000000                      509 ! If the second parameter does not exist, a single byte
+      00000207 00000000                      510 ! dump will happen.
+      00000207 00000000                      511         
+      00000207 00000000 CD 00 00             512 dump:   call    expr            ! get the starting address
+      0000020A 00000000 CD 00 00             513         call    gensav          ! save
+      0000020D 00000000 CD 00 00             514         call    skpspc          ! get param separator, ','
+      00000210 00000000 FE 2C                515         cp      ','
+      00000212 00000000 20 00                516         jr      nz,dump01       ! default to first value
+      00000214 00000000 CD 00 00             517         call    getchr          ! skip the separator
+      00000217 00000000 CD 00 00             518         call    expr            ! get the ending address
+      0000021A 00000000 CD 00 00             519 dump01: call    genfnc          ! generate function call
+      0000021D 00000000                      520 
+      0000021D 00000000 EB                   521         ex      de,hl           ! place parameters
+      0000021E 00000000 E1                   522         pop     hl
+      0000021F 00000000 E3                   523         ex      (sp),hl
+      00000220 00000000 CD 00 00             524 dump02: call    inpchk          ! first chk for break
+      00000223 00000000 CD 00 00             525         call    pword           ! print the address
+      00000226 00000000 CD 00 00             526         call    prtstr          ! with trailing ' '
+      00000229 00000000 A0                   527         defb    ' ' or $80
+      0000022A 00000000 06 10                528         ld      b,16            ! set number of bytes
+      0000022C 00000000 E5                   529         push    hl              ! save starting location
+      0000022D 00000000 7E                   530 dump03: ld      a,(hl)          ! get a byte from memory
+      0000022E 00000000 CD 00 00             531         call    phexs           ! and print with space
+      00000231 00000000 E5                   532         push    hl              ! save pointer
+      00000232 00000000 B7                   533         or      a               ! reset carry
+      00000233 00000000 ED 52                534         sbc     hl,de           ! compare end and start addresses
+      00000235 00000000 E1                   535         pop     hl
+      00000236 00000000 30 00                536         jr      nc,dump04       ! it's below us, skip
+      00000238 00000000 23                   537         inc     hl
+      00000239 00000000 10 F2                538         djnz    dump03          ! loop
+      0000023B 00000000 3E 36                539 dump04: ld      a,5+16*3+1      ! set ascii collumn
+      0000023D 00000000 CD 00 00             540         call    tab             ! tab to position
+      00000240 00000000 E1                   541         pop     hl              ! restore start address
+      00000241 00000000 06 10                542         ld      b,16            ! set count
+      00000243 00000000 CD 00 00             543         call    prtstr          ! separate
+      00000246 00000000 A2                   544         defb    '"' or $80
+      00000247 00000000 7E                   545 dump07: ld      a,(hl)          ! get byte
+      00000248 00000000 E6 7F                546         and     $7f             ! strip parity
+      0000024A 00000000 FE 7F                547         cp      $7f             ! check \del
+      0000024C 00000000 28 00                548         jr      z,dump08        ! yes
+      0000024E 00000000 FE 20                549         cp      ' '             ! check control character
+      00000250 00000000 30 00                550         jr      nc,dump09       ! no
+      00000252 00000000 3E 5C                551 dump08: ld      a,'\\'          ! replace with '\'
+      00000254 00000000 CD 00 00             552 dump09: call    prtchr          ! print character
+      00000257 00000000 E5                   553         push    hl              ! compare end and start address
+      00000258 00000000 B7                   554         or      a
+      00000259 00000000 ED 52                555         sbc     hl,de
+      0000025B 00000000 E1                   556         pop     hl
+      0000025C 00000000 0E 01                557         ld      c,true          ! flag end
+      0000025E 00000000 30 00                558         jr      nc,dump10       ! it's below us, skip
+      00000260 00000000 23                   559         inc     hl              ! next
+      00000261 00000000 10 E4                560         djnz    dump07          ! loop
+      00000263 00000000 0E 00                561         ld      c,false         ! flag not end
+      00000265 00000000 CD 00 00             562 dump10: call    prtstr          ! terminate
+      00000268 00000000 A2                   563         defb    '"' or $80
+      00000269 00000000 CD 00 00             564         call    crlf            ! next line
+      0000026C 00000000 0C                   565         inc     c               ! check end
+      0000026D 00000000 20 B1                566         jr      nz,dump02       ! loop to set up next line
+      0000026F 00000000                      567         ret                     ! exit

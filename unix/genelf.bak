@@ -1,0 +1,2413 @@
+{******************************************************************************
+*                                                                             *
+*                          ELF EXECUTABLE GENERATOR                           *
+*                                                                             *
+*                              02/06 S. A. Moore                              *
+*                                                                             *
+* The ELF format is, or is becoming, the standard executable load format for  *
+* Unix systems. The present program is designed to implement Linux ELF files, *
+* and with time (and options) will be used on other systems.                  *
+*                                                                             *
+* A standard ELF file is designed to carry .text, .data, and .bss sections    *
+* use with C. We place the program in .text, allocate the variables in .bss,  *
+* and omit the .data segment.                                                 *
+*                                                                             *
+* We pull in the whole .obj/.sym pair and perform a relocation on the code to *
+* make sure there are no relocation problems, although I suspect this may be  *
+* unnecessary. The symbols will come in handy if we figgure out how to pass   *
+* symbols into the file, but be warned that gdb and friends expect a pretty   *
+* twisted, C oriented symbols deck.                                           *
+*                                                                             *
+* The basic format of the output ELF file produced is:                        *
+*                                                                             *
+*  ----------------------                                                     *
+*  | Elf header         |                                                     *
+*  |                    |                                                     *
+*  ----------------------                                                     *
+*  | Program header     |                                                     *
+*  | .text and headers  |                                                     *
+*  ----------------------                                                     *
+*  | Program code       |                                                     *
+*  ----------------------                                                     *
+*  | String table       |                                                     *
+*  ----------------------                                                     *
+*  | Section headers    |                                                     *
+*  | Null               |                                                     *
+*  ----------------------                                                     *
+*  | .text              |                                                     *
+*  ----------------------                                                     *
+*  | .bss               |                                                     *
+*  ----------------------                                                     *
+*  | .shstrtab          |                                                     *
+*  ----------------------                                                     *
+*                                                                             *
+* The ELF header, program header, and program code are all loaded to memory.  *
+*                                                                             *
+* The format of the program in memory is:                                     *
+*                                                                             *
+* $00000000 ----------------------                                            *
+*           | Operating system   |                                            *
+*           |                    |                                            *
+* $08048000 ----------------------                                            *
+*           | Program            |                                            *
+*           ----------------------                                            *
+*           | Variable           |                                            *
+*           ----------------------                                            *
+*           | Heap               |                                            *
+*           |                    |                                            *
+*           |                    |                                            *
+*           ~                    ~                                            *
+*           ~                    ~                                            *
+*           |                    |                                            *
+*           | Stack              |                                            *
+* $C0000000 ----------------------                                            *
+*           | Kernel reserved    |                                            *
+*           | Space              |                                            *
+* $ffffffff ----------------------                                            *
+*                                                                             *
+* Note that there is no specific heap. The heap allocator uses brk() calls    *
+* to expand the "variable" or .bss space further up so that the heap grows.   *
+* We don't allocate any of it, and the heap manager takes it in whole chunks, *
+* typically a page at a time.                                                 *
+*                                                                             *
+* The format of the command line is:                                          *
+*                                                                             *
+* genpe [dest=] source [/option]                                              *
+*                                                                             *
+******************************************************************************}
+
+program genelf(command, output);
+
+uses strlib,
+     extlib;
+
+label 99; { terminate program }
+
+const
+
+   hdrfix  = 176;       { number of bytes in the fixed portion of the header }
+   hdrsiz  = 224;       { number of bytes in header }
+   maxlab  = 50;        { number of characters in label }
+   maxcmp  = 10;        { number of characters in a constant compare label.
+                          Should NEVER be greater than maxlab }
+   maxext  = 3;         { number of characters in an extention }
+   digits  = 8;         { number of hex digits in an integer }
+   basadr  = $08048000; { base address of Linux app }
+   sizehd  = $34;       { size of ELF header }
+   sizphd  = $20;       { size of program header }
+   sizshd  = $28;       { size of section header }
+   sizpag  = $1000;     { size of 80386 page }
+   lstlen  = 79;        { length of output line }
+   maxsav  = 10000;     { size for disk caching }
+   maxlin  = 200;       { number of characters in a text line }
+   maxfil  = 100;       { number of characters in a file name }
+
+type 
+
+   half    = 0..65535; { half word in ELF terms }
+   word    = integer;  { full word in ELF terms }
+   sword   = integer;  { unsigned word in ELF terms, no equivalent in IP }
+   addr    = integer;  { address in ELF terms }
+   off     = integer;  { offset in ELF terms }
+   lininx  = 1..maxlin;  { index for text line }
+   linbuf  = packed array [lininx] of char; { a text line }
+   filinx  = 1..maxfil; { index for file names }
+   filnam  = packed array [filinx] of char; { a file name }
+   labinx  = 1..maxlab;    { index for standard label }
+   labl    = packed array [labinx] of char; { a standard label }
+   cmp     = packed array [1..maxcmp] of char; { a constant compare label }
+   extinx  = 1..maxext; { index for file extentions }
+   extbuf  = packed array [extinx] of char; { extention }
+   { symbol file objects }
+   objtyp  = (obend,   { end of file }
+              obsym,   { symbol }
+              obcst,   { constant }
+              obrld,   { relocation }
+              obcrld,  { constant relocation }
+              obnull); { null } 
+   { operation required on a symbol }
+   symop = (onop, { no operation }
+            oadd, { add }
+            osub, { subtract }
+            omult, { multiply }
+            odiv,  { divide }
+            omod,  { modulo }
+            oshl,  { shift left }
+            oshr,  { shift right }
+            oand,  { and }
+            oor,   { or }
+            oxor,  { exclusive or }
+            onot,  { not }
+            oneg); { negate }
+   { format of entries in the symbols table }
+   symptr = ^symbol;    { symbol pointer }
+   symbol = record      { program symbols }
+   
+      opr:  symop;   { operation }
+      lab:  pstring; { symbol label }
+      def:  boolean; { symbol defined flag }
+      add:  boolean; { symbol address flag }
+      gbl:  boolean; { symbol global }
+      ext:  boolean; { symbol external }
+      vrs:  boolean; { symbol in variable space }
+      val:  integer; { integer value }
+      lft:  symptr;  { 1st operand }
+      rgt:  symptr;  { 2nd operand }
+      err:  boolean; { entry has already received duplicate/security violation
+                       report }
+      next: symptr   { next symbol chain }
+   
+   end;
+   { insertion mode }
+   imode = (imnorm,  { normal }
+            imsgof,  { signed offset }
+            imnsof); { non-standard signed offset }
+   rldptr = ^reloc; { relocation dictionary structures }
+   reloc = record { linkage marker }
+   
+      big:    boolean; { big endian insert }
+      im:     imode;   { insertion type }
+      cof:    integer; { constant offset }
+      str:    integer; { starting bit of offset }
+      len:    integer; { number of bits to insert }   
+      add:    integer; { where to insert }
+      inssym: symptr;  { what to insert }
+      val:    integer; { value (if no symbol) }
+      adf:    boolean; { value address flag }
+      vrs:    boolean; { value in variable space flag }
+      def:    boolean; { value is defined }
+      next:   rldptr   { next entry }
+   
+   end;
+
+   { ELF objects
+
+     We represent all of the objects in an ELF as memory structures. This allows
+     them to be built partially, then resolved, and finally output verbatim to
+     the final ELF file. }
+
+   ehdptr = ^ehdrec; { ELF header pointer }
+   ehdrec = record { ELF header }
+
+      magic:  packed array [1..4] of char; { magic numbers }
+      clas:   byte; { class }
+      denc:   byte; { data encoding }
+      fver:   byte; { file version }
+      osabi:  byte; { OS ABI identification }
+      abiver: byte; { ABI version }
+      pad:    packed array [10..16] of byte; { padding }
+      ofilt:  half; { object file type }
+      macht:  half; { machine type }
+      over:   word; { object file version }
+      epva:   addr; { entry point virtual address }
+      phdoff: off;  { program header table file offset }
+      shdoff: off;  { section header table file offset }
+      psflg:  word; { processor specific flags }
+      ehdsiz: half; { ELF header size }
+      phdsiz: half; { program header size }
+      phdnum: half; { number of program headers }
+      shdsiz: half; { section header size }
+      shdnum: half; { number of section headers }
+      strinx: half; { string table index }
+
+   end;
+   phdptr = ^phdrec; { pointer to program header }
+   phdrec = record { program header }
+
+      segt:   word;  { segment type }
+      segoff: off;   { segment file offset }
+      segva:  addr;  { segment virtual address }
+      segpa:  addr;  { segment physical address }
+      segfsz: word;  { segment size in file }
+      segmsz: word;  { segment size in memory }
+      segflg: word;  { segment flags }
+      segaln: word;  { segment alignment }
+      next:   phdptr { next entry link }
+
+   end;
+   shdptr = ^shdrec; { pointer to section header }
+   shdrec = record { section header }
+
+      name:   pstring; { section name }
+      naminx: word;    { index of name in string table }
+      typ:    word;    { section type }
+      sflg:   word;    { section flags }
+      sva:    addr;    { section virtual address at execution }
+      soff:   off;     { section file offset }
+      ssiz:   word;    { section size in bytes }
+      link:   word;    { link to another section }
+      info:   word;    { additional information }
+      adraln: word;    { address alignment }
+      etysiz: word;    { entry size if section holds table }
+      next:   shdptr   { next section header entry }
+
+   end;
+   { errors }
+   errcod = (eequexp,  { '"=" expected }
+             einvnum,  { Invalid number }
+             edbr,     { Digit beyond radix }
+             einvfil,  { Invalid filename }
+             eoptnf,   { Option not found }
+             ecmdsyn,  { Command line syntax invalid }
+             elabovf,  { option label too long }
+             efilovf,  { filename too long }
+             efilnf,   { file not found }
+             efltfmt,  { Floating point format not implemented }
+             esymfmt,  { Invalid symbol file format }
+             esymlen,  { Symbol length exceeds linker capability }
+             efldovf,  { bit field overflow }
+             eundef,   { undefined symbols exist }
+             erldovf,  { rld table overflow }
+             eobjfmt,  { invalid object file format }
+             ecmdovf,  { command line overflow }
+             esysflt); { GENELF internal fault: Please notify S. A. Moore }
+
+var elffil:  bytfil; { ELF output file }
+    elfnam:  filnam; { ELF filename }
+    objfil:  bytfil; { .obj input file }
+    symfil:  bytfil; { open symbols file }
+    inpnam:  filnam; { input file name (.obj and .sym) }
+    dllfil:  bytfil; { open dll file }
+    objsiz:  integer; { size of object file }
+    objpag:  integer; { size of object file in pages }
+    cmdlin:  linbuf; { command line buffer }
+    cmdptr:  lininx; { command line index }
+    cmdlen:  lininx; { command line length }
+    stksiz:  integer; { stack size }
+    hepsiz:  integer; { heap size }
+    fverb:   boolean; { verbose flag }
+    fgui:    boolean; { generate windows gui }
+    fopnout: boolean; { output files are open }
+    nxtobj:  objtyp; { next sym file object type }
+    nxtsym:  symptr; { next symbol from sym file }
+    nxtrld:  rldptr; { next rld from rld file }
+    symtab:  symptr; { current symbols table }
+    rldtab:  rldptr; { current rlds table }
+    fresym:  symptr; { free symbol entries list }
+    pstrf:   boolean; { program start parameter found in file }
+    pendf:   boolean; { program end parameter found in file }
+    vstrf:   boolean; { variable start parameter found in file }
+    vendf:   boolean; { variable end parameter found in file }
+    pstrv:   integer; { program start value, new }
+    pstr:    symptr;  { program start symbol entry }
+    pendv:   integer; { program end value, new }
+    pend:    symptr;  { program end symbol entry }
+    vstrv:   integer; { variable start value, new }
+    vstr:    symptr;  { variable start symbol entry }
+    vendv:   integer; { variable end value, new }
+    vend:    symptr;  { variable end symbol entry }
+    poff:    integer; { current program frame offset }
+    voff:    integer; { current variable frame offset }
+    errnam:  filnam; { error file name }
+    errval:  integer; { error value }
+    errbits: integer; { error number of bits }
+    errfil:  filnam; { error file print buffer }
+    pgmloc:  integer; { starting location of program overlay }
+    pgmlocf: integer; { starting location of program overlay in file }
+    varloc:  integer; { starting location variables overlay }
+    varlocf: integer; { starting location variables overlay in file }
+    prgmc:   integer; { program counter for final output }
+    psize:   integer; { program section, actual size }
+    vsize:   integer; { varaible section, actual size }
+    fundef:  boolean; { undefineds exist in object }
+    symlen:  0..maxlab; { maximum length of symbols }
+    ehdrot:  ehdptr;  { elf header root }
+    phdrot:  phdptr;  { program header root }
+    shdrot:  shdptr;  { section header root }
+    strsec:  shdptr;  { string table section }
+    bsssec:  shdptr;  { variable section }
+    txtsec:  shdptr;  { program code section }
+    datsec:  shdptr;  { data section }
+    pgmhdr:  phdptr;  { program header }
+    dathdr:  phdptr;  { data header }
+    stbsiz:  integer; { string table size }
+    valfch:  chrset;  { valid file characters }
+    symnum:  integer; { number of internal symbols }
+    cmdovf:  boolean; { command line overflow }
+    i:       integer;
+    b:       byte;
+
+{******************************************************************************
+
+Print hexadecimal
+
+Print a hexadecimal number with field width. Prints right justified with left
+hand zeros filling the field. Also allows for the fact that an unsigned 32 bit
+number can be read into a 32 bit signed number.
+One remaining problem is how to detect and convert the invalid value $80000000.
+
+******************************************************************************}
+
+procedure prthex(f: byte; w: integer);
+ 
+var buff: array [1..10] of char; { buffer for number in ascii }
+    i:    integer; { index for same }
+    t:    integer; { holding }
+ 
+begin
+
+   { set sign of number and convert }
+   if w < 0 then begin
+
+      w := w+1+maxint; { convert number to 31 bit unsigned }
+      t := w div $10000000 + 8; { extract high digit }
+      writeh(output, t); { ouput that }
+	   w := w mod $10000000; { remove that digit }
+      f := 7 { force field to full }     
+
+   end;
+   hexsp(buff, w); { convert the integer }
+   for i := 1 to f-lenp(buff) do write('0'); { pad with leading zeros }
+   writesp(output, buff) { output number }
+
+end;
+
+{******************************************************************************
+
+Process error
+
+Prints the given error code, and aborts the program.
+
+******************************************************************************}
+
+procedure error(e: errcod);
+
+begin
+
+   write('*** ');
+   case e of { error }
+
+      eequexp: write('"=" expected');
+      einvnum: write('Invalid number');
+      edbr:    write('Digit beyond radix');
+      einvfil: write('Invalid filename');
+      eoptnf:  write('Option not found');
+      ecmdsyn: write('Command line syntax invalid');
+      elabovf: write('Option label too long');
+      efltfmt: write('Floating point format not implemented');
+      esymfmt: write('Invalid symbol file format');
+      esymlen: write('Symbol length exceeds genpe capability');
+      efldovf: begin
+
+         write('Value $');
+         prthex(digits, errval); { print value }
+         write(' exceeds output field of ', errbits, ' bits provided at $');
+         prthex(digits, prgmc)
+
+      end;
+      efilnf:  begin 
+
+         write('File '''); 
+         writesp(output, errfil); 
+         write(''' not found') 
+
+      end;
+      eundef:  write('Undefined symbols exist');
+      efilovf: write('Filename too long');
+      erldovf: write('Relocation table size exceeds genelf capability');
+      eobjfmt: write('Invalid object file format');
+      ecmdovf: write('Command line too long');
+      esysflt: write('GENELF internal fault: Please notify S. A. Moore')
+
+   end;
+   writeln; { terminate line }
+   if fopnout then begin { output file is open, close and delete }
+
+      close(elffil); { close output file }
+      delete(elfnam) { delete it }
+
+   end;
+   goto 99 { terminate program }
+
+end;
+
+{******************************************************************************
+
+Write word to binary file
+
+Writes a 16 bit little endian word to the given binary file.
+
+******************************************************************************}
+
+procedure wrtwrd(w: integer);
+
+begin
+
+   write(elffil, w mod 256);
+   write(elffil, w div 256 mod 256)
+
+end;
+
+{******************************************************************************
+
+Write double word to binary file
+
+Writes a 32 bit little endian word to the given binary file.
+
+******************************************************************************}
+
+procedure wrtdwd(w: integer);
+
+begin
+
+   write(elffil, w mod 256);
+   write(elffil, w div 256 mod 256);
+   write(elffil, w div 65536 mod 256);
+   write(elffil, w div 16777216 mod 256)
+
+end;
+
+{******************************************************************************
+
+Check end of line
+
+Checks if the end of the command buffer has been reached.
+
+******************************************************************************}
+
+function endlin: boolean;
+
+begin
+
+   endlin := cmdptr > cmdlen { input pointer past end of line }
+
+end;
+
+{******************************************************************************
+
+Check next command line character
+
+Returns the next character in the command line, or a space if past the end.
+
+******************************************************************************}
+
+function chkchr: char;
+
+begin
+
+   if not endlin then chkchr := cmdlin[cmdptr] { return current character }
+   else chkchr := ' ' { else return space }
+
+end;
+
+{******************************************************************************
+
+Get next command line character
+
+If not at the end of the command line, skip to the next command line
+character.
+
+******************************************************************************}
+
+procedure getchr;
+
+begin
+
+   if not endlin then cmdptr := cmdptr+1 { advance position if not end }
+
+end;
+
+{******************************************************************************
+
+Skip spaces
+
+Skips spaces in the command line.
+
+******************************************************************************}
+
+procedure skpspc;
+
+begin
+
+   while (chkchr = ' ') and not endlin do getchr { skip spaces, not end }
+
+end;
+
+{******************************************************************************
+
+Check file extention exists
+
+Checks if the filename given contains an extention.
+
+******************************************************************************}
+
+function chkext(var fn: filnam): boolean;
+
+var p, n, e: filnam; { name component holders }
+
+begin
+
+   brknamp(fn, p, n, e); { break filename into components }
+   chkext := e[1] <> ' ' { return true if not empty }
+
+end;
+
+{******************************************************************************
+
+Append file extention
+
+Places a new extention to the given filename. If the ovr flag is true, then
+any existing extention is overwritten, otherwise the new extention is only
+added if the existing name has none.
+
+******************************************************************************}
+
+procedure addext(var fn:     filnam;   { filename to extend }
+                     ext:    extbuf;   { filename extention }
+                     extend: boolean); { overwrite flag }
+
+var p, n, e: filnam; { name component holders }
+
+begin
+
+   brknamp(fn, p, n, e); { break filename into components }
+   { if overwrite is true or extention empty, place new extention }
+   if extend or (e[1] = ' ') then copyp(e, ext);
+   maknamp(fn, p, n, e) { reconstruct the filename }
+
+end;
+
+{******************************************************************************
+
+Parse label
+
+Parses a label, which is:
+
+    '_'/'a'..'z' ['_', '0'..'9', 'a'..'z']...
+
+The label is returned in the general label buffer labbuf.
+
+******************************************************************************}
+
+procedure parlab(var l: labl);
+
+var i: 0..maxlab; { index for label }
+
+begin
+
+   for i := 1 to maxlab do l[i] := ' '; { clear label buffer }
+   i := 0; { clear index }
+   while chkchr in ['_', '0'..'9', 'a'..'z', 'A'..'Z'] do begin
+
+      { parse label characters }
+      if i >= maxlab then error(elabovf);
+      i := i + 1; { next character }
+      l[i] := chkchr; { place character }
+      getchr { skip }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Parse and convert numeric
+
+Parses and converts the following:
+
+     [radix specification] ['0'..'9', 'a'..'z', 'A'..'Z']...
+
+Where the radix specifier is:
+
+     % - Binary
+     & - Octal
+     $ - hexadecimal
+     none - Decimal
+
+Using the given radix, any digits are processed to yeild an integer unsigned
+result. Leading spaces are skipped. Overflow isn't now but should be flagged 
+as an error. No spaces are allowed anywhere in the format.
+
+******************************************************************************}
+
+procedure parnum(var i: integer); { integer parsed }
+
+var r: 1..16;   { radix }
+    v: integer; { value holding }
+
+begin
+
+   skpspc; { skip spaces }
+   r := 10; { set default radix decimal}
+   i := 0; { initalize result }
+   if chkchr = '%' then begin r := 2; getchr end { binary }
+   else if chkchr = '&' then begin r := 8; getchr end { octal }
+   else if chkchr = '$' then begin r := 16; getchr end; { hexadecimal }
+   if not (chkchr in ['0'..'9', 'A'..'Z', 'a'..'z']) then
+      error(einvnum); { invalid digit }
+   while ((chkchr in ['A'..'F', 'a'..'f']) and (r = 16)) or
+      (chkchr in ['0'..'9']) do begin { load buffer }
+   
+         { convert '0'..'9' }
+         if chkchr in ['0'..'9'] then v := ord(chkchr) - ord('0')
+         else v := ord(lcase(chkchr)) - ord('a') + 10; { convert 'a'..'z' }
+         getchr; { skip }
+         if v >= r then error(edbr); { check fits radix }
+         i := i * r + v { scale and add in }
+
+      end;
+   { check kilo multiplier }
+   if chkchr = 'k' then begin getchr; i := i*1024 end
+   { check mega multiplier }
+   else if chkchr = 'm' then begin getchr; i := i*1048576 end
+   { check giga multiplier }
+   else if chkchr = 'g' then begin getchr; i := i*1073741824 end
+
+end;
+
+{******************************************************************************
+
+Parse filename
+
+Gets a filename from the command line and validates it.
+
+******************************************************************************}
+
+procedure parfil(var n: filnam); 
+
+var fi:  0..maxfil;  { index for filename }
+
+begin
+
+   clears(n); { clear filename }
+   fi := 0; { set 1st character }
+   while chkchr in valfch do begin
+
+      if fi = maxfil then error(einvfil); { overflow }
+      fi := fi+1; { next character }
+      n[fi] := chkchr; { place }
+      getchr { skip to next }
+
+   end;
+   if not valid(n) then error(einvfil); { check and error on filename }
+
+end;
+
+{******************************************************************************
+
+Check options
+
+Checks if a sequence of options is present in the input, and if
+so, parses and processes them. An option is a '#', followed by
+the option identifier. The identifier must be one of the valid
+options. Further processing may occur, on input after the
+option, depending on the option specified (see the handlers).
+Consult the operator's manual for full option details.
+
+******************************************************************************}
+
+procedure paropt;
+
+var l: labl; { label holder }
+
+begin
+
+   skpspc; { skip spaces }
+   while (chkchr = '#') or (chkchr = '/') do begin { parse option }
+
+      getchr; { skip '#' }
+      parlab(l); { get option }
+      { check options }
+      if compp(l, 'verbose') or
+                  compp(l, 'v') then 
+         fverb := true { set verbose }
+      else if compp(l, 'noverbose') or
+              compp(l, 'nv') then 
+         fverb := false { set no verbose }
+      else error(eoptnf); { option not found }
+      skpspc { skip spaces }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Parse command line
+
+The structure of a command line is:
+
+     file = file [file]... [#option]...
+
+The first file is the output .exe file. The second is the object (both .sym and
+.obj must be present). After that, each file should be a dll file.
+Options are parsed both before and after all the files.
+
+******************************************************************************}
+
+procedure parcmd;
+
+begin
+
+   paropt; { parse any options }
+   parfil(elfnam); { parse elf output file }
+   skpspc; { skip spaces }
+   { check if the first file is the output }
+   if chkchr <> '=' then error(eequexp);
+   getchr; { skip '=' }
+   parfil(inpnam); { parse the filename }
+   paropt; { parse any options }
+   if not endlin then error(ecmdsyn) { not line end }
+
+end;
+
+{******************************************************************************
+
+Round to
+
+Given a number and a size, rounds the given number up to the next whole size
+and returns that.
+
+******************************************************************************}
+
+function rndto(n, s: integer): integer;
+
+var t: integer;
+
+begin
+
+   t := n div s*s; { find whole units in number }
+   if (n mod s) <> 0 then t := t+s; { round up }
+   rndto := t { return that }
+
+end;
+
+{******************************************************************************
+
+Get symbol entry
+
+Gets a symbol entry either from the free list, or creates one.
+
+******************************************************************************}
+
+procedure getsym(var p: symptr);
+
+begin
+
+   if fresym <> nil then begin { get existing entry }
+
+      p := fresym; { index symbol }
+      fresym := fresym^.next { gap list }
+
+   end else new(p);
+   p^.opr  := onop; { clear fields }
+   p^.lab := nil;
+   p^.def  := false;
+   p^.add  := false;
+   p^.gbl  := false;
+   p^.ext  := false;
+   p^.vrs  := false;
+   p^.val  := 0;
+   p^.lft  := nil;
+   p^.rgt  := nil;
+   p^.err  := false;
+   p^.next := nil
+
+end;
+
+{******************************************************************************
+
+Put symbol entry
+
+Places the given symbol entry on the free list.
+
+******************************************************************************}
+
+procedure putsym(p: symptr);
+
+begin
+
+   p^.next := fresym; { link to list }
+   fresym := p
+
+end;
+
+{******************************************************************************
+
+Get rld entry
+
+Gets an rld entry either from the free list, or creates one.
+
+******************************************************************************}
+
+procedure getrld(var p: rldptr);
+
+begin
+
+   new(p);
+   p^.big    := false; { clear fields }
+   p^.im     := imnorm;
+   p^.cof    := 0;
+   p^.str    := 0;
+   p^.len    := 0;
+   p^.add    := 0;
+   p^.inssym := nil;
+   p^.val    := 0;
+   p^.adf    := false;
+   p^.vrs    := false;
+   p^.def    := false;
+   p^.next   := nil
+
+end;
+
+{******************************************************************************
+
+Input variger
+
+Inputs a variger to the given integer.
+Varigers are of the following format:
+
+   1. (byte) the tag byte.
+   2-N. The variger value.
+
+The tag byte values are:
+
+   bit 7 - Low for integer number, high for float.
+   bit 6 - Contains the sign of the integer. 
+   bit 5 - Unused.
+   bit 4 - Length of integer in bytes, 1-32, in -1 format.
+   bit 3 -      ""              ""
+   bit 2 -      ""              ""
+   bit 1 -      ""              ""
+   bit 0 -      ""              ""
+
+The integer is converted by removing the sign bit and converting
+to signed magnitude, then determining the byte size, then
+outputting the tag and number.
+
+******************************************************************************}
+
+procedure rdvar(var n: integer); { integer to output}
+
+var t: byte;     { tag byte }
+    s: integer;  { sign }
+    b: byte;     { read byte holder }
+
+begin
+
+   read(symfil, t); { get tag byte }
+   if (t and $80) <> 0 then error(efltfmt); { floating point not implemented }
+   if (t and $40) <> 0 then s := -1 else s := 1; { set sign of value }
+   if (t and $20) <> 0 then error(esymfmt); { invalid symbol file format }
+   t := (t and $1f)+1; { mask byte length and adjust }
+   n := 0; { clear result }
+   while t <> 0 do begin { read in bytes of value }
+
+      n := n*256; { scale up bytes for big endian format }
+      read(symfil, b); { get the next byte }
+      n := n+b; { add in }
+      t := t-1 { count bytes read }
+
+   end;
+   n := n*s { set sign of result }
+
+end;
+
+{******************************************************************************
+
+Read next symbol file entry
+
+Reads the next symbol file entry. The next object in the symbols file is read,
+either a symbol entry or an rld entry. 
+The object parameters are placed in the global save area, so that a
+"lookahead" mechanisim is implemented.
+
+******************************************************************************}
+
+procedure rdnxt;
+
+var b:   byte;    { read byte holding }
+    i:   integer;
+
+begin
+
+   read(symfil, b); { get the next object type }
+   if b in [ord(obend), ord(obsym), ord(obcst), ord(obrld), ord(obcrld)] then
+      case b of { object }
+
+      0 { obend  }: nxtobj := obend;
+      1 { obsym  }: nxtobj := obsym;
+      2 { obcst  }: nxtobj := obcst;
+      3 { obrld  }: nxtobj := obrld;
+      4 { obcrld }: nxtobj := obcrld
+
+   end else error(esymfmt); { invalid file symbol format }
+   if (nxtobj = obsym) or (nxtobj = obcst) then begin { symbol }
+
+      getsym(nxtsym); { get a symbol entry }
+      read(symfil, b); { get the operation code }
+      if b in [ord(onop), ord(oadd), ord(osub), ord(omult), ord(odiv),
+               ord(omod), ord(oshl), ord(oshr), ord(oand), ord(oor),
+               ord(oxor), ord(onot), ord(oneg)] then case b of { operation }
+
+         0  { onop  }: nxtsym^.opr := onop; 
+         1  { oadd  }: nxtsym^.opr := oadd; 
+         2  { osub  }: nxtsym^.opr := osub;
+         3  { omult }: nxtsym^.opr := omult; 
+         4  { odiv  }: nxtsym^.opr := odiv; 
+         5  { omod  }: nxtsym^.opr := omod; 
+         6  { oshl  }: nxtsym^.opr := oshl; 
+         7  { oshr  }: nxtsym^.opr := oshr; 
+         8  { oand  }: nxtsym^.opr := oand; 
+         9  { oor   }: nxtsym^.opr := oor; 
+         10  { oxor  }: nxtsym^.opr := oxor; 
+         11 { onot  }: nxtsym^.opr := onot; 
+         12 { oneg  }: nxtsym^.opr := oneg
+
+      end else error(esymfmt); { invalid symbol file format }
+      if nxtobj = obsym then begin { get symbol label }
+
+         read(symfil, b); { get the symbol length }
+         new(nxtsym^.lab, b+1); { allocate label string }
+         for i := 1 to b+1 do begin { read symbol characters }
+
+            read(symfil, b); { get a symbol character }
+            if not (chr(b) in ['_', 'a'..'z', 'A'..'Z', '0'..'9']) then
+               error(esymfmt); { invalid symbol file format }
+            nxtsym^.lab^[i] := chr(b) { place character }
+
+         end
+
+      end;
+      read(symfil, b); { get flags byte }
+      if (b and $80) <> 0 then error(esymfmt); { invalid symbol file format }
+      if (b and $40) <> 0 then error(esymfmt); { invalid symbol file format }
+      if (b and $20) <> 0 then error(esymfmt); { invalid symbol file format }
+      nxtsym^.vrs := (b and $10) <> 0; { set variable space flag }
+      nxtsym^.ext := (b and $08) <> 0; { set external flag }
+      nxtsym^.gbl := (b and $04) <> 0; { set global flag }
+      nxtsym^.add := (b and $02) <> 0; { set address flag }
+      nxtsym^.def := (b and $01) <> 0; { set defined flag }
+      if nxtsym^.def then rdvar(nxtsym^.val) { defined, get value }
+
+   end else if (nxtobj = obrld) or (nxtobj = obcrld) then begin { rld }
+
+      getrld(nxtrld); { get an rld entry }
+      read(symfil, b); { get it tag byte }
+      nxtrld^.big := (b and $80) <> 0; { set big endian flag }
+      if (b and $40) <> 0 then error(esymfmt); { invalid symbol format }
+      if (b and $20) <> 0 then error(esymfmt); { invalid symbol format }
+      case (b and $18) div $08 of { insertion type }
+
+         0: nxtrld^.im := imnorm; { normal }
+         1: nxtrld^.im := imsgof; { signed offset }
+         2: nxtrld^.im := imnsof  { non-standard signed offset }
+
+      end;
+      nxtrld^.str := b and $7; { set bit field start }
+      read(symfil, b); { get bit length }
+      nxtrld^.len := b+1; { place }
+      if nxtrld^.im = imnsof then begin { constant offset exists }
+
+         read(symfil, b); { get constant offset }
+         nxtrld^.cof := b { place }
+
+      end;
+      rdvar(nxtrld^.add); { get address }
+      if nxtobj = obcrld then begin { constant rld, value exists }
+
+         read(symfil, b); { get flag byte }
+         if (b and $80) <> 0 then error(esymfmt); { invalid symbol file format }
+         if (b and $40) <> 0 then error(esymfmt); { invalid symbol file format }
+         if (b and $20) <> 0 then error(esymfmt); { invalid symbol file format }
+         nxtrld^.vrs := (b and $10) <> 0; { set variable space flag }
+         if (b and $08) <> 0 then error(esymfmt); { invalid symbol file format }
+         if (b and $04) <> 0 then error(esymfmt); { invalid symbol file format }
+         nxtrld^.adf := (b and $02) <> 0; { set address space flag }
+         nxtrld^.def := (b and $01) <> 0; { set defined flag }
+         { the 'defined' flag must be set for constant rlds }
+         if not nxtrld^.def then error(esymfmt); { invalid symbol file format }
+         rdvar(nxtrld^.val) { get value }
+
+      end
+
+   end { else must be end of file }
+
+end;      
+
+{******************************************************************************
+
+Adjust rld entry
+
+Adjusts an rld entry by adding the current program and variable offsets
+to the address and value fields, as appropriate by the rld flags.
+
+******************************************************************************}
+
+procedure adjrld(rld: rldptr);
+
+begin
+
+   rld^.add := rld^.add+poff; { offset address }
+   { if value is defined, and in address space, offset by address }
+   if rld^.def then begin { value field is defined }
+
+      if rld^.adf then { value is in address space } 
+         rld^.val := rld^.val+poff { offset in program space }
+      else if rld^.vrs then { value is in variable space }
+         rld^.val := rld^.val+voff { offset in variable space }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Adjust symbol entry
+
+Adjusts a symbol entry by adding the current program and variable offsets
+to the value field, as appropriate by the symbol flags.
+
+******************************************************************************}
+
+procedure adjsym(sym: symptr);
+
+begin
+
+   if sym^.def and (sym^.opr = onop) then begin 
+
+      { symbol is defined and simple }
+      if sym^.add then { symbol is in program space }
+         sym^.val := sym^.val+poff { offset in program space }
+      else if sym^.vrs then { symbol is in variable space }
+         sym^.val := sym^.val+voff { offset in variable space }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Adjust symbol and RLD decks
+
+Adjusts all of the current symbol and RLD entries by the current poff and
+voff parameters.
+
+******************************************************************************}
+
+procedure adjusts;
+
+var sp: symptr; { pointer for symbols }
+    rp: rldptr; { pointer for rlds }
+
+begin
+
+   sp := symtab; { index top of symbols }
+   while sp <> nil do begin { traverse }
+
+      adjsym(sp); { adjust symbol entry }
+      sp := sp^.next { link next symbol }
+
+   end;
+   rp := rldtab; { index top of RLDs }
+   while rp <> nil do begin { traverse }
+
+      adjrld(rp); { adjust RLD entry }
+      rp := rp^.next { link next RLD }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Output object value
+ 
+The given unsigned integer is output to the output file.
+The number of bytes occupied by the output value can be specified, as well as 
+the big/little endian structure of the output.
+If the length specified is greater than the size of an integer, padding sign 
+extention bytes will be used to create an effective output of that size.
+This routine is dependent on integer being 32 bits, and uses equivalence of 
+"packed array [1..4] of byte" to integer to extract the value of an integer.
+ 
+******************************************************************************}
+
+procedure outval(val: integer;  { object integer to output }
+                 len: integer;  { number of bytes to occupy }
+                 big: boolean); { big endian format }
+
+var i: integer; { counter }
+    c: record case boolean of { convertion }
+
+          false: (a: packed array [1..4] of byte);
+          true:  (b: integer)
+
+       end;
+    s: integer; { sign holder }
+
+begin
+
+   if val < 0 then s := 255 else s := 0; { set sign extention byte }
+   c.b := val; { convert integer to bytes }
+   if big then begin { big endian }
+
+      { pad > 32 bits }
+      while len > 4 do begin write(elffil, s); len := len-1 end;
+      for i := len downto 1 do { output bytes }
+         write(elffil, c.a[i]) { output byte }
+
+   end else begin { little endian }
+
+      { output bytes to maximum of 4 }
+      if len > 4 then for i := 1 to 4 do write(elffil, c.a[i]) { output byte }
+      else for i := 1 to len do write(elffil, c.a[i]); { output byte }
+      { pad > 32 bits }
+      while len > 4 do begin write(elffil, s); len := len-1 end
+
+   end
+
+end;
+
+{******************************************************************************
+
+Output composite bit field
+
+Outputs a value as a composite bit field. Given the inserted value, the backing 
+value, and the start and length of bits to be inserted, a series of bytes is 
+created with the insertion value imbedded.
+Note: dependant on being able to use 'and', 'or' and 'not' on integers.
+
+******************************************************************************}
+
+procedure outbit(val: integer;  { object integer to output }
+                 bak: integer;  { backing value }
+                 big: boolean;  { big endian format }
+                 str: integer;  { start of insertion }
+                 len: integer); { number of bits to occupy }
+
+var mask: integer;
+    t:    integer; { holding }
+
+begin
+
+   if (str = 0) and ((len mod 8) = 0) then
+      { its just an ordinay bytewise insertion, in which case the
+        backing is not used }
+      outval(val, len div 8, big)
+   else begin { bitwise insertion }
+
+      { form bitmask }
+      mask := 1;
+      t := len-1;
+      while t <> 0 do begin mask := mask*2+1; t := t-1 end;
+      { shift up to proper bit position }
+      t := str;
+      while t <> 0 do begin 
+
+         val := val*2; { shift value }
+         mask := mask*2; { shift mask }
+         t := t-1 { count }
+
+      end;
+      { assemble output value }
+      val := (bak and not mask) or (val and mask);       
+      t := (len+str) div 8; { find total byte length }
+      if ((len+str) mod 8) <> 0 then t := t + 1; { round up }
+      outval(val, t, big) { and output final value }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Input backing value
+
+Inputs a backing value from the input object file. This is a byte constructed 
+word value that has enough bytes to cover the given byte count, and has the 
+same endian mode.
+Note that it is taken on trust that the number of bytes requested exists before
+the eof.
+
+******************************************************************************}
+
+procedure inpbak(var bak: integer;  { returns backing value }
+                     big: boolean;  { big endian format }
+                     siz: integer); { size of value in bytes }
+
+var b: byte;    { input byte holder }
+    p: integer; { power holder }
+
+begin
+
+   bak := 0; { clear backing value }
+   if big then while siz <> 0 do begin { read big endian }
+
+      read(objfil, b); { get a byte }
+      bak := bak*256+b; { scale backing value and add }
+      siz := siz-1 { count bytes }
+      
+   end else begin { little endian }
+
+      p := 1; { set first power }
+      while siz <> 0 do begin { read little endian }
+  
+         read(objfil, b); { get a byte }
+         bak := bak+b*p; { scale and add }
+         siz := siz-1 { count bytes }
+
+      end
+
+   end
+
+end;
+
+{******************************************************************************
+
+Process object
+
+Copies the input object file to the output object file. While copying, any
+pending rld's are "mixed" into the output object file.
+
+******************************************************************************}
+
+procedure prcobj;
+
+var objlen: integer; { output bytes count }
+    b:      byte;    { I/O byte holder }
+    bytes:  integer; { number of bytes in bit field }
+    v:      integer; { insertion value }
+    bak:    integer; { backing value }
+    t:      integer; { temp }
+    i:      integer; { index }
+    proc:   boolean; { processed flag }
+    rldinx: rldptr;  { index for rlds on output }
+
+begin
+
+   objlen := psize; { get the length of this input object }
+   rldinx := rldtab; { set 1st rld entry for output }
+   while objlen <> 0 do begin { read object bytes }
+
+      proc := false; { set next not processed }
+      if rldinx <> nil then { there is a next rld entry }
+         if rldinx^.add = prgmc then begin { found an rld patchpoint, process }
+
+         { find byte length of insertion field }
+         bytes := (rldinx^.len+rldinx^.str) div 8; { find total byte length }
+         if ((rldinx^.len+rldinx^.str) mod 8) <> 0 then 
+            bytes := bytes+1; { round up }
+         if rldinx^.inssym <> nil then { symbol exists }
+            v := rldinx^.inssym^.val { value is in symbol }
+         else v := rldinx^.val; { value is constant }
+         if (rldinx^.im = imsgof) or (rldinx^.im = imnsof) then begin
+
+            { if the type is signed offset, find displacement }
+            v := v-(prgmc+bytes+rldinx^.cof)
+
+         end;
+         t := v; { copy value }
+         { move off all bits to output, which should leave only 0 or -1 }
+         for i := 1 to rldinx^.len do t := t div 2;
+         if (t <> 0) and (t <> -1) then begin { value overflow }
+
+            errval := v; { place error value }
+            errbits := rldinx^.len; { place error bit length }
+            error(efldovf); { value overflows }
+
+         end;
+         inpbak(bak, rldinx^.big, bytes); { get backing value }
+         objlen := objlen-bytes; { find advance in input }
+         prgmc := prgmc+bytes; { find advance in program }
+         { output final composite }
+         outbit(v, bak, rldinx^.big, rldinx^.str, rldinx^.len);
+         rldinx := rldinx^.next; { index next rld entry }
+         proc := true { set processed }
+         
+      end;
+      if not proc then begin { transfer input to output object bytes }
+
+         read(objfil, b); { get an input byte }
+         write(elffil, b); { output to final }
+         prgmc := prgmc+1; { advance final program counter }
+         objlen := objlen-1 { count input bytes }
+
+      end
+
+   end;
+   { round up to next 4th }
+   for i := 1 to rndto(psize, 4)-psize do write(elffil, 0)
+
+end;
+
+{******************************************************************************
+
+Originate module
+
+Sets the offsets required to acheive the program and variable locations LN is
+given. By default, the program frame is located at 0, and the variable frame is
+placed at the end of that. However, the program frame or the variable frame
+or both can be set anywhere. If the user has set a variable frame, then the
+"variable after program" mode is overridden, and the variable frame will be
+located where specified.
+
+******************************************************************************}
+
+procedure origin;
+
+begin
+
+   poff := pgmloc; { set program offset }
+   voff := varloc; { set variable offset }
+   adjusts { run offset pass }
+
+end;
+
+{******************************************************************************
+
+Sort rld table
+
+Sorts the rld table into address acending order. This is done so that the
+entries appear in order when we process the object.
+Since we really want to do a quicksort for speed, what we do is to create a
+custom array with the number of rld entries we need, then quicksort that.
+The hit for this is a pointer word per rld, and this only exists during this
+sort function.
+Note: there is no way to dynamically allocate in SVS Pascal, so I used a fixed
+array. This should be replaced with dynamic allocation later.
+
+******************************************************************************}
+
+procedure srtrld;
+
+const maxsrt = 50000; { maximum size of rld table we can sort }
+
+type srtinx = 1..maxsrt; { index for sort array }
+
+var rp:     rldptr;                      { rld pointers }
+    srttbl: array [1..maxsrt] of rldptr; { rld sorting array }
+    i:      srtinx;                      { index for that }
+
+{ perform quicksort }
+
+procedure sort(l, r: srtinx);
+
+var i, j: integer; { table indexes }
+    x, w: rldptr;  { entry holders }
+
+begin
+
+   i := l; { set indexes to min and max }
+   j := r;
+   x := srttbl[(l+r) div 2]; { pick up the middle element }
+   repeat
+
+      { find lower entry out of place with respect to x }
+      while srttbl[i]^.add > x^.add do i := i+1;
+      { find upper entry out of place with respect to x }
+      while x^.add > srttbl[j]^.add do j := j-1;
+      { perform exchange }
+      if i <= j then begin { exchange elements }
+
+         w := srttbl[i]; 
+         srttbl[i] := srttbl[j];
+         srttbl[j] := w;
+         i := i+1;
+         j := j-1
+
+      end
+
+   until i > j;
+   if l < j then sort(l, j); { sort lower partition }
+   if i < r then sort(i, r) { sort upper partition }
+
+end;
+
+begin
+
+   i := 1; { index 1st array position }
+   rp := rldtab; { index 1st entry }
+   while rp <> nil do begin { copy all pointers to array }
+
+      if i = maxsrt then error(erldovf); { overflow, error } 
+      srttbl[i] := rp; { place rld pointer }
+      rp := rp^.next; { next entry }
+      i := i+1
+
+   end;
+   sort(1, i-1); { perform sort }
+   rldtab := nil; { clear destination list }
+   { just to make things easier, we sorted the list for decending order,
+     then insert it backwards }
+   for i := 1 to i-1 do begin { copy table to list }
+
+      srttbl[i]^.next := rldtab; { link entry into list at top }
+      rldtab := srttbl[i]
+
+   end
+
+
+end;
+
+{******************************************************************************
+
+Check link parameter
+
+Checks if the given symbol is one of the link parameters:
+
+   _pstr - Program start
+   _pend - Program end
+   _vstr - Variable start
+   _vend - Variable end
+
+If so, then these symbols are processed specially. First, the value of the
+symbol is divorced from the symbol entry itself, so that we may have only
+one symbol by that name in the entire symbol table(s). The value is placed
+as the "new" value. Then, if the symbol is the first such symbol to appear,
+it is placed as the master entry. Otherwise, it is disposed of and the old
+master entry returned instead.
+
+******************************************************************************}
+
+procedure chkpar(var sym: symptr; { symbol to check for, returns master }
+                 var fnd: boolean); { symbol is link parameter }
+
+begin
+
+   fnd := false; { set no parameter found }
+   if compp(sym^.lab^, '_pstr') then begin { program start }
+
+      { check defined, address space, global }
+      if not (sym^.def and sym^.add and sym^.gbl) then error(esymfmt);
+      if pstrf then error(esymfmt); { more than one in file }
+      pstrf := true; { set parameter found }
+      pstrv := sym^.val; { set new program start value }
+      if pstr = nil then begin { no previous entry }
+
+         sym^.next := symtab; { link into symbols table }
+         symtab := sym;
+         pstr := sym { set master }
+
+      end else begin { duplicate entry }
+
+         putsym(sym); { dispose of new symbol }
+         sym := pstr { return old master }
+
+      end;
+      fnd := true { set parameter found }
+
+   end else if compp(sym^.lab^, '_pend') then begin { program end }
+
+      { check defined, address space, global }
+      if not (sym^.def and sym^.add and sym^.gbl) then error(esymfmt);
+      if pendf then error(esymfmt); { more than one in file }
+      pendf := true; { set parameter found }
+      pendv := sym^.val; { set new program end value }
+      if pend = nil then begin { no previous entry } 
+
+         sym^.next := symtab; { link into symbols table }
+         symtab := sym;
+         pend := sym { no previous entry, set master }
+
+      end else begin { duplicate entry }
+
+         putsym(sym); { dispose of new symbol }
+         sym := pend { return old master }
+
+      end;
+      fnd := true { set parameter found }
+
+   end else if compp(sym^.lab^, '_vstr') then begin { variable start }
+
+      { check defined, variable space, global }
+      if not (sym^.def and sym^.vrs and sym^.gbl) then error(esymfmt);
+      if vstrf then error(esymfmt); { more than one in file }
+      vstrf := true; { set parameter found }
+      vstrv := sym^.val; { set new variable start value }
+      if vstr = nil then begin { no previous entry }
+
+         sym^.next := symtab; { link into symbols table }
+         symtab := sym;
+         vstr := sym { set master }
+
+      end else begin { duplicate entry }
+
+         putsym(sym); { dispose of new symbol }
+         sym := vstr { return old master }
+
+      end;
+      fnd := true { set parameter found }
+
+   end else if compp(sym^.lab^, '_vend') then begin { variable end }
+
+      { check defined, variable space, global }
+      if not (sym^.def and sym^.vrs and sym^.gbl) then error(esymfmt);
+      if vendf then error(esymfmt); { more than one in file }
+      vendf := true; { set parameter found }
+      vendv := sym^.val; { set new variable end value }
+      if vend = nil then begin { no previous entry }
+
+         sym^.next := symtab; { link into symbols table }
+         symtab := sym;
+         vend := sym { no previous entry, set master }
+
+      end else begin { duplicate entry }
+
+         putsym(sym); { dispose of new symbol }
+         sym := vend { return old master }
+
+      end;
+      fnd := true { set parameter found }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Perform symbol operator
+
+If the operands of a symbol are defined, then the operation on a symbol is
+performed. On program or variable space values, these operations must be
+done on every link resolve operation (because they can always be relocated
+again). Otherwise, this may be the final resolution of the symbol.
+
+******************************************************************************}
+
+procedure symopr(sym: symptr); { symbol to operate on }
+
+var def: boolean; { operand(s) are defined flag }
+
+begin
+
+   { validate the correct parameters exist }
+   if (sym^.opr in [onot, oneg]) and 
+      ((sym^.lft = nil) or (sym^.rgt <> nil)) then error(esymfmt)
+   else if (sym^.opr in [oadd, osub, omult, odiv, omod, oshl, oshr, oand, oor,
+            oxor]) and
+           ((sym^.lft = nil) or (sym^.rgt = nil)) then error(esymfmt)
+   else if (sym^.opr = onop) and 
+           ((sym^.lft <> nil) or (sym^.rgt <> nil)) then error(esymfmt);
+   def := true; { set operand(s) defined }
+   { check left branch exists and is defined }
+   if sym^.lft <> nil then if not sym^.lft^.def then def := false;
+   { check right branch exists and is defined }
+   if sym^.rgt <> nil then if not sym^.rgt^.def then def := false;
+   if def then begin { operand(s) defined }
+
+      case sym^.opr of { operation }
+
+         onop:  ; { no operation }
+         oadd:  sym^.val := sym^.lft^.val+sym^.rgt^.val; { add }
+         osub:  sym^.val := sym^.lft^.val-sym^.rgt^.val; { subtract }
+         omult: sym^.val := sym^.lft^.val*sym^.rgt^.val; { multiply }
+         odiv:  sym^.val := sym^.lft^.val div sym^.rgt^.val; { divide }
+         omod:  sym^.val := sym^.lft^.val mod sym^.rgt^.val; { modulo }
+         oshl:  begin { shift left }
+     
+            sym^.val := sym^.lft^.val;
+            while sym^.rgt^.val > 0 do sym^.val := sym^.val*2
+     
+         end;
+         oshr:  begin { shift right }
+     
+            sym^.val := sym^.lft^.val;
+            while sym^.rgt^.val > 0 do sym^.val := sym^.val div 2
+     
+         end;
+         oand:  sym^.val := sym^.lft^.val and sym^.rgt^.val; { and }
+         oor:   sym^.val := sym^.lft^.val or sym^.rgt^.val; { or }
+         { exclusive or }
+         oxor:  sym^.val := (sym^.lft^.val and not sym^.rgt^.val) or
+                            (not sym^.lft^.val and sym^.rgt^.val);
+         onot:  sym^.val := not sym^.lft^.val; { not }
+         oneg:  sym^.val := -sym^.lft^.val { negate }
+
+      end;
+      if sym^.opr <> onop then { not a simple symbol }
+         sym^.def := true { set resulting symbol now defined }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Operate on symbol
+
+Performs any operations possible on the given symbol.
+
+******************************************************************************}
+
+procedure sympop(sym: symptr);
+
+begin
+
+   if sym^.lft <> nil then begin { left branch exists }
+
+      { add any attributes of subsymbol to this symbol }
+      if sym^.lft^.add then sym^.add := true;
+      if sym^.lft^.vrs then sym^.vrs := true;
+      sympop(sym^.lft) { reduce }
+
+   end;
+   if sym^.rgt <> nil then begin { right branch exists }
+
+      { add any attributes of subsymbol to this symbol }
+      if sym^.rgt^.add then sym^.add := true;
+      if sym^.rgt^.vrs then sym^.vrs := true;
+      sympop(sym^.rgt) { reduce }
+
+   end;
+   symopr(sym) { perform operation on current symbol }
+
+end;
+
+{******************************************************************************
+
+Operate symbols
+
+Performs any operations possible on the symbols deck.
+
+******************************************************************************}
+
+procedure symops;
+
+var sp: symptr; { pointer for symbols }
+
+begin
+
+   sp := symtab; { index top of symbols table }
+   while sp <> nil do begin { traverse }
+
+      sympop(sp); { reduce symbol }
+      sp := sp^.next { link next symbol }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Read rlds attached to symbol
+
+Reads any rld's that may follow a symbol, and attaches them to the given
+symbol, as the symbol provides the solution for that rld.
+
+******************************************************************************}
+
+procedure rdrlds(sym: symptr); { symbol to attach to }
+
+begin
+
+   while nxtobj = obrld do begin { read rlds }
+
+      nxtrld^.next := rldtab; { link into current rld table }
+      rldtab := nxtrld;
+      adjrld(nxtrld); { adjust entry }
+      nxtrld^.inssym := sym; { link to symbol }
+      rdnxt { read next entry }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Read symbol
+
+Reads a symbol entry from the symbols file. The next symbol is read, and also
+any symbols in "subtrees" under the symbol. In this way, the entire expression
+tree that represents an undefined symbol can be read. Also reads any rld's
+referencing the symbol, or symbols under it.
+Returns the symbol entry, as it is entered into the symbol table.
+
+******************************************************************************}
+
+procedure rdsym(var sym: symptr);
+
+var linkf:  boolean; { symbol is link parameter flag }
+    sp, fp: symptr;  { symbol table pointers }
+    saved:  boolean; { symbol is from saved flag }
+
+begin
+
+   { check valid object }
+   if (nxtobj <> obsym) and (nxtobj <> obcst) then error(esymfmt);
+   sym := nxtsym; { set entry pointer }
+   rdnxt; { get next object }
+   adjsym(sym); { adjust symbol entry }
+   linkf := false; { set not a link parameter }
+   if sym^.lab <> nil then { a labeled symbol }
+      chkpar(sym, linkf); { check the entry is a link parameter }
+   if not linkf then begin { standard symbol }
+
+      fp := nil; { set found pointer null }
+      if sym^.lab <> nil then begin { is a labeled symbol }
+
+          sp := symtab; { index top of symbols }
+          saved := false; { set symbol from new table }
+          while sp <> nil do begin { traverse symbols }
+         
+             if compp(sym^.lab^, sp^.lab^) then fp := sp; { save matching symbol }
+             sp := sp^.next { index next symbol }
+       
+          end
+    
+      end;
+      if fp <> nil then begin { symbol found }
+
+         if sym^.def and not fp^.def then begin 
+
+            { new symbol is defined, and the old symbol is not
+              copy new symbol parameters to old entry }
+            fp^.opr := sym^.opr;
+            fp^.def := sym^.def;
+            fp^.add := sym^.add;
+            fp^.gbl := sym^.gbl;
+            fp^.ext := sym^.ext;
+            fp^.vrs := sym^.vrs;
+            fp^.val := sym^.val
+
+         end;
+         { replace new symbol with old symbol }
+         putsym(sym); { dispose of new symbol }
+         sym := fp { replace with existing symbol }
+
+      end else begin { link unique symbol into new symbols table }
+
+         sym^.next := symtab; { link into table }
+         symtab := sym
+
+      end
+         
+   end;
+   rdrlds(sym); { read any associated rlds }
+   if sym^.opr <> onop then begin { the symbol is an expression head }
+
+      rdsym(sp); { read left symbol }
+      sym^.lft := sp; { place }
+      if sym^.opr <> onop then begin { right branch exists }
+
+         rdsym(sp); { read right symbol }
+         sym^.rgt := sp { place }
+
+      end
+
+   end
+
+end;
+
+{******************************************************************************
+
+Read symbols file
+
+Reads in the symbols and rld entries from the currently open symbols file,
+and creates in memory tables.
+
+******************************************************************************}
+
+procedure rdsyms;
+
+var sym: symptr; { pointer for return symbol (unused) }
+
+begin
+
+   pstrf  := false; { set program start found false }
+   pendf  := false; { set program end found false }
+   vstrf  := false; { set variable start found false }
+   vendf  := false; { set variable end found false }
+   rdnxt; { start lookahead mechanisim }
+   while nxtobj <> obend do begin { process entries }
+
+      if (nxtobj = obsym) or (nxtobj = obcst) then 
+         { object is symbol or constant }
+         rdsym(sym) { read symbol entry }
+      else if nxtobj = obcrld then begin { rld }
+
+         nxtrld^.next := rldtab; { link into current rld table }
+         rldtab := nxtrld;
+         adjrld(nxtrld); { adjust entry }
+         rdnxt { read next entry }
+
+      end else error(esymfmt) { rlds should not be floating loose ! }
+
+   end;
+   { check all link parameters existed in file read }
+   if not (pstrf and pendf and vstrf and vendf) then error(esymfmt)
+
+end;
+
+{******************************************************************************
+
+Find maximum length of symbols
+
+Finds the maximum length of any symbol in the symbol table. This is used to
+format tables properly.
+ 
+******************************************************************************}
+
+procedure fndmax;
+
+var sp: symptr; { pointer for symbols }
+
+begin
+
+   symlen := 0; { clear maximum length of symbols }
+   sp := symtab; { index top symbol }
+   while sp <> nil do begin { traverse }
+
+      if max(sp^.lab^) > symlen then symlen := max(sp^.lab^); { find max }
+      sp := sp^.next { next symbol }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Report undefined symbols
+
+Searches the current symbols table for undefined entries, and if found,
+produces a report on all such entries. The report listing outputs up to
+7 symbols on a line. At this version, we are dependent on having only 10
+character internal symbols in LN.
+ 
+******************************************************************************}
+
+procedure report;
+
+var sp:     symptr;  { pointer for symbols }
+    first:  boolean; { first undefined print flag }
+    symcnt: integer; { count of symbols output on line }
+    i:      labinx;  { index for labels }
+
+begin
+
+   first := true; { set first undefined symbol }
+   symcnt := 0; { clear output count }
+   sp := symtab; { index top symbol }
+   fundef := false; { set no undefineds present }
+   while sp <> nil do begin { traverse }
+
+      if (sp^.lab <> nil) and not sp^.def then begin { symbol undefined }
+
+         if first then begin { write header }
+
+            writeln; { space off }
+            writeln('Undefined symbols:'); 
+            writeln 
+
+         end;
+         for i := 1 to max(sp^.lab^) do write(sp^.lab^[i]); { output symbol }
+         for i := 1 to symlen-max(sp^.lab^) do write(' '); { pad }
+         write(' '); { space off }
+         symcnt := symcnt+1; { count symbols output on line }
+         if symcnt = lstlen div (symlen+1) then begin { line overflow }
+
+            writeln; { terminate line }
+            symcnt := 0 { clear counter }
+
+         end;
+         first := false; { set not first undefined }
+         fundef := true { set there are undefined symbols }
+
+      end;
+      sp := sp^.next { link next symbol }
+
+   end;
+   if symcnt <> 0 then writeln { terminate unfinished line }
+
+end;
+
+{******************************************************************************
+
+Find number of symbols
+
+Expects the symbols table to be loaded. The number of symbols is counted.
+
+******************************************************************************}
+
+procedure cntsym;
+
+var sp: symptr; { pointer for symbols }
+
+begin
+
+   sp := symtab; { index top of symbols table }
+   symnum := 0; { clear number of symbols }
+   while sp <> nil do begin { traverse }
+
+      if sp^.def and (sp^.lab <> nil) then
+         { symbol has been defined, and has a label }
+         symnum := symnum+1; { count symbol }
+      sp := sp^.next { link next symbol }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Make ELF header
+
+Creates and initalizes the ELF header. There is only one of these in this
+configuration.
+
+******************************************************************************}
+
+procedure makehd;
+
+var i: integer;
+
+begin
+
+   new(ehdrot); { create an elf header }
+   with ehdrot^ do begin
+
+      magic[1] := chr($7f); { place magic }
+      magic[2] := 'E';
+      magic[3] := 'L';
+      magic[4] := 'F';
+      clas := 1; { set 32 bit objects }
+      denc := 1; { set 2's complement, little endian }
+      fver := 1; { set current version }
+      osabi := 0; { Unix System V ABI }
+      abiver := 0; { ABI version number }
+      for i := 10 to 16 do pad[i] := 0; { set padding to zeros }
+      ofilt := 2; { set executable file type }
+      macht := 3; { Intel 80386 }
+      over := 1; { current object version }
+      epva := basadr+sizehd+sizphd+sizphd; { set entry address }
+      phdoff := sizehd; { set program header offset }
+      shdoff := 0; { clear section header offset }
+      psflg := 0; { no processor specific flags }
+      ehdsiz := sizehd; { size of ELF header }
+      phdsiz := sizphd; { size of program header }
+      phdnum := 2; { set program header number }
+      shdsiz := sizshd; { size of section header }
+      shdnum := 5; { set section header number }
+      strinx := 4 { set string header index }
+
+   end
+   
+end;
+
+{******************************************************************************
+
+Make program header
+
+Creates and initalizes a program header. There is only one of these in this
+configuration.
+
+******************************************************************************}
+
+procedure makphd;
+
+var p: phdptr; { pointer to program header }
+
+begin
+
+   new(p); { get a new program header }
+   p^.next := phdrot; { push onto list }
+   phdrot := p;
+   with phdrot^ do begin { initalize }
+   
+      segt := 1; { set loadable program segment }  
+      segoff := 0; { set 0 segment file offset }
+      segva := basadr; { set segment virtual address }
+      segpa := basadr; { set segment physical address }
+      segfsz := 0; { clear segment size in file }
+      segmsz := 0; { clear segment size in memory }
+      segflg := %101; { set readable, executable }
+      segaln := $1000; { set segment alignment to 80386 page }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Make section header
+
+Creates and initalizes a section header. The new section header is stacked
+over any others.
+
+******************************************************************************}
+
+procedure makshd;
+
+var p: shdptr; { pointer to section header }
+
+begin
+
+   new(p); { get a new program header }
+   p^.next := shdrot; { push onto list }
+   shdrot := p;
+   with p^ do begin { initalize }
+   
+      name := nil; { clear section name }
+      naminx := 0; { clear index of name in string table }
+      typ := 0; { clear section type }
+      sflg := 0; { clear section flags }
+      sva := 0; { clear section virtual address at execution }
+      soff := 0; { clear section file offset }
+      ssiz := 0; { clear section size in bytes }
+      link := 0; { clear link to another section }
+      info := 0; { clear additional information }
+      adraln := 0; { clear address alignment }
+      etysiz := 0 { clear entry size if section holds table }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Find string table size and offsets
+
+Calculates the whole string table size, and places the offsets for each of the
+section name offsets. The section offsets are all that is in the string table
+at the moment.
+
+******************************************************************************}
+
+procedure strsiz;
+
+var p:   shdptr; { pointer to section entries }
+    off: integer; { offset to string table }
+
+begin
+
+   off := 1; { set offset after the leading zero for strings }
+   p := shdrot; { index the section header root }
+   while p <> nil do begin { traverse the table }
+
+      if p^.name <> nil  then begin { there is a name for this entry }
+
+         p^.naminx := off; { place the offset for this entry }
+         off := off+max(p^.name^)+1 { add in new string }
+
+      end;
+      p := p^.next { link next section }
+
+   end;
+   stbsiz := off { set the total size for table }
+
+end;
+
+{******************************************************************************
+
+Output string table
+
+Outputs the leading zero, and the strings that make up the string table to the
+ELF output file.
+
+******************************************************************************}
+
+procedure outstr;
+
+var p: shdptr; { pointer to section entries }
+    i: integer; { index for names }
+
+begin
+
+   write(elffil, 0); { place leading zero to table }
+   p := shdrot; { index the section header root }
+   while p <> nil do begin { traverse the table }
+
+      if p^.name <> nil  then begin { there is a name for this entry }
+
+         { output section name to file }
+         for i := 1 to max(p^.name^) do write(elffil, ord(p^.name^[i]));
+         write(elffil, 0) { terminate }
+
+      end;
+      p := p^.next { link next section }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Output ELF header
+
+Outputs the topmost ELF header.
+
+******************************************************************************}
+
+procedure outehd;
+
+var i: integer;
+
+begin
+
+   for i := 1 to 4 do write(elffil, ord(ehdrot^.magic[i]));
+   write(elffil, ehdrot^.clas);
+   write(elffil, ehdrot^.denc);
+   write(elffil, ehdrot^.fver);
+   write(elffil, ehdrot^.osabi);
+   write(elffil, ehdrot^.abiver);
+   for i := 10 to 16 do write(elffil, ehdrot^.pad[i]);
+   wrtwrd(ehdrot^.ofilt);
+   wrtwrd(ehdrot^.macht);
+   wrtdwd(ehdrot^.over);
+   wrtdwd(ehdrot^.epva);
+   wrtdwd(ehdrot^.phdoff);
+   wrtdwd(ehdrot^.shdoff);
+   wrtdwd(ehdrot^.psflg);
+   wrtwrd(ehdrot^.ehdsiz);
+   wrtwrd(ehdrot^.phdsiz);
+   wrtwrd(ehdrot^.phdnum);
+   wrtwrd(ehdrot^.shdsiz);
+   wrtwrd(ehdrot^.shdnum);
+   wrtwrd(ehdrot^.strinx)
+
+end;
+
+{******************************************************************************
+
+Output program headers
+
+Outputs the program headers.
+
+******************************************************************************}
+
+procedure outphd;
+
+var p: phdptr; { pointer to program headers }
+
+begin
+
+   p := phdrot; { index top program header }
+   while p <> nil do begin { output headers }
+
+      wrtdwd(p^.segt);
+      wrtdwd(p^.segoff);
+      wrtdwd(p^.segva); 
+      wrtdwd(p^.segpa); 
+      wrtdwd(p^.segfsz);
+      wrtdwd(p^.segmsz);
+      wrtdwd(p^.segflg);
+      wrtdwd(p^.segaln);
+      p := p^.next { index next header }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Output program headers
+
+Outputs the program headers.
+
+******************************************************************************}
+
+procedure outshd;
+
+var p: shdptr; { pointer to section headers }
+
+begin
+
+   p := shdrot; { index top program header }
+   while p <> nil do begin { output headers }
+
+      wrtdwd(p^.naminx);
+      wrtdwd(p^.typ); 
+      wrtdwd(p^.sflg); 
+      wrtdwd(p^.sva);
+      wrtdwd(p^.soff);
+      wrtdwd(p^.ssiz);
+      wrtdwd(p^.link);
+      wrtdwd(p^.info);
+      wrtdwd(p^.adraln);
+      wrtdwd(p^.etysiz);
+      p := p^.next { index next header }
+
+   end
+
+end;
+
+
+begin { main }
+
+   write('ELF executive file generator vs. 0.1 copyright (C) 2002 ');
+   writeln('S. A. Moore');
+   fverb := false; { set no verbose }
+   fopnout := false; { set no output file open }
+   symtab := nil; { clear symbol table }
+   rldtab := nil; { clear rld table }
+   pstrf  := false; { set program start found false }
+   pendf  := false; { set program end found false }
+   vstrf  := false; { set variable start found false }
+   vendf  := false; { set variable end found false }
+   fresym := nil; { clear free symbol entries list }
+   pstr   := nil; { clear program start symbol link }
+   pend   := nil; { clear program end symbol link }
+   vstr   := nil; { clear variable start symbol link }
+   vend   := nil; { clear varaible end symbol link }
+   pgmloc := 0; { set 0 as default program base (don't know yet) }
+   varloc := 0; { set 0 as default variables base (don't know yet) }
+   poff   := 0; { set current program frame offset to 0 }
+   voff   := 0; { set current variable frame offset to 0 }
+   pstrv  := 0; { clear program start value }
+   pendv  := 0; { clear program end value }
+   vstrv  := 0; { clear variable start value }
+   vendv  := 0; { clear variable end value }
+   prgmc  := 0; { final output program counter }
+   symnum := 0; { set no symbols in program }
+   ehdrot := nil; { clear ELF header root }
+   phdrot := nil; { clear program header root }
+   shdrot := nil; { clear section header root }
+   strsec := nil; { clear string table section }
+   bsssec := nil; { clear variable section }
+   txtsec := nil; { clear program code section }
+   datsec := nil; { data section }
+   pgmhdr := nil; { program header }
+   dathdr := nil; { data header }
+
+   filchr(valfch); { get the filename valid characters }
+   valfch := valfch-['=']; { remove parsing characters }
+   { get command line }
+   readsp(command, cmdlin, cmdovf);
+   if cmdovf then error(ecmdovf); { too long }
+   cmdlen := lenp(cmdlin); { find length }
+   cmdptr := 1; { set 1st character }
+   parcmd; { parse command line }
+
+   { delete the output file if it exists }
+   delete(elfnam);
+   { validate both files exist }
+   addext(inpnam, 'sym', true); { try to find .sym file }
+   if not exists(inpnam) then begin { non-existant }
+
+      errfil := inpnam; { place filename for errors }
+      error(efilnf) { file not found error }
+
+   end;
+   addext(inpnam, 'obj', true); { try to find .obj file }
+   if not exists(inpnam) then begin { non-existant }
+
+      errfil := inpnam; { place filename for errors }
+      error(efilnf) { file not found error }
+
+   end;
+   { read in the source symbol deck }
+   addext(inpnam, 'sym', true); { set .sym file }
+   assign(symfil, inpnam); { open symbols file }
+   reset(symfil);
+   rdsyms; { read symbols deck }
+   close(symfil); { close symbols file }
+   { add optional objects }
+   psize := pendv-pstrv; { find true program size }
+   vsize := vendv-vstrv; { find true variable size }
+   poff := -pstrv; { zero program and variable locations }
+   voff := -vstrv;
+   adjusts;
+   srtrld; { sort rld deck }
+   symops; { perform all symbols operations }
+   { now prepare the ELF headers }
+   makehd; { create an elf header }
+   makphd; { create a program header }
+   dathdr := phdrot;
+   makphd; { create a data header }
+   pgmhdr := phdrot;
+   { create the section headers backwards, planting our references }
+   makshd; { string table }
+   strsec := shdrot;
+   copysp(strsec^.name, '.shstrtab'); { place name }
+   makshd; { .bss }
+   bsssec := shdrot;
+   copysp(bsssec^.name, '.bss'); { place name }
+   makshd; { .data }
+   datsec := shdrot;
+   copysp(datsec^.name, '.data'); { place name }
+   makshd; { .text }
+   txtsec := shdrot;
+   copysp(txtsec^.name, '.text'); { place name }
+   makshd; { null }
+   { the data tables have been created. now we layout the format of the module }
+   strsiz; { find string table size }
+   pgmloc := basadr+sizehd+sizphd+sizphd; { locate program after ELF header }
+   { locate variables to next page after program }
+   varloc := basadr+sizehd+sizphd+sizphd+rndto(psize, 4)+sizpag;
+   { set size of program loadable section }
+   pgmhdr^.segfsz := sizehd+sizphd+sizphd+rndto(psize, 4);
+   pgmhdr^.segmsz := pgmhdr^.segfsz;
+   { set size of data loadable section }
+   dathdr^.segoff := sizehd+sizphd+sizphd+rndto(psize, 4);
+   dathdr^.segva := basadr+sizehd+sizphd+sizphd+rndto(psize, 4)+sizpag;
+   dathdr^.segpa := basadr+sizehd+sizphd+sizphd+rndto(psize, 4)+sizpag;
+   dathdr^.segfsz := 0;
+   dathdr^.segmsz := 4; { don't know why its 4, the .data section is 0 }
+   dathdr^.segflg := %110; { set readable, writeable }
+   { set section header offset }
+   ehdrot^.shdoff := sizehd+sizphd+sizphd+rndto(psize, 4)+stbsiz;
+   { set .text section parameters }
+   txtsec^.typ := 1; { set program data }
+   txtsec^.sflg := %110; { set executable, occupies memory space }
+   txtsec^.sva := basadr+sizehd+sizphd+sizphd; { set section virtual address }
+   txtsec^.soff := sizehd+sizphd+sizphd; { set section file offset }
+   txtsec^.ssiz := rndto(psize, 4); { set section size }
+   txtsec^.adraln := 4; { set align to dword }
+   { set .data section parameters }
+   datsec^.typ := 1; { set program data }
+   datsec^.sflg := %11; { set occupies memory space, writable }
+   { set section virtual address }
+   datsec^.sva := basadr+sizehd+sizphd+sizphd+rndto(psize, 4)+sizpag;
+   datsec^.soff := sizehd+sizphd+sizphd+rndto(psize, 4); { set section file offset }
+   datsec^.ssiz := 0; { set section size }
+   datsec^.adraln := 4; { set align to dword }
+   { set .bss section parameters }
+   bsssec^.typ := 8; { set program space with no data (bss) }
+   bsssec^.sflg := %11; { set occupies memory space, writable }
+   { set section virtual address }
+   bsssec^.sva := basadr+sizehd+sizphd+sizphd+rndto(psize, 4)+sizpag;
+   bsssec^.soff := sizehd+sizphd+sizphd+rndto(psize, 4); { set section file offset }
+   bsssec^.ssiz := rndto(vsize, 4); { set section size }
+   bsssec^.adraln := 4; { set align to dword }
+   { set .shstrtab section parameters }
+   strsec^.typ := 3; { set string table }
+   strsec^.sflg := 0; { set no flags }
+   strsec^.sva := 0; { set no program address }
+   strsec^.soff := sizehd+sizphd+sizphd+rndto(psize, 4); { set section file offset }
+   strsec^.ssiz := stbsiz; { set section size }
+   strsec^.adraln := 1; { set align to byte }
+   cntsym; { count symbols }
+   srtrld; { sort rld deck }
+   origin; { locate program to destination }
+   symops; { perform all symbols operations }
+   fndmax; { find maximum length of symbols }
+   report; { report any undefined symbols }
+   if fundef then error(eundef); { undefineds exist }
+   { now we have the complete layout of the final program, so we may just
+     output all the sections }
+   assign(elffil, elfnam);
+   rewrite(elffil);
+   fopnout := true; { set output file open }
+   outehd; { output ELF header }
+   outphd; { output program header }
+   addext(inpnam, 'obj', true);
+   assign(objfil, inpnam);
+   reset(objfil);
+   prgmc := pgmloc; { set 1st program count }
+   prcobj; { output program section }
+   close(objfil); { close object file }
+   outstr; { output string table }
+   outshd; { output section headers }
+   close(elffil); { close output file }
+   fopnout := false; { set output not open }
+   { generate layout report }
+   if fverb then begin
+
+      writeln;
+      write('Memory organization for '); writesp(output, elfnam);
+      writeln(':');
+      writeln;
+      write('Image base:            $'); prthex(8, basadr); writeln;
+      write('ELF header:            $'); prthex(8, basadr); writeln;
+      write('Program section:       $'); prthex(8, pgmloc); writeln;
+      write('Program end:           $'); prthex(8, pgmloc+psize); writeln;
+      write('Variable section:      $'); prthex(8, varloc); writeln;
+      write('Variable end:          $'); prthex(8, varloc+vsize); writeln;
+      write('Heap begin:            $'); prthex(8, rndto(varloc+vsize, sizpag));
+      writeln;
+
+   end;
+
+   99: { terminate program }
+
+end.

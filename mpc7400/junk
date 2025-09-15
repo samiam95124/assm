@@ -1,0 +1,628 @@
+aaa
+aad
+aam
+aas
+adc     [<addr>],al		 
+adc		[<addr>],ax
+adc		[<addr>],eax
+adc		al,[<addr>]
+adc		ax,[<addr>]
+adc		eax,[<addr>]
+adc		al,<byte imm>
+adc		ax,<word imm>
+adc		eax,<dword imm>
+adcb	[<addr>],<byte imm>
+adcw	[<addr>],<word imm>
+adcd	[<addr>],<dword imm>
+adcw	[<addr>],<byte imm>
+adcd	[<addr>],<byte imm>
+add		al,<byte imm>
+add		ax,<word imm>
+add		eax,<dword imm>
+addb	[<addr>],<byte imm>
+addw	[<addr>],<word imm>
+addd	[<addr>],<dword imm>
+addw	[<addr>],<byte imm>
+addd	[<addr>],<byte imm>
+add		[<addr>],al
+add		[<addr>],ax
+add		[<addr>],eax
+add		bl,[<addr>]
+add		bx,[<addr>]
+add		ebx,[<addr>]
+and		[<addr>],al		 
+and		[<addr>],ax
+and		[<addr>],eax
+and		al,[<addr>]
+and		ax,[<addr>]
+and		eax,[<addr>]
+and		al,<byte imm>
+and		ax,<word imm>
+and		eax,<dword imm>
+andb	[<addr>],<byte imm>
+andw	[<addr>],<word imm>
+andd	[<addr>],<dword imm>
+andw	[<addr>],<byte imm>
+andd	[<addr>],<byte imm>
+arpl	[<addr>],ax
+bound	ax,[<addr>]
+bound	eax,[locq]
+bsf		ax,[<addr>]
+bsf		eax,[<addr>]
+bsr		ax,[<addr>]
+bsr		eax,[<addr>]
+bswap	eax
+bt		[<addr>],ax
+bt		[<addr>],eax
+btw		[<addr>],<byte imm>
+btd		[<addr>],<byte imm>
+btc		[<addr>],ax
+btc		[<addr>],eax
+btcw	[<addr>],<byte imm>
+btcd	[<addr>],<byte imm>
+btr		[<addr>],ax
+btr		[<addr>],eax
+btrw	[<addr>],<byte imm>
+btrd	[<addr>],<byte imm>
+bts		[<addr>],ax
+bts		[<addr>],eax
+btsw	[<addr>],<byte imm>
+btsd	[<addr>],<byte imm>
+call	<addr>
+callm	[<addr>]
+calll	[<addr>]
+cbw
+cdq
+clc
+cld
+cli
+clts
+cmc
+cmp		al,<byte imm>
+cmp		ax,<word imm>
+cmp		eax,<dword imm>
+cmpb	[<addr>],<byte imm>
+cmpw	[<addr>],<word imm>
+cmpd	[<addr>],<dword imm>
+cmpw	[<addr>],<byte imm>
+cmpd	[<addr>],<byte imm>
+cmp		[<addr>],al
+cmp		[<addr>],ax
+cmp		[<addr>],eax
+cmp		bl,[<addr>]
+cmp		bx,[<addr>]
+cmp		ebx,[<addr>]
+cmpsb
+cmpsw
+cmpsd
+cmpxchg	[<addr>],al
+cmpxchg	[<addr>],ax
+cwd
+cwde
+daa
+das
+decb	[<addr>]
+decw	[<addr>]
+decd	[<addr>]
+dec		ax
+dec		eax		   
+divb	[<addr>]
+divw	[<addr>]
+divd	[<addr>]
+enter	<word imm>,<byte imm>
+hlt
+idivb	[<addr>]
+idivw	[<addr>]
+idivd	[<addr>]
+imulb	[<addr>]
+imulw	[<addr>]
+imuld	[<addr>]
+imul	ax,[<addr>]
+imul	eax,[<addr>]
+imul	ax,[<addr>],<byte imm>
+imul	eax,[<addr>],<byte imm>
+imul	ax,<byte imm>
+imul	eax,<byte imm>
+imul	ax,[<addr>],<word imm>
+imul	eax,[<addr>],<dword imm>
+imul	ax,<word imm>
+imul	eax,<dword imm>
+in		al,<byte imm>
+in		ax,<byte imm>
+in		eax,<byte imm>
+in		al,dx
+in		ax,dx
+in		eax,dx
+incb	[<addr>]
+incw	[<addr>]
+incd	[<addr>]
+inc		ax
+inc		eax
+insb
+insw
+insd
+int		<imm>
+int		<byte imm>
+into
+invd
+invlpg	[<addr>]
+iret
+iretd
+ja		<addr>
+jae		<addr>
+jb		<addr>
+jbe		<addr>
+jc		<addr>
+jcxz	<addr>
+jecxz	<addr>
+je		<addr>
+jz		<addr>
+jg		<addr>
+jge		<addr>
+jl		<addr>
+jle		<addr>
+jna		<addr>
+jnae	<addr>
+jnb		<addr>
+jnbe	<addr>
+jnc		<addr>
+jne		<addr>
+jng		<addr>
+jnge	<addr>
+jnl		<addr>
+jnle	<addr>
+jno		<addr>
+jnp		<addr>
+jns		<addr>
+jnz		<addr>
+jo		<addr>
+jp		<addr>
+jpe		<addr>
+jpo		<addr>
+js		<addr>
+jz		<addr>
+jmp		<addr>
+jmp		<addr>
+jmpm	[<addr>]
+jmpl	[<addr>]
+lahf
+lar		ax,[<addr>]
+lar		eax,[<addr>]
+lea		ax,[di]
+lea		eax,[edi]
+leave
+lgdtd	[<addr>]
+lidtd	[<addr>]
+lldt	[<addr>]
+lmsw	[<addr>]
+lock
+lodsb
+lodsw
+lodsd
+loop	<addr>
+loope	<addr>
+loopz	<addr>
+loopne	<addr>
+loopnz	<addr>
+lsl		ax,[<addr>]
+lsl		eax,[<addr>]
+ltr		[<addr>]
+mov		[bx+si],al
+mov		[bx+si],ax
+mov		[ebx+esi],eax
+mov		al,[bx+si]
+mov		ax,[bx+si]
+mov		eax,[ebx+esi]
+mov		[<addr>],ds
+mov		ds,[<addr>]
+mov		al,[<addr>]
+mov		ax,[<addr>]
+mov		eax,[<addr>]
+mov		[<addr>],al
+mov		[<addr>],ax
+mov		[<addr>],eax
+mov		al,<byte imm>
+mov		ax,<word imm>
+mov		eax,<dword imm>
+movb	[<addr>],<byte imm>
+movw	[<addr>],<word imm>
+movd	[<addr>],<dword imm>
+mov		cr0,eax
+mov		eax,cr0
+mov		dr0,eax
+mov		eax,dr0
+mov		tr6,eax
+mov		eax,tr6
+movsb
+movsw
+movsd
+movsxb	ax,[<addr>]
+movsxb	eax,[<addr>]
+movsxw	eax,[<addr>]
+movzxb	ax,[<addr>]
+movzxb	eax,[<addr>]
+movzxw	eax,[<addr>]
+mulb	[<addr>]
+mulw	[<addr>]
+muld	[<addr>]
+negb	[<addr>]
+negw	[<addr>]
+negd	[<addr>]
+nop
+notb	[<addr>]
+notw	[<addr>]
+notd	[<addr>]
+or		al,<byte imm>
+or		ax,<word imm>
+or		eax,<dword imm>
+orb		[<addr>],<byte imm>
+orw		[<addr>],<word imm>
+ord		[<addr>],<dword imm>
+orw		[<addr>],<byte imm>
+ord		[<addr>],<byte imm>
+or		[<addr>],al
+or		[<addr>],ax
+or		[<addr>],eax
+or		ah,[<addr>]
+or		bx,[<addr>]
+or		ebx,[<addr>]
+out		<byte imm>,al
+out		<byte imm>,ax
+out		<byte imm>,eax
+out		dx,al
+out		dx,ax
+out		dx,eax
+outsb
+outsw
+outsd
+popw	[<addr>]
+popd	[<addr>]
+pop		ax
+pop		eax
+pop		ds
+pop		es
+pop		ss
+pop		fs
+pop		gs
+popa
+popad
+popf
+popfd
+pushw	[<addr>]
+pushd	[<addr>]
+push	ax
+push	eax
+pushd	<byte imm>
+pushw	<word imm>
+pushd	<dword imm>
+push	cs
+push	ss
+push	ds
+push	es
+push	fs
+push	gs
+pusha
+pushad
+pushf
+pushfd
+rclb	[<addr>],1
+rclb	[<addr>],cl
+rclb	[<addr>],<byte imm>
+rclw	[<addr>],1
+rclw	[<addr>],cl
+rclw	[<addr>],<byte imm>
+rcld	[<addr>],1
+rcld	[<addr>],cl
+rcld	[<addr>],<byte imm>
+rcrb	[<addr>],1
+rcrb	[<addr>],cl
+rcrb	[<addr>],<byte imm>
+rcrw	[<addr>],1
+rcrw	[<addr>],cl
+rcrw	[<addr>],<byte imm>
+rcrd	[<addr>],1
+rcrd	[<addr>],cl
+rcrd	[<addr>],<byte imm>
+rolb	[<addr>],1
+rolb	[<addr>],cl
+rolb	[<addr>],<byte imm>
+rolw	[<addr>],1
+rolw	[<addr>],cl
+rolw	[<addr>],<byte imm>
+rold	[<addr>],1
+rold	[<addr>],cl
+rold	[<addr>],<byte imm>
+rorb	[<addr>],1
+rorb	[<addr>],cl
+rorb	[<addr>],<byte imm>
+rorw	[<addr>],1
+rorw	[<addr>],cl
+rorw	[<addr>],<byte imm>
+rord	[<addr>],1
+rord	[<addr>],cl
+rord	[<addr>],<byte imm>
+rep
+repe
+repz
+repne
+repnz
+ret
+ret		<word imm>
+sahf
+salb	[<addr>],1
+salb	[<addr>],cl
+salb	[<addr>],<byte imm>
+salw	[<addr>],1
+salw	[<addr>],cl
+salw	[<addr>],<byte imm>
+sald	[<addr>],1
+sald	[<addr>],cl
+sald	[<addr>],<byte imm>
+sarb	[<addr>],1
+sarb	[<addr>],cl
+sarb	[<addr>],<byte imm>
+sarw	[<addr>],1
+sarw	[<addr>],cl
+sarw	[<addr>],<byte imm>
+sard	[<addr>],1
+sard	[<addr>],cl
+sard	[<addr>],<byte imm>
+shlb	[<addr>],1
+shlb	[<addr>],cl
+shlb	[<addr>],<byte imm>
+shlw	[<addr>],1
+shlw	[<addr>],cl
+shlw	[<addr>],<byte imm>
+shld	[<addr>],1
+shld	[<addr>],cl
+shld	[<addr>],<byte imm>
+shrb	[<addr>],1
+shrb	[<addr>],cl
+shrb	[<addr>],<byte imm>
+shrw	[<addr>],1
+shrw	[<addr>],cl
+shrw	[<addr>],<byte imm>
+shrd	[<addr>],1
+shrd	[<addr>],cl
+shrd	[<addr>],<byte imm>
+sbb		al,<byte imm>
+sbb		ax,<word imm>
+sbb		eax,<dword imm>
+sbbb	[<addr>],<byte imm>
+sbbw	[<addr>],<word imm>
+sbbd	[<addr>],<dword imm>
+sbbw	[<addr>],<byte imm>
+sbbd	[<addr>],<byte imm>
+sbbb	[<addr>],al
+sbbw	[<addr>],ax
+sbbd	[<addr>],eax
+sbb		al,[<addr>]
+sbb		ax,[<addr>]
+sbb		eax,[<addr>]
+scasb
+scasw
+scasd
+seta	[<addr>]
+setae	[<addr>]
+setb	[<addr>]
+setbe	[<addr>]
+setc	[<addr>]
+sete	[<addr>]
+setg	[<addr>]
+setge	[<addr>]
+setl	[<addr>]
+setle	[<addr>]
+setna	[<addr>]
+setnae	[<addr>]
+setnb	[<addr>]
+setnbe	[<addr>]
+setnc	[<addr>]
+setne	[<addr>]
+setng	[<addr>]
+setnge	[<addr>]
+setnl	[<addr>]
+setnle	[<addr>]
+setno	[<addr>]
+setnp	[<addr>]
+setns	[<addr>]
+setnz	[<addr>]
+seto	[<addr>]
+setp	[<addr>]
+setpe	[<addr>]
+setpo	[<addr>]
+sets	[<addr>]
+setz	[<addr>]
+sgdtd	[locq]
+sidtd	[locq]
+shldw	[<addr>],ax,<byte imm>
+shldd	[<addr>],eax,<byte imm>
+shldw	[<addr>],ax,cl
+shldd	[<addr>],eax,cl
+shrdw	[<addr>],ax,<byte imm>
+shrdd	[<addr>],eax,<byte imm>
+shrdw	[<addr>],ax,cl
+shrdd	[<addr>],eax,cl
+sldt	[<addr>]
+smsw	[<addr>]
+stc
+std
+sti
+stosb
+stosw
+stosd
+str		[<addr>]
+sub		al,<byte imm>
+sub		ax,<word imm>
+sub		eax,<dword imm>
+subb	[<addr>],<byte imm>
+subw	[<addr>],<word imm>
+subd	[<addr>],<dword imm>
+subw	[<addr>],<byte imm>
+subd	[<addr>],<byte imm>
+sub		[<addr>],al
+sub		[<addr>],ax
+sub		[<addr>],eax
+sub		ah,[<addr>]
+sub		ax,[<addr>]
+sub		eax,[<addr>]
+test	al,<byte imm>
+test	ax,<word imm>
+test	eax,<dword imm>
+testb	[<addr>],<byte imm>
+testw	[<addr>],<word imm>
+testd	[<addr>],<dword imm>
+test	[<addr>],al
+test	[<addr>],ax
+test	[<addr>],eax
+verr	[<addr>]
+verw	[<addr>]
+wait
+wbinvd
+xadd	[<addr>],al
+xadd	[<addr>],ax
+xadd	[<addr>],eax
+xchg	[<addr>],al
+xchg	al,[<addr>]
+xchg	[<addr>],ax
+xchg	ax,[<addr>]
+xchg	[<addr>],eax
+xchg	eax,[<addr>]
+xchg	ax,bx
+xchg	bx,ax
+xchg	eax,ebx
+xchg	ebx,eax
+xlatb
+xor		al,<byte imm>
+xor		ax,<word imm>
+xor		eax,<dword imm>
+xorb	[<addr>],<byte imm>
+xorw	[<addr>],<word imm>
+xord	[<addr>],<dword imm>
+xorw	[<addr>],<byte imm>
+xord	[<addr>],<byte imm>
+xor		[<addr>],al
+xor		[<addr>],ax
+xor		[<addr>],eax
+xor		bl,[<addr>]
+xor		bx,[<addr>]
+xor		ebx,[<addr>]
+f2xm1
+fabs
+fadd	st,st(1)
+fadd	st(1),st
+fadds	[<addr>]
+faddd	[<addr>]
+faddp	st(2),st
+fbld	[<addr>]
+fbstp	[<addr>]
+fchs
+fclex
+fnclex
+fcom	st(1)
+fcoms	[<addr>]
+fcomd	[<addr>]
+fcomp	st(1)
+fcomps	[<addr>]
+fcompd	[<addr>]
+fcompp
+fcos
+fdecstp
+fdiv	st(1),st
+fdivs	[<addr>]
+fdivd	[<addr>]
+fdivp	st(1),st
+fdivr	st(1),st
+fdivrs	[<addr>]
+fdivrd	[<addr>]
+fdivrp	st(1),st
+ffree	st(1)
+fiaddw	[<addr>]
+fiaddd	[<addr>]
+ficomw	[<addr>]
+ficomd	[<addr>]
+ficompw	[<addr>]
+ficompd	[<addr>]
+fidivw	[<addr>]
+fidivd	[<addr>]
+fidivrw	[<addr>]
+fidivrd	[<addr>]
+fildw	[<addr>]
+fildd	[<addr>]
+fildq	[<addr>]
+fimulw	[<addr>]
+fimuld	[<addr>]
+fincstp
+finit
+fninit
+fistw	[<addr>]
+fistd	[<addr>]
+fistpw	[<addr>]
+fistpd	[<addr>]
+fistpq	[<addr>]
+fisubw	[<addr>]
+fisubd	[<addr>]
+fisubrw	[<addr>]
+fisubrd	[<addr>]
+fld		st(1)
+flds	[<addr>]
+fldd	[<addr>]
+fldl	[<addr>]
+fldcw	[<addr>]
+fldenvw	[<addr>]
+fldlg2
+fldln2
+fldl2e
+fldl2t
+fldpi
+fldz
+fld1
+fmul	st,st(1)
+fmuls	[<addr>]
+fmuld	[<addr>]
+fmulp	st(1),st
+fnop
+fpatan
+fprem
+fprem1
+fptan
+frndint
+frstord	[<addr>]
+fsaved	[<addr>]
+fnsaved	[<addr>]
+fscale
+fsin
+fsincos
+fsqrt
+fst		st(1)
+fsts	[<addr>]
+fstd	[<addr>]
+fstcw	[<addr>]
+fnstcw	[<addr>]
+fstenvd	[<addr>]
+fstp	st(1)
+fstps	[<addr>]
+fstpd	[<addr>]
+fstpl	[<addr>]
+fstsw	[<addr>]
+fnstsw	[<addr>]
+fstsw	ax
+fnstsw	ax
+fsub	st,st(1)
+fsubs	[<addr>]
+fsubd	[<addr>]
+fsubp	st(1),st
+fsubr	st,st(1)
+fsubrs	[<addr>]
+fsubrd	[<addr>]
+fsubrp	st(1),st
+ftst
+fucom	st(1)
+fucomp	st(1)
+fucompp
+fwait
+fxam
+fxch
+fxtract
+fyl2x
+fyl2xp1
+f2xm1

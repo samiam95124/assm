@@ -1,0 +1,96 @@
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!                                                                             !
+! 8051 ASSEMBER OPERATION LABELS                                              !
+!                                                                             !
+! Defines the operator labels used in the 8051 assembler, both machine codes  !
+! and pseudo operators.                                                       !
+! Use the following command to convert this file:                             !
+!                                                                             !
+!    hashtab op8051                                                           !
+!                                                                             !
+! The resulting file, op8051.res, will contain an opcode type definition,     !
+! to be merged into md8051.pas, and a resym table initalizer, to be placed    !
+! in ut8051.pas.                                                              !
+! You also need to take the last value of opcode, and place this in the       !
+! hash call at fndres in ut8051.pas.                                          !
+!                                                                             !
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+! 8051 Machine codes
+
+acall
+ajmp
+add
+addc
+anl
+cjne
+clr
+cpl
+da
+dec
+div
+djnz
+inc
+jb
+jbc
+jc
+jmp
+jnb
+jnc
+jnz
+jz
+lcall
+ljmp
+mov
+movc
+movx
+mul
+nop
+orl
+pop
+push
+ret
+reti
+rl
+rlc
+rr
+rrc
+setb
+sjmp
+subb
+swap
+xch
+xchd
+xrl
+
+! Assembler pseudo-ops
+
+macro   ! define macro
+endmac  ! terminate macro
+include ! include file
+equ     ! equate symbol
+global  ! set symbol global
+extern  ! set symbol external
+alignp  ! align program counter
+alignv  ! align variable counter
+if      ! if conditional assembly
+else    ! else conditional assembly
+elseif  ! elseif conditional assembly
+endif   ! end conditional assembly
+assm    ! assemble string
+bendian ! set big endian
+lendian ! set little endian
+defb    ! define byte
+defps   ! define program space
+defvs   ! define variable space
+defbe   ! define big endian
+defle   ! define little endian
+defbef  ! define big endian floating point
+deflef  ! define little endian floating point
+deff    ! define ansi 64 bit floating point
+defsf   ! define ansi 32 bit floating point
+deflf   ! define ansi 80 bit floating point
+defw    ! define 8080 specific format word (16 bits, little endian)
+defhw   ! define 8080 specific format half word (same as byte)
+defdw   ! define 8080 specific double word (32 bits, little endian)
+defqw   ! define 8080 specific quad word (64 bits, little endian)

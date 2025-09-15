@@ -1,0 +1,318 @@
+{*******************************************************************************
+*                                                                              *
+*                      MACHINE SPECIFIC UTILTITIES MODULE                      *
+*                                                                              *
+*                       Copyright (C) 2007 S. A. Moore                         *
+*                            All rights reserved                               *
+*                                                                              *
+* PURPOSE:                                                                     *
+*                                                                              *
+* Gives all the machine specific utilities for this assembler. The general     *
+* assembler module performs calls to the machine specific section via this     *
+* module. The following interface calls exist:                                 *
+*                                                                              *
+* procedure mexpr(var sym: symptr); forward;                                   *
+* procedure msexpr(var sym: symptr); forward;                                  *
+* procedure mterm(var sym: symptr); forward;                                   *
+* procedure mfactor(var sym: symptr); forward;                                 *
+*                                                                              *
+* All of these routines handle parsing of various expression constructs,       *
+* the expression, simple expression, term and factor levels. The reason the    *
+* main assembler module calls these routines is that it allows the machine     *
+* specific module to implement special expression constructs for the           *
+* particular assembly language being implemented. After performing special     *
+* processing, the calls are sent back to the main assembler calls which        *
+* the same purpose.                                                            *
+*                                                                              *
+* We also implement several machine specific support functions here.           *
+*                                                                              *
+*******************************************************************************}
+
+module macutl(output);
+
+uses strlib, { string library }
+     asdef,  { generic definitions }
+     common, { global variables }
+     utl,    { generic utilities }
+     macdef, { processor specific definitions }
+     opcdef, { opcode definitions }
+     opcini; { initalize reserved table }
+
+{ machine personality module calls }
+
+procedure mexpr(var sym: symptr); forward; { parse expression }
+procedure msexpr(var sym: symptr); forward; { parse simple expression }
+procedure mterm(var sym: symptr); forward; { parse term }
+procedure mfactor(var sym: symptr); forward; { parse factor }
+
+{ utilities used by the machine specific section }
+
+procedure inidep; forward; { initalize processor module }
+procedure regcod(var reg: regc); forward; { process register code }
+procedure parcod(var p: regc; var s: symptr); forward; { parse parameter }
+function sreg(p: regc): byte; forward; { convert single register }
+function fndres(var s: string) : opcodet; forward; { find reserved word }
+
+private
+
+{******************************************************************************
+
+Initalize CPU dependent module for 8080
+
+******************************************************************************}
+
+procedure inidep;
+
+var i: opcodet;
+
+begin
+
+   { output sign - on }
+   writeln;
+   writeln('8080 assembler vs. 2.0.01 Copyright (C) 2006 S. A. Moore');
+   writeln;
+   alignment := cpualign; { set CPU alignment }
+   bigend := cpubigend; { set CPU endian status }
+   wrdsiz := cpuwrdsiz; { set CPU word size }
+   { clear and initalize reserved table }
+   for i := opnull to opendif do begin
+
+      copy(ressym[i].reslab, '');
+      ressym[i].reschn := opnull
+
+   end;
+   resini { initalize reserved symbols }
+
+end;
+
+{******************************************************************************
+
+Process register code
+
+A register is one of the following: a, b, c, d, e, h, l, m, or sp. The input is 
+checked for any of these sequences, and the code for the sequence is returned. 
+If no sequence is found, the 'nop' code is returned, and the input position 
+left unchanged. Otherwise, the input positon will be just past the code.
+
+******************************************************************************}
+
+procedure regcod(var reg: regc); { register return }
+
+var inpsav: inpinx; { input postion save for backtrack }
+
+begin
+
+   inpsav := cmdrot^.inp; { save current input position }
+   skpspc; { skip input spaces }
+   if alpha(chkchr) then begin { possible register }
+      getlab; { get register }
+      if compp(labbuf, 'a         ') then
+         reg := rga { a }
+      else if compp(labbuf, 'b         ') then
+         reg := rgb { b }
+      else if compp(labbuf, 'c         ') then
+         reg := rgc { c }
+      else if compp(labbuf, 'd         ') then
+         reg := rgd { d }
+      else if compp(labbuf, 'e         ') then
+         reg := rge { e }
+      else if compp(labbuf, 'h         ') then
+         reg := rgh { h }
+      else if compp(labbuf, 'l         ') then
+         reg := rgl { l }
+      else if compp(labbuf, 'm         ') then
+         reg := rgm { m }
+      else if compp(labbuf, 'sp        ') then
+         reg := rgsp { sp }
+      else if compp(labbuf, 'psw       ') then
+         reg := rgpsw { psw }
+      else begin
+
+         reg := rgnl; { set null register }
+         cmdrot^.inp := inpsav { restore input position }
+
+      end
+   end else begin
+
+      reg := rgnl; { set null register }
+      cmdrot^.inp := inpsav { restore input postion }
+
+   end;
+
+end;
+
+{******************************************************************************
+
+Parse parameter
+
+Parses a parameter, and returns both the type code and any symbol.
+The 8080 has only two modes:
+
+     r - reg
+     x - imm
+
+******************************************************************************}
+
+procedure parcod(var p: regc; var s: symptr);
+
+begin
+
+   regcod(p); { find type }
+   if p = rgnl then begin { immediate }
+
+      nexpr(s); { parse expression }
+      p := rgimm { change to immediate mode }
+
+   end
+
+end;
+{******************************************************************************
+
+Convert single register
+
+Converts the single registers a, b, c, d, e, h, l or m to a 3 bit code.
+
+******************************************************************************}
+
+function sreg(p: regc): byte;
+
+var r: byte;
+
+begin
+
+   case p of
+
+      rgpsw, rgsp, rgnl, rgimm: prterr(epart); { wrong type }
+      rgb: r := 0; { b }
+      rgc: r := 1; { c }
+      rgd: r := 2; { d }
+      rge: r := 3; { e }
+      rgh: r := 4; { h }
+      rgl: r := 5; { l }
+      rgm: r := 6; { m }
+      rga: r := 7  { a }
+
+   end;
+   sreg := r
+
+end;
+
+{******************************************************************************
+
+Find reserved word
+
+Finds the reserved code corresponding to a given label. The hash value is found 
+for the label, then a sequential search of the entry list for a match with the 
+label. The result is a code equvalent to the index for the matching label, or 0 
+if none is found. See inires for more reserved table details.
+
+******************************************************************************}
+
+function fndres(var s: string) { label to find }
+                : opcodet;     { resulting opcode }
+
+var i: opcodet; { reserved table index }
+    b: boolean;
+    { free variant to convert opcodes to integers }
+    r: record case boolean of
+
+          false: (a: opcodet);
+          true:  (b: integer)
+
+       end;
+
+begin
+
+   r.b := hash(s, ord(pred(oplast))); { find hash value }
+   i := r.a;
+   { traverse chain at hash entry looking for a match }
+   b := compp(s, ressym[i].reslab); { check equal }
+   while not b and (ressym[i].reschn <> opnull) do begin { traverse }
+
+      i := ressym[i].reschn; { next entry }
+      b := compp(s, ressym[i].reslab) { check equal }
+
+   end;
+   { check match was found }
+   if not b then i := opnull;
+   fndres := i { return resulting index }
+
+end;
+
+{******************************************************************************
+
+Parse expression
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+******************************************************************************}
+
+procedure mexpr(var sym: symptr);
+
+begin
+
+   expri(sym) { pass call to assembler main }
+
+end;
+
+{******************************************************************************
+
+Parse simple expression
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+******************************************************************************}
+
+procedure msexpr(var sym: symptr);
+
+begin
+
+   sexpri(sym) { pass call to assembler main }
+
+end;
+
+{******************************************************************************
+
+Parse term
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+******************************************************************************}
+
+procedure mterm(var sym: symptr);
+
+begin
+
+   termi(sym) { pass call to assembler main }
+
+end;
+
+{******************************************************************************
+
+Parse factor
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+******************************************************************************}
+
+procedure mfactor(var sym: symptr);
+
+begin
+
+   factori(sym) { pass call to assembler main }
+
+end;
+
+begin
+
+   inidep { initalize processor dependent module }
+
+end.

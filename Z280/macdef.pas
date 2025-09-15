@@ -1,0 +1,87 @@
+{*******************************************************************************
+*                                                                              *
+*                    Z280 ASSEMBLY MODULE VS. 1.1                              *                                                          
+*                   Copyright (C) 2006 S. A. Moore                             *
+*                       All rights reserved                                    *
+*                                                                              *
+* Purpose:                                                                     *
+*                                                                              *
+* Provides Z280 specific operations for AS. Contains all code that is          *
+* dependent on the Z280.                                                       *
+*                                                                              *
+*******************************************************************************}
+
+module macdef;
+
+uses asdef,  { generic definitions }
+     opcdef; { opcode definitions }
+
+const
+
+cpualign  = 2;     { word for Z280 }
+cpubigend = false; { Z280 is little endian }
+cpuwrdsiz = 2;     { Z280 has 16 bit words }
+
+type
+
+restab = array [opcodet] of { reserved symbols }
+            record
+
+               reslab : lab;    { reserved symbol }
+               reschn : opcodet { chain to next }
+
+            end;
+{ condition codes for jump/call instructions }
+condc = (ccnl, ccnz, ccz, ccnc, ccc, ccpo,
+        ccpe, ccp, ccm);
+{ registers/operand types in the Z280 }
+regc = (rgnl,     { none }
+        rga,      { a }
+        rgb,      { b }
+        rgc,      { c }
+        rgd,      { d }
+        rge,      { e }
+        rgh,      { h }
+        rgl,      { l }
+        rgbc,     { bc }
+        rgde,     { de }
+        rghl,     { hl }
+        rgaf,     { af }
+        rgafa,    { af' }
+        rgix,     { ix }
+        rgiy,     { iy }
+        rgsp,     { sp }
+        rgi,      { i }
+        rgr,      { r }
+        rgixl,    { ixl }
+        rgixh,    { ixh }
+        rgiyl,    { iyl }
+        rgiyh,    { iyh }
+        rgpc,     { pc }
+        rgusp,    { usp }
+        rgdehl,   { dehl }
+        rgimm,    { nn,      immediate value }
+        rgic,     { (c),     indirect c }
+        rgiad,    { (nn),    indirect address }
+        rgrad,    { <nn>,    relative address }
+        rgibc,    { (bc),    indirect bc }
+        rgide,    { (de),    indirect de }
+        rgihl,    { (hl),    indirect hl }
+        rgisp,    { (sp),    indirect sp }
+        rgiix,    { (ix),    indirect ix }
+        rgiiy,    { (iy),    indirect iy }
+        rgihld,   { (hl+nn), indirect hl plus word displacement }
+        rgiixd,   { (ix+nn), indirect ix plus word displacement }
+        rgiixdb,  { (ix+n),  indirect ix plus byte displacement }
+        rgiiyd,   { (iy+nn), indirect iy plus word displacement }
+        rgiiydb,  { (iy+n),  indirect iy plus byte displacement }
+        rgispd,   { (sp+nn), indirect sp plus word displacement }
+        rgipcd,   { (pc+nn), indirect pc plus word displacement }
+        rgihlix,  { (hl+ix), indirect hl plus ix }
+        rgihliy,  { (hl+iy), indirect hl plus iy }
+        rgiixiy,  { (ix+iy), indirect ix plus iy }
+        rgbyt,    { 'byte' }
+        rgwrd);   { 'word' }
+
+begin
+end.

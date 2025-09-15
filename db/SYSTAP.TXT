@@ -1,0 +1,11 @@
+                     SYSTEM TAP IDEA
+
+Simple: We wish to provide a general means to branch from simulated tasks to
+the host operating system for advanced services. We also wish to make this
+interface as fast as possible, and extensible for the future, when we may be
+using it to test program runs across architechures.
+We define a "system tap" instruction, that is an instruction code that is
+competely illegal in the target processor. This is followed by a system
+function code. The parameters are then received in registers.
+The calling functions are essentially those of the RP universal set, added
+to as need be.

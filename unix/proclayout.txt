@@ -1,0 +1,182 @@
+                      MEMORY LAYOUT OF LINUX PROGRAM
+
+These are various clips and info.
+
+Sites:
+
+http://www.linuxassembly.org/
+
+A site all about assembly langauage on Linux.
+
+http://www.linuxjournal.com/article.php?sid=1060
+
+An article on ELF file format.
+
+http://www.ee.iitb.ac.in/uma/~himanshu/docs/syscalls/
+
+System call documentation (int $80)
+
+http://www.lxhp.in-berlin.de/lhpsysc0.html
+
+Another system call document.
+
+Article:
+
+In the standard UNIX process memory model, you have (starting at 0):
+an unmapped page to catch NULL dereferences
+the Text segment: read-only, mapped from your executable
+the data segment: read-write, initialized from your executable
+the BSS segment: zero-initialized global variables
+memory allocated by sbrk(): usually managed by malloc()
+the "break"  (see brk() and sbrk() )
+lots of unmapped memory ...
+your stack.
+
+So we have:
+
+page 0
+.text
+.data
+.bss
+
+Stack ?
+Heap ?
+
+Article:
+
+Assuming your system has the /proc filesystem enabled (it should), do a
+'cat /proc/<pid>/maps' (where <pid> is the process id of some running
+process). That will show you the memory layout for the given process.
+
+For example, the following is the maps file for the copy of netscape I'm
+writing this in:
+
+08048000-08b03000 r-xp 00000000 03:03 196189     /opt/netscape/netscape
+08b03000-08d73000 rw-p 00aba000 03:03 196189     /opt/netscape/netscape
+08d73000-0960f000 rwxp 00000000 00:00 0
+40000000-40013000 r-xp 00000000 03:03 479920     /lib/ld-2.1.2.so
+40013000-40014000 rw-p 00012000 03:03 479920     /lib/ld-2.1.2.so
+40014000-40015000 rwxp 00000000 00:00 0
+40015000-40016000 r-xp 00000000 03:03 479923     /lib/libNoVersion.so.1
+40016000-40017000 rw-p 00000000 03:03 479923     /lib/libNoVersion.so.1
+40017000-40019000 rw-p 00000000 00:00 0
+40019000-4001c000 r-xp 00000000 16:44 36928    
+/usr/local/lib/libnss_dns-2.1.2.so
+4001c000-4001d000 rw-p 00002000 16:44 36928    
+/usr/local/lib/libnss_dns-2.1.2.so
+4001d000-4001e000 rw-p 00000000 00:00 0
+40023000-40024000 r-xp 00000000 16:44 36905    
+/usr/local/lib/libBrokenLocale-2.1.2.so
+40024000-40025000 rw-p 00000000 16:44 36905    
+/usr/local/lib/libBrokenLocale-2.1.2.so
+40025000-4006a000 r-xp 00000000 16:41 76172    
+/usr/X11R6/lib/libXt.so.6.0
+4006a000-4006e000 rw-p 00044000 16:41 76172    
+/usr/X11R6/lib/libXt.so.6.0
+4006e000-4006f000 rw-p 00000000 00:00 0
+4006f000-40076000 r-xp 00000000 16:41 76148    
+/usr/X11R6/lib/libSM.so.6.0
+40076000-40078000 rw-p 00006000 16:41 76148    
+/usr/X11R6/lib/libSM.so.6.0
+40078000-40079000 rw-p 00000000 00:00 0
+40079000-4008b000 r-xp 00000000 16:41 76142    
+/usr/X11R6/lib/libICE.so.6.3
+4008b000-4008d000 rw-p 00011000 16:41 76142    
+/usr/X11R6/lib/libICE.so.6.3
+4008d000-4008f000 rw-p 00000000 00:00 0
+4008f000-400a0000 r-xp 00000000 16:41 76166    
+/usr/X11R6/lib/libXmu.so.6.0
+400a0000-400a1000 rw-p 00010000 16:41 76166    
+/usr/X11R6/lib/libXmu.so.6.0
+400a1000-400ae000 r-xp 00000000 16:41 76139    
+/usr/X11R6/lib/libXpm.so.4.11
+400ae000-400af000 rw-p 0000c000 16:41 76139    
+/usr/X11R6/lib/libXpm.so.4.11
+400af000-400b9000 r-xp 00000000 16:41 76160    
+/usr/X11R6/lib/libXext.so.6.3
+400b9000-400bb000 rw-p 00009000 16:41 76160    
+/usr/X11R6/lib/libXext.so.6.3
+400bb000-4015a000 r-xp 00000000 16:41 76151    
+/usr/X11R6/lib/libX11.so.6.1
+4015a000-40161000 rw-p 0009e000 16:41 76151    
+/usr/X11R6/lib/libX11.so.6.1
+40161000-40163000 r-xp 00000000 16:44 36959    
+/usr/local/lib/libdl-2.1.2.so
+40163000-40164000 rw-p 00001000 16:44 36959    
+/usr/local/lib/libdl-2.1.2.so
+40164000-40165000 rw-p 00000000 00:00 0
+40165000-40196000 r-xp 00000000 16:41 29009    
+/usr/lib/libstdc++.so.2.8
+40196000-401a4000 rw-p 00030000 16:41 29009    
+/usr/lib/libstdc++.so.2.8
+401a4000-401a6000 rw-p 00000000 00:00 0
+401a6000-401c2000 r-xp 00000000 16:44 36909    
+/usr/local/lib/libm-2.1.2.so
+401c2000-401c3000 rw-p 0001b000 16:44 36909    
+/usr/local/lib/libm-2.1.2.so
+401c3000-402b7000 r-xp 00000000 16:44 36964    
+/usr/local/lib/libc-2.1.2.so
+402b7000-402bb000 rw-p 000f3000 16:44 36964    
+/usr/local/lib/libc-2.1.2.so
+402bb000-402bf000 rw-p 00000000 00:00 0
+402bf000-402c7000 r-xp 00000000 16:44 36932    
+/usr/local/lib/libnss_files-2.1.2.so
+402c7000-402c8000 rw-p 00007000 16:44 36932    
+/usr/local/lib/libnss_files-2.1.2.so
+402d4000-402df000 r-xp 00000000 16:44 36926    
+/usr/local/lib/libresolv-2.1.2.so
+402df000-402e1000 rw-p 0000a000 16:44 36926    
+/usr/local/lib/libresolv-2.1.2.so
+402e1000-402e3000 rw-p 00000000 00:00 0
+50000000-50002000 ---p 00000000 03:03 34006      /dev/zero
+50002000-50012000 rwxp 00002000 03:03 34006      /dev/zero
+50012000-50014000 ---p 00012000 03:03 34006      /dev/zero
+50014000-50016000 ---p 00000000 03:03 34006      /dev/zero
+50016000-50026000 rwxp 00002000 03:03 34006      /dev/zero
+50026000-50028000 ---p 00012000 03:03 34006      /dev/zero
+bfff7000-c0000000 rwxp ffff8000 00:00 0 
+
+In general, the layout is:
+
+program code
+program static data
+heap
+<gap for heap growth>
+libraries needed at initialization (code, static, and sometimes some
+other space)
+mmapped areas (for alt stack, files, etc.)
+<gap for additional mmapped areas>
+stack (which grown _down_ in the address space).
+
+Article:
+
+Thanks for the tip.  The results of your print out illustrate the
+other part of my question.  Specifically, they show that the .text
+area of the netscape process are located at 0x08048000-0x08b03000.  As
+you pointed out, the .text (program code) is loaded first in the lower
+memory address.  However, why would it not be loaded starting at
+0x00000000?  Or at least somewhere much lower than 0x08048000.
+Thanks.
+
+Article:
+
+0 - 0x8000000 is the kernel space. This can be changed with the
+CONFIG_1/2GB kernel options in later 2.2, because all physical
+memory has to fit into the kernel mapping (2.3+ discourages this
+and uses BIGMEM/HIGHMEM instead to map only part of the physical
+memory at a time)
+
+==================================================================
+
+So we have:
+
+$00000000              page 0 trap
+$00001000 - $7fffffff  Kernel space.
+$80000000 - n          Process space.
+
+Web site:
+
+http://www.tldp.org/LDP/tlk/tlk.html
+
+About the Linux Kernel. According to this site, process code space 
+starts at $8048000. Contains a description of ELF as well.

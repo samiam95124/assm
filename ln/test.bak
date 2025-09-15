@@ -1,0 +1,13 @@
+!trash:  equ     bark+crap
+        jmp     crap
+        block
+bark:   add b
+sniff:  add c
+        jmp     out
+        jmp     crap
+        block
+crap:   add d
+        endblk
+junk:   defvs  2
+        endblk
+out:    add e

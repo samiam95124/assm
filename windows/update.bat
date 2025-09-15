@@ -1,0 +1,13 @@
+rem @echo off
+rem
+rem Update global copy
+rem
+copy genpe.exe c:\ip\windows\i80386\bin
+rem copy genpe.exe c:\iprel\windows\i80386\bin
+rem copy genpe c:\ip\linux\i80386\bin
+rem copy genpe.exe c:\ipdemo\windows\i80386\bin
+
+copy pedump.exe c:\ip\windows\i80386\bin
+rem copy pedump c:\ip\linux\i80386\bin
+copy pecat.exe c:\ip\windows\i80386\bin
+copy geninx.exe c:\ip\windows\i80386\bin

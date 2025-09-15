@@ -1,0 +1,117 @@
+                     RUNCPM MANUAL
+
+RUNCPM is a "bridge" program to allow cp/m programs to run under DB8080,
+DBZ80 or DB64180. Programs are run as follows:
+
+   db8080 [<options>] runcpm <program> <parameters>
+
+After runcpm is loaded by DB, it relocates itself, formats the simulated
+target as a 64k cp/m target system, then loads the target program and runs
+it with the specified command line. Runcpm then acts as a "bridge", translating
+the cp/m calls the program issues into a simulated cp/m format.
+Runcpm is itself entirely an 8080 mode program, but will run in any upwardly
+compatible cpu. It will also run any cpu model program, because the interface
+specified by cp/m does not change with the cpu type.
+Cp/m had many problems with undocumented interfaces and "low level bypass", or
+the ability of a program to bypass the operating system and access low level
+facilities. Runcpm formats the target exactly as the original 64k version cp/m
+did, using the same addresses, and implementing many or most of the same
+undocumented methods. However, direct access to the hard disk as provided by
+cp/m is not implemented.
+The following is an exact list of features changed or restricted by
+RUNCPM:
+
+   Iobyte - The iobyte read and write functions are implemented by RUNCPM,
+   but the iobyte has no function and makes no difference to the results of 
+   I/O calls (iobyte implementation was optional in the original cp/m). 
+   Under runcpm, all I/O occurs to and from the console except for list output,
+   which goes to the list device. In particular, the devices tty:, crt:, bat:,
+   uc1:, ptr:, ur1:, ur2:, ptp:, up1:, and up2 go to the console, while lpt: 
+   and ul1: go to the list device.
+
+   Console buffering - The console calls under runcpm are not buffered, nor
+   is break checking performed. This function is handled entirely by DB, out 
+   of control of the target program.
+
+   Console tabbing - The console calls do not insert or process tabs. Normally,
+   the host operating system does this.
+
+   Console buffer read - The "read console buffer" cp/m function does not
+   support the original cp/m line edit commands (which  were intended to 
+   support hard copy terminals). Instead, the following functions are 
+   supported:
+
+      Backspace - Erase last character.
+ 
+      DEL - Erase last character.
+
+      Return - Terminate line.
+
+   As in cp/m, all characters are translated to upper case by this call.
+
+   User number - The get and set user number functions operate under runcpm,
+   but the setting of the user number has no effect.
+
+   Drive number - The set and get and set current disk functions operate under
+   runcpm, but the setting of the current disk has no effect. Programs are 
+   limited to accessing of files in the current directory, or the directory 
+   which DB was started in. To the application, the drive allways appears
+   as A:.
+
+   Note that cp/m did not support tree structured directories, and thus target 
+   programs are unable to specify files in such a structure.
+
+   Disk write protection - The write protection calls are implemented as
+   no - ops, and no drives will be protected or indicated as protected.
+
+   Search first/search next commands - Are not implemented under runcpm, and
+   cause the target to be stopped with an error. These calls are mainly used
+   to operate on the directory system of cp/m.
+
+   Get address of allocation - The get address of allocation table function
+   gives low level disk information access in cp/m, and generates an
+   an unimplemented function error.
+
+   Get address of disk parameters - The get address of disk parameters gives
+   low level disk information access in cp/m, and generates an unimplemented
+   function error.
+
+   Set file attributes - The cp/m file attributes, such as read only, cannot
+   be changed, and generate an unimplemented function error.
+
+   Reset drives function - The reset drives function is a no - op in RUNCPM.
+
+   Unimplemented functions 38, 39 - Functions 38 and 39 corresponded to
+   undocumented calls in cp/m, and cause an unimplemented function error in
+   RUNCPM.
+
+   Functions over 40 - Functions over 40 are no - ops, and return a null (0)
+   function result code under rcpm, corresponding to the same behavior as
+   cp/m 2.2.
+   Note that some programs make these calls as a test of whether later versions
+   of cp/m (such as 3.0 or concurrent cp/m) or alternate operating systems
+   (such as zcpr) are present.
+
+   Error reroute words - The undocumented "error reroute vectors" at the start
+   of the bdos section are pointed at simulated error routines in case they
+   are called by applications, but changing these vectors will have no effect
+   on RUNCPM operation.
+
+   Boot, warmboot functions - Execution of a boot or warmboot in RUNCPM simply
+   terminates the program run.
+
+   Bios functions - The bios direct I/O functions for console read, console
+   status, console output, list output, list status, punch output, and reader
+   input all function and go to the console or list files as specified
+   above. The home disk, select disk, set track, set sector, set dma address,
+   read sector, write sector and sector translate generate an unimplemented
+   function error.
+
+   Console status - Console status for all routines is a no- op, and the
+   console is allways ready.
+
+   Printer status - Printer status for all routines is a no-op, and the printer
+   is allways ready.
+
+   Comand line buffer - The ccp command line buffer exists in RUNCPM, and
+   contains the command line with the target program and parameters on it.

@@ -1,0 +1,22 @@
+                 CONSTRUCTING PROGRAMS FOR THE DOS .COM MODEL
+
+Constructing a DOS .COM program is quite simple. .COM files are direct images
+of the program, and are identical to the contents of the .OBJ file output by
+LN after all the references are complete.
+
+The program should be located at $100. A typical link may appear as:
+
+        ln test=test /ps=$100
+
+Which creates the .SYM and .OBJ files. If the link goes without error and
+produces no undefineds, it is ready to run. To create a run file, simply copy
+it to the .COM file:
+
+        copy /b test.obj test.com
+
+Note that DOS will refuse to load a file larger than 64kb long, so it is not
+possible to create .COM files larger than that (under the 80386, it would
+otherwise be possible to create such a file).
+
+System calls in a .COM file are made entirely via software interrupts.
+

@@ -1,0 +1,506 @@
+{******************************************************************************
+*                                                                             *
+*                     ASSEMBLY LANGUAGE BEAUTIFIER                            *
+*                                                                             *
+*                    Copyright (C) 1994 S. A. Moore                           *
+*                         All rights reserved                                 *
+*                                                                             *
+* Cleans up an assembly file. Some very simple rules are applied to the input *
+* to clean it up:                                                             *
+*                                                                             *
+*       1. If the first character on the line contains '!', the entire        *
+*          line is left alone.                                                *
+*                                                                             *
+*       2. Anytime while skipping and not in quotes, '!' will cause the       *
+*          output to be advanced to the comment field.                        *
+*                                                                             *
+*       3. The first space encountered on the line tabs to the opcode         *
+*          field.                                                             *
+*                                                                             *
+*       4. The second space encountered on the line tabs to the operand       *
+*          field.                                                             *
+*                                                                             *
+******************************************************************************}
+
+program al(command, output);
+
+label 99; { abort program }
+
+const maxfil = 20;  { number of characters in a file name }
+      maxlin = 200; { number of characters in input line }
+      maxext = 4;   { number of characters in file extention }
+      maxdig = 8;   { number of hex digits in integer }
+      maxlst = 131; { number of characters on listing line }
+      maxpag = 62;  { number of lines per page }
+
+      { preset tabbing collumns. Should be replaced with option to read
+        these from the command line. Note that most edittors automatically
+        will generate 8th tabs, like 9, 17, 25, 33, etc., so staying with
+        8th tab values allows easy use of the "tab" key }
+
+      tabopc = 9;   { tab to opcode field }
+      tabopr = 17;  { tab to operand field }
+      tabcmt = 33;  { tab to comment field }
+
+type byte = 0..255; { byte }
+     filinx = 1..maxfil; { index for filenames }
+     filnam = packed array [filinx] of char; { filename }
+     bytfil = file of boolean; { raw byte file }
+     lininx = 1..maxlin; { index for text line }
+     line   = packed array [lininx] of char; { text line }
+     extinx = 1..maxext; { index for file extention }
+     extbuf = packed array [extinx] of char; { buffer for extention }
+
+var source: text;    { source file }
+    cmdlin: line;    { command line }
+    cmdlen: lininx;  { command line length }
+    cmdptr: lininx;  { command line pointer }
+    nambuf: filnam;  { filename holder }
+    charc:  byte; { character count }
+    st:     (lbl, opc, opr, cmt); { format state }
+    quocnt: byte; { quote count }
+    c:      char;
+
+{******************************************************************************
+
+Abort program
+
+Aborts the program.
+
+******************************************************************************}
+
+procedure abort;
+
+begin
+
+   goto 99
+
+end;
+
+{******************************************************************************
+
+Print filename
+
+******************************************************************************}
+ 
+procedure prtfil(var n: filnam);
+
+var i: filinx; { index for filename }
+
+begin
+
+   { output all non-space characters }
+   for i := 1 to maxfil do if n[i] <> ' ' then write(n[i])
+
+end;
+
+{*******************************************************************************
+
+Get command line
+
+The command line is loaded to the command buffer.
+
+*******************************************************************************}
+
+procedure getcmd;
+
+var i: lininx;  { command line index }
+
+begin
+
+   for i := 1 to maxlin do cmdlin[i] := ' '; { clear command line }
+   i := 1; { set 1st command position }
+   while not eoln(command) do begin { get command line characters }
+
+      read(command, cmdlin[i]);
+      if i = maxlin then begin { overflow }
+ 
+         writeln('*** Command input line overflow');
+         abort
+
+      end;
+      i := i + 1 { next character position }
+   
+   end;
+   cmdlen := i-1; { set length of line }
+   cmdptr := 1 { reset line pointer }
+
+end;
+
+{******************************************************************************
+
+Check end of line
+
+Checks whether the input line position is at the end. This is indicated by 
+cmdptr being at the extreme end of the input line.
+Note that in order to ensure that this is true, a skip space to line end
+should be done.
+
+******************************************************************************}
+
+function endlin: boolean;
+
+begin
+
+   endlin := cmdptr > cmdlen { input pointer past end of line }
+
+end;
+
+{******************************************************************************
+
+Check next input character
+
+The next character in the input buffer is returned. No advance
+is made from the current position (succesive calls to this
+procedure will yeild the same character).
+
+******************************************************************************}
+
+function chkchr: char;
+
+begin
+
+   if not endlin then chkchr := cmdlin[cmdptr] { return current character }
+   else chkchr := ' ' { else return space }
+
+end;
+
+{******************************************************************************
+
+Skip input character
+
+Causes the current input character to be skipped, so that the next chkchr call
+will return the next character. If endlin is true, no action will take place
+(will not advance beyond end of line).
+
+******************************************************************************}
+
+procedure getchr;
+
+begin
+
+   if not endlin then cmdptr := cmdptr+1 { advance position if not end }
+
+end;
+
+{******************************************************************************
+
+Skip input spaces or controls
+
+Skips the input position past any spaces or controls. Will skip the end of 
+line, loading the next line from the input. The view of the input is for each 
+line to be terminated by an infinite series of blanks, which only this routine
+will cross.
+
+******************************************************************************}
+
+procedure skpspc;
+
+begin
+
+   while (chkchr = ' ') and not endlin do getchr { skip spaces, not end }
+
+end;
+
+{*******************************************************************************
+
+Check digit
+
+Checks wether the given character lies in the set ['0'..'9'].
+Returns the status.
+
+*******************************************************************************}
+
+function digit(c: char)  { character to check }
+              : boolean; { status of check }
+
+begin
+
+   digit := c in ['0'..'9']
+
+end;
+
+{*******************************************************************************
+
+Check alphabetical
+
+Checks if the given character lies in the set
+['A'..'Z', 'a'..'z'] (is a letter). Returns the status.
+
+*******************************************************************************}
+
+function alpha(c : char) { character to check }
+              : boolean; { status }
+
+begin
+
+   alpha := c in ['A'..'Z', 'a'..'z']
+
+end;
+
+{*******************************************************************************
+
+Parse file name
+
+Parses a filename in the format:
+
+     <filename> ::= [<letter>:]<letter>[<letter>/<digit>/'.']...
+     <letter>   ::= 'a'..'z'/'A'..'Z'
+     <digit>    ::= '0'..'9'
+
+Obviously, this routine is CP/M dependent. If more than 10 total
+characters are used (ffffff.eee), an error is generated.
+The file string so parsed is returned in place, and an error
+'mode' parameter indicates whether or not a file name parsing
+error would be fatal to the assembly.
+
+*******************************************************************************}
+
+procedure parfil(var fn: filnam); { file name return }
+
+var i: filinx; { file name index }
+    p: 0..maxfil; { primary length }
+    u: integer; { user number }
+
+procedure getncr; { get name character }
+
+begin
+
+   if i > maxfil then begin { filename too long }
+
+      writeln('*** Filename too long');
+      abort
+ 
+   end;
+   fn[i] := chkchr; { place file character }
+   getchr; { skip that }
+   i := i + 1 { next }
+
+end;
+
+procedure getseq(max: filinx); { read name sequence }
+
+var l: 0..maxfil;
+
+begin
+
+   l := 0; { initalize count }
+   while alpha(chkchr) or digit(chkchr) do begin { filename }
+
+      getncr; { get character }
+      l := l + 1 { count }
+
+   end;
+   if l > max then begin { filename too long }
+
+      writeln('*** Filename too long');
+      abort
+ 
+   end
+
+end;
+
+begin { parnam }
+
+   skpspc; { skip spaces }
+   for i := 1 to maxfil do fn[i] := ' '; { clear filename }
+   i := 1; { initalize index }
+   p := 1; { initalize primary count for first character }
+   u := 0; { initalize user number }
+   if not alpha(chkchr) then begin { must lead with alpha }
+
+      writeln('*** Invalid filename');
+      abort
+
+   end;
+   getncr; { get character }
+   while digit(chkchr) do begin { process unit number }
+
+      u := u*10 + (ord(chkchr) - ord('0')); { add to specification }
+      getncr; { get character }
+      p := p + 1 { since could be primary }
+
+   end;
+   if chkchr = ':' then begin { process unit specification }
+
+      if u > 15 then begin { unit out of range }
+
+         writeln('*** Invalid filename');
+         abort
+
+      end;
+      getncr; { get character }
+      if not alpha(chkchr) then begin { must lead off alpha }
+
+         writeln('*** Invalid filename');
+         abort
+
+      end;
+      p := 0 { re - initalize primary }
+
+   end;
+   if p > 8 then begin { too long }
+
+      writeln('*** Filename too long');
+      abort
+ 
+   end;
+   getseq(8 - p); { get rest of primary }
+   if chkchr = '.' then begin { secondary }
+
+      getncr; { get character }
+      if not alpha(chkchr) or digit(chkchr) then begin { error }
+
+         writeln('*** Invalid filename');
+         abort
+
+      end;
+      getseq(3) { get secondary }
+
+   end
+
+end; { parnam }
+
+{*******************************************************************************
+
+Append file extention
+
+Appends a given extention, in place, to the given file name.
+The extention is usually in the form: '.ext'. The extention is
+placed within the file name at the first space or period from
+the left hand side. This allows extention of either an
+unextended filename or an extended one (in which case the new
+extention simply overlays the old). The overlay is controlled
+via flag: if overwrite is true, the extention will overwrite
+any existing, if not, any existing extention will be left in
+place.
+Note: this routine is CP/M dependant.
+
+*******************************************************************************}
+
+procedure addext(var str:    filnam;   { filename to extend }
+                     ext:    extbuf;   { filename extention }
+                     extend: boolean); { overwrite flag }
+
+var i: filinx; { filename index }
+    x: extinx; { label index }
+
+begin
+
+   i := 1; { initalize index }
+   { skip to first character ' ' or '.' }
+   while (str[i] <> ' ') and (str[i] <> '.') do i := succ(i);
+   if extend or (str[i] = ' ') then
+      for x := 1 to maxext do { append file extention }
+         if ext[x] <> ' ' then begin { append non - space characters }
+
+         str[i] := ext[x]; { transfer extention character }
+         i := succ(i) { count }
+
+      end
+
+end;
+
+{*******************************************************************************
+
+Output single character
+
+*******************************************************************************}
+
+procedure outchr(c: char);
+
+begin
+
+   write(c); { output character }
+   charc := succ(charc) { count }
+
+end;
+{*******************************************************************************
+
+Tab a number of spaces
+
+*******************************************************************************}
+
+procedure tab(t : byte { number of spaces to print });
+
+var i : byte;
+
+begin
+
+   if charc < t then begin { tab to position }
+
+      { output spaces }
+      for i := 1 to t-charc do write(' ');
+      charc := charc+(t-charc) { count spaces }
+
+   end else outchr(' ') { output a minimum of one space }
+
+end;
+
+begin
+
+   getcmd; { load command file }
+   parfil(nambuf); { get the name of the line file }
+   addext(nambuf, '.asm', false);
+   if not exists(nambuf) then begin { not found }
+
+      write('*** Input file ');
+      prtfil(nambuf);
+      writeln(' does not exist');
+      abort
+
+   end;
+   assign(source, nambuf); { name source file }
+   reset(source); { open it }
+   while not eof(source) do begin { print source lines }
+
+      st := lbl; { set inital line state }
+      charc := 1; { set inital character count }
+      quocnt := 0; { set inital quote count }
+      while not eoln(source) do begin { read characters }
+
+         read(source, c);
+         if st <> cmt then begin { formatting }
+
+            { check leading comment }
+            if (charc = 1) and (c = '!') then { leading comment }
+               begin st := cmt; outchr(c) end
+            else if (c = '!') and not odd(quocnt) then begin
+
+               { comment }
+               tab(tabcmt); { tab to comment }
+               st := cmt; { set in comment }
+               outchr(c) { output character }
+
+            end else if (st = lbl) and (c = ' ') then begin
+
+               tab(tabopc); { tab to opcode }
+               st := opc { set in opcode }
+
+            end else if (st = opc) and (c = ' ') then begin
+
+               tab(tabopr); { tab to operand }
+               st := opr { set in operand }
+
+            { count quotes }
+            end else if c = '''' then begin { quote }
+
+               quocnt := succ(quocnt);
+               outchr(c) { output character }
+
+            end else outchr(c) { output character normally }
+
+         end else outchr(c) { output comment character }
+
+      end;
+      readln(source); { next line }
+      {writeln};
+      write(chr(10))
+
+   end;
+
+   99: { terminate program }
+
+   close(source) { close source file }
+
+end.

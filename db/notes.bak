@@ -1,0 +1,7 @@
+                               NOTES FOR DB
+
+1. Control-c needs to be handled, and ignored on the command line, and used to
+stop runs.
+
+2. Control-c on the prompt after a few command executes spills '>' characters
+on the terminal.

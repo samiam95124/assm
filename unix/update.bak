@@ -1,0 +1,2 @@
+copy genelf.exe \ip\windows\i80386\bin
+copy genelf \ip\linux\i80386\bin

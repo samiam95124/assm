@@ -1,0 +1,234 @@
+                       SEGMENTATION MODE ASSEMBLY
+
+Overview:
+
+In 16 bit mode, the 80x86 processors use a segmented system to enable memory access
+beyond the nominal 64k space provided by a simple address. The segmentation system
+used can be applied in many ways, however. The most common method unfortunately
+requires considerable assembler support without returning corresponding benefit.
+The system used in as80586 uses a unique method that considers the segmentation
+registers as a simple means to expand memory access, akin to, but more powerfull
+than, bank selection. The result is that the programmer can, with a few simple
+rules, forget that segmentation is involved, and straightforward access to 1mb
+results.
+
+Implementation:
+
+The 80x86 combines a segmented address to form a physical address in the following
+manner:
+
+   ----------------
+   |   SEG   |0000|
+   ----------------
+    | 
+    |   -----------
+    |   |   OFF   |
+    |   -----------
+    |       |
+    --------+
+            |
+   ----------------
+   |   PADDR      |
+   ----------------  
+
+The 16 bit segment address is shifted left 4 bits, with zero remaining in the
+lower 4 bits, then the offset is added to make the final 20 bit physical address.
+Various methods of program organization can be implemented with this system.
+
+Traditional segmentation:
+
+in the traditional segmented design model, a segment can vary in size up to
+64kb. The segments are laid out sequentially in memory, and each segment set
+"active" by loading its base address divided by 16 into a segment register,
+then accessing points within the segment by changing the offset.
+This mode requires assembler support to divide code into segments, and requires
+that the programmer not create segments larger than 64kb.
+
+as80586 segmentation:
+
+In our model, we simply create a linear program up to 1mb in size, then use
+segmentation as an address extention mechanisim to access it. When the
+assembler creates a segmented address from a physical address, it looks like:
+
+   -------------------
+   |      PADDR |    |
+   -------------------
+    |              |
+    |              -------
+    |                    |
+    |   ---------------------
+    |   |0000 0000 0000 XXXX| Offset address
+    |   ---------------------
+    |
+    ----------
+             |
+   ---------------------
+   |XXXX XXXX XXXX XXXX| Segment address
+   ---------------------
+
+The segment gets the top 16 bits of the 20 bit physical address. The offset
+gets only the lower 4 bits of the physical address (this is also sometimes
+referred to as "huge" mode in the Intel vernacular).
+The exact effect of this divides into two modes, instruction execution and
+data access.
+
+Instruction execution:
+
+When a segmented jump is used to branch to a given location, the CS register
+is set to the "base" segment, which in our case is the next lowest "paragraph",
+or 16 byte section of code. Because all short jumps in 80x86 are relative,
+the code that is executed there will execute properly for references anywhere
+from 0 to 65535 bytes after the segment base. Because the offset can be from
+0 15, the total accessable range is 0 to 64kb-15. The basic rules of code
+construction are:
+
+1. Never jump backwards or "behind" the code entry point (because this
+would wrap to the top of the segment).
+
+2. Never execute beyond 64kb-15 bytes past the code entry point.
+
+What this means is that you must not create linear code larger than 64kb-15.
+This rule is most easily enforced, and understood, in relationship with
+subroutines. If you create a program that consists of a series of subroutines,
+each no larger than 64kb-15, then you can essentially forget about the 64kb
+limit. Multiple entry and exit subroutines are even possible, as long as a
+segmented jump or call is used to cross into the routine.
+The advantage of this method is that except in the case of very large routines,
+the programmer can create an unlimited size program without regard for 64kb
+limits. The disadvantage is that it is up to the programmer to make sure that
+the segmentation rules are followed, else the program will malfunction at
+runtime. Because 64kb-15 is an unusually large size for a single routine,
+however, such errors are not common.
+
+Data access:
+
+Instruction access becomes worry free on the 80x86 with our "super" segmentation
+mode mainly because ALL non-segmented branches are relative. This is not true
+of data accesses, however. If the data area is located at 0, and is less than
+64kb, then there is no cause for concern. But if we access a data address
+beyond 0-64kb, the address is larger than 16 bits, and as80586 will flag this
+as an invalid address.
+To get around this problem, as80586 keeps a single address value as the "base"
+of the data segment. This segment base is set by the macro instruction:
+
+   datseg   current_segment
+
+The address current_segment can be any address in either program or variable
+space. As treats any instruction that will use the DS register specially:
+
+   mov ax,[mydat]
+
+Becomes equivalent to:
+
+   mov ax,[mydat-(segment and $ffff0)]
+
+In other words, the actual instruction codes an offset from the runtime
+segment. All the programmer needs to do is make sure that the assembler's
+idea of the segment base and the actual segment base are the same.
+To make this work, the programmer should specifically set the data offset each
+time the actual contents of the ds register is changed:
+
+   mov    ds,data_area shr 4
+   datseg data_area
+
+This is already combined in the macro "movds":
+
+   movds  data_area
+
+Which both sets the DS register, and sets the assemblers idea of it as well.
+The segment can be any complex expression, and is set by default to _vstr at
+the start of assembly. This is the correct value for models where the data
+segment does not exceed 64kb-15.
+
+Another question is what to do when both predefined and variable data appears
+in the program:
+
+    -------------
+    |   CODE    |
+    |           |
+    |           |
+DS->-------------
+    | CONSTANTS |
+    -------------
+    | VARIABLES |
+    -------------
+
+If the total size of both the constants and data are within 64kb, the DS and
+datoff can be set once at the start of the program.
+
+Data/variables larger than 64kb-15:
+
+Unlike the Intel/Microsoft assembler, there are no specifically marked
+segments in as. You establish a "reference" segment anywhere in up to 1mb of
+variable space. A typical useage is:
+
+        movds   mydata
+        mov     ax,[stuff]
+        ...
+        ...
+
+mydata: defv    100
+stuff:  defv    2
+        ...
+        ...
+
+You can establish segment references to individual variables or constants,
+or whole sets of same. You just have to make sure that the area to be
+accessed lies within 64kb-15 of the base segment you establish.
+
+Alternate segments:
+
+As leaves control of segment prefixes up to the programmer. If you are going to
+use a segment override, you must also let as know about it:
+
+   datseg new_area
+   es
+   mov    ax,[special]
+   datseg common
+
+In this code, the offset is changed temporarily to the new data section, then
+restored when the operation is complete.
+
+Segment math:
+
+When accessing very large arrays or data structures, it is wise to specifically
+set up a segment reference to that, to prevent "segment overflow". For objects
+such as complex arrays or records that exceed 64kb-15, the programmer must
+be prepared to perform math on the segments. For example, to walk through
+any size array:
+
+      mov   bx,bigarr shr 16  ! load segment
+      mov   ds,bx
+      mov   si,bigarr & $f    ! load offset
+loop: 
+      mov   ax,[si]           ! get an array element
+      inc   si                ! next element
+      jnz   loop              ! loop no overflow
+      add   bx,$10000/16      ! add a full 64kb segment
+      mov   ds,bx             ! reload segment
+      jmp   loop              ! continue
+
+Note several things about this example. First, we use all 16 bits of the offset
+to walk the array. This makes the overflow check more efficient. Second, no
+"datseg" instruction is nessary, because the entire example does not use
+constant offsets, only register offsets, which are programmer controlled.
+Finally, note we hold a copy of the segment register in a general register.
+This is faster than moving the contents of the segment register back and
+forth to a general register for math.
+Techniques like this can be used to access any size object, and the programmer
+is not restricted to huge mode segmentation only. Pascal uses segment math
+to give access to any large object.
+
+Conclusion:
+
+As does not support full general segmentation as in the Intel/Microsoft
+assemblers. The "segmented mode" assemblers require extreme program adaptions
+specifically for the 80x86 family that are not applicable to most processors,
+and idea that is contrary to IP's mission.
+The model used instead has minimal impact on as methods, and in most cases
+the user can "set and forget" segmentation. The use of segment extended code
+is especially easy, and if single entry/exit routines are used, limited
+to 64kb-15 for each routine, the model is practically worry free.
+Data models are a litte more chalenging. The main drawback is that the
+programmer must not exceed a 64kb-15 reference at runtime. There is no way
+for as/ln to tell at assembly time if such a violation will occur.

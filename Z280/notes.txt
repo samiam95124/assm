@@ -1,0 +1,8 @@
+                                                                               *
+                             Z280 ASSEMBLER NOTES
+
+NOTE: THE Z280 CPU IS DISCONTINUED, SO THIS TARGET VERSION IS CONSIDERED DEAD.
+IT WAS MADE CURRENT AS OF 2006/10/10.
+
+1. The instruction list was not checked. The current allins.cmp file was
+simply copied from an unchecked assembly to provide regressions.

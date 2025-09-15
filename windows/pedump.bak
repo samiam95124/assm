@@ -1,0 +1,1383 @@
+{******************************************************************************
+*                                                                             *
+*                        PORTABLE EXECUTIVE FILE DUMPER                       *
+*                                                                             *
+*                            95/04 S. A. Moore                                *
+*                                                                             *
+* Works on Microsoft Portable Executive (PE) files, which are the common      *
+* currency of Win 32 based systems. This program was tested with win95.       *
+* Dumps sundry information from the file.                                     *
+*                                                                             *
+******************************************************************************}
+
+program pedump(output);
+
+uses strlib,
+     extlib,
+     parlib;
+
+label 99; { abort program }
+
+const
+
+   hdrfix = 176;  { number of bytes in the fixed portion of the header }
+   maxlab = 10000;  { number of characters in label }
+   maxext = 4;    { number of characters in an extention }
+   maxlin  = 200; { number of characters in a text line }
+   maxfil  = 100; { number of characters in a file name }
+
+type 
+
+   objptr = ^objrec; { pointer to object record }
+   objlab = packed array [1..8] of char; { object names }
+   { file object records }
+   objrec = record
+
+      name: objlab;  { name of object }
+      vsiz: integer; { virtual size }
+      rva:  integer; { location in memory }
+      psiz: integer; { physical size }
+      poff: integer; { physical offset }
+      prel: integer; { pointer to relocations }
+      plin: integer; { pointer to line numbers }
+      rels: integer; { relocation count }
+      lins: integer; { line count }
+      oflg: integer; { object flags }
+      next: objptr   { next entry }
+
+   end;
+   labt = packed array [1..maxlab] of char; { label }
+   extinx  = 1..maxext; { index for file extentions }
+   extbuf  = packed array [extinx] of char; { extention }
+   lininx  = 1..maxlin;  { index for text line }
+   linbuf  = packed array [lininx] of char; { a text line }
+   filinx  = 1..maxfil; { index for file names }
+   filnam  = packed array [filinx] of char; { a file name }
+   { errors }
+   errcod = (efilovf,  { filename too long }
+             einvfil,  { write('Invalid filename }
+             einvcmd,  { command line syntax invalid }
+             einvffm,  { invalid PE file format }
+             edsymtl,  { DLL symbol too long }
+             einvsyt,  { invalid symbols table }
+             efilnf);  { input file not found }
+
+var 
+
+   exefil:  bytfil; { .exe file to read from }
+   objects: integer; { number of objects in file }
+   hdrsiz:  integer; { size of header }
+   objlst:  objptr; { object directory list }
+   objend:  objptr; { end of object list }
+   import:  integer; { inport table RVA }
+   export:  integer; { export table RVA }
+   cmdlin:  linbuf; { command line buffer }
+   cmdptr:  lininx; { command line index }
+   cmdlen:  lininx; { command line length }
+   dmpfil:  filnam; { file to dump }
+   p, n, e: filnam; { file components }
+   fopnsrc: boolean; { source file is open }
+   stbobj:  objptr; { GCC symbols table object }
+   stsobj:  objptr; { GCC symbols list object }
+   cofsym:  integer; { location of COFF symbols }
+   cofnum:  integer; { number of COFF symbols }
+   valfch:  chrset;  { valid file characters }
+   cmdhan:  parhan;  { handle for command parsing }
+   err:     boolean; { error holder }
+   w:       integer;
+   i:       integer;
+   b:       byte;
+
+{******************************************************************************
+
+Process error
+
+Prints the given error code, and aborts the program.
+
+******************************************************************************}
+
+procedure error(e: errcod);
+
+begin
+
+   write('*** ');
+   case e of { error }
+
+      efilovf: write('Filename too long');
+      einvfil: write('Invalid filename');
+      einvcmd: write('Command line invalid');
+      einvffm: write('Invalid input PE file format or not 32 bit PE');
+      edsymtl: write('DLL symbol too long');
+      efilnf:  write('Input file not found');
+      einvsyt: write('Invalid symbol file format');
+
+   end;
+   writeln; { terminate line }
+   goto 99 { terminate program }
+
+end;
+
+{ read a 16 bit word from file }
+
+procedure readwrd(var f: bytfil; var w: integer);
+
+var b1, b2: byte;
+    i1, i2: integer;
+
+begin
+
+   read(f, b1); { get low byte }
+   read(f, b2); { get high byte }
+   i1 := b1; { expand the value }
+   i2 := b2;
+   w := i2*256+i1 { place result }
+
+end;
+    
+{ read a 32 bit word from file }
+
+procedure readdwd(var f: bytfil; var w: integer);
+
+var b1, b2, b3, b4: byte;
+    i1, i2, i3, i4: integer;
+
+begin
+
+   read(f, b1); { get low byte }
+   read(f, b2); { get mid low byte }
+   read(f, b3); { get mid high byte }
+   read(f, b4); { get high byte }
+   i1 := b1; { expand the value }
+   i2 := b2;
+   i3 := b3;
+   i4 := b4;
+   w := i4*16777216+i3*65536+i2*256+i1 { place result }
+
+end;
+
+{ print hex }
+
+procedure prthex(f: byte; w: integer);
+ 
+var buff: array [1..10] of char; { buffer for number in ascii }
+    i:    integer; { index for same }
+    t:    integer; { holding }
+ 
+begin
+
+   { set sign of number and convert }
+   if w < 0 then begin
+
+      w := w+1+maxint; { convert number to 31 bit unsigned }
+      t := w div $10000000 + 8; { extract high digit }
+      writeh(output, t); { ouput that }
+	   w := w mod $10000000; { remove that digit }
+      f := 7 { force field to full }     
+
+   end;
+   hexsp(buff, w); { convert the integer }
+   for i := 1 to f-lenp(buff) do write('0'); { pad with leading zeros }
+   writesp(output, buff) { output number }
+
+end;
+
+{ load the object table }
+
+procedure lodobj(objects: integer);
+
+var i: integer;
+    b: byte;
+    x: integer;
+    op: objptr; { pointer for object list }
+
+begin
+
+   for i := 1 to objects do begin { objects }
+    
+      new(op); { create new object entry }
+      op^.next := nil; { clear next }
+      if objlst = nil then begin { insert as first }
+     
+         objlst := op; { set as first entry }
+         objend := op { set as last entry }
+   
+      end else begin { insert as last }
+   
+         objend^.next := op; { link to last }
+         objend := op { set new last }
+   
+      end;   
+      for x := 1 to 8 do begin { read object name }
+
+         read(exefil, b); { get character }
+         op^.name[x] := chr(b and $7f) { place character }
+
+      end;
+      readdwd(exefil, op^.vsiz); { get virtual size }
+      readdwd(exefil, op^.rva); { get RVA }
+      readdwd(exefil, op^.psiz); { get physical size }
+      readdwd(exefil, op^.poff); { get physical offset }
+      readdwd(exefil, op^.prel); { get relocations }
+      readdwd(exefil, op^.plin); { get lines }
+      readwrd(exefil, op^.rels); { get reloc count }
+      readwrd(exefil, op^.lins); { get line count }
+      readdwd(exefil, op^.oflg) { get object flags }
+
+   end
+
+end;
+
+{ print the object table }
+
+procedure prtobj;
+
+var x: integer;
+    op: objptr; { pointer for object list }
+
+begin
+
+   op := objlst; { index top of objects list }
+   writeln;
+   writeln('Objects:');
+   while op <> nil do begin { objects }
+    
+      writeln;  
+      write('Name:                                   ');
+      for x := 1 to 8 do write(op^.name[x]);
+      writeln;
+      write('Virtual size:                           $'); prthex(8, op^.vsiz);
+      writeln(' (', op^.vsiz:1, ')');
+      write('RVA:                                    $'); prthex(8, op^.rva); 
+      writeln;
+      write('Physical size:                          $'); prthex(8, op^.psiz);
+      writeln(' (', op^.psiz:1, ')');
+      write('Physical offset:                        $'); prthex(8, op^.poff); 
+      writeln;
+      write('Pointer to relocations:                 $'); prthex(8, op^.prel); 
+      writeln;
+      write('Pointer to line numbers:                $'); prthex(8, op^.plin); 
+      writeln;
+      write('Number of relocations:                  $'); prthex(8, op^.rels); 
+      writeln(' (', op^.rels:1, ')');
+      write('Number of line numbers:                 $'); prthex(8, op^.lins); 
+      writeln(' (', op^.lins:1, ')');
+      write('Code object:                            ');
+      if (op^.oflg and $00000020) <> 0 then writeln('Y') else writeln('N');
+      write('Initalized data object:                 ');
+      if (op^.oflg and $00000040) <> 0 then writeln('Y') else writeln('N');
+      write('Uninitalized data object:               ');
+      if (op^.oflg and $00000080) <> 0 then writeln('Y') else writeln('N');
+      write('Object is discardable:                  ');
+      if (op^.oflg and $02000000) <> 0 then writeln('Y') else writeln('N');
+      write('Object must not be cached:              ');
+      if (op^.oflg and $04000000) <> 0 then writeln('Y') else writeln('N');
+      write('Object is not pageable:                 ');
+      if (op^.oflg and $08000000) <> 0 then writeln('Y') else writeln('N');
+      write('Object is shared:                       ');
+      if (op^.oflg and $10000000) <> 0 then writeln('Y') else writeln('N');
+      write('Executable object:                      ');
+      if (op^.oflg and $20000000) <> 0 then writeln('Y') else writeln('N');
+      write('Readable object:                        ');
+      if (op^.oflg and $40000000) <> 0 then writeln('Y') else writeln('N');
+      write('Writeable object:                       ');
+      if (op^.oflg and not $7fffffff {$80000000}) <> 0 then
+         writeln('Y') else writeln('N');
+      op := op^.next
+
+   end
+
+end;
+
+{ find object by RVA }
+
+function fndrva(rva: integer): objptr;
+
+var op, fp: objptr; { pointers for objects }
+
+begin
+
+   { find object corresponding to the import section }
+   fp := nil; { clear target object }
+   op := objlst; { index top of object list }
+   while op <> nil do begin
+
+      { we find any section even if it is zero length }
+      if (rva >= op^.rva) and (rva <= (op^.rva+op^.vsiz)) then
+         fp := op; { found it, set }
+      op := op^.next { next entry }
+
+   end;
+   if fp = nil then error(einvffm); { does not link up to an object, bad }
+   fndrva := fp { return result }
+
+end;
+
+{*******************************************************************************
+
+Find physical address from RVA
+
+Given an RVA, finds the object that the RVA exists within, then finds the net
+offset address in the file from that.
+
+*******************************************************************************}
+
+function fndoff(rva: integer): integer;
+
+var op: objptr; { pointer for object }
+
+begin
+
+   op := fndrva(rva); { find the object containing the RVA }
+   
+   fndoff := rva-(op^.rva-op^.poff)
+
+end;
+
+{*******************************************************************************
+
+Print import table
+
+  Well, microsoft's documentation is WILDLY wrong about the format of
+  the inport section. What it really looks like is this. The import section
+  will be in the object that you can find by matching the RVA from the
+  header to the RVA of each object, then the object header tells you
+  where it lives in the file. The format of the import section is:
+
+     -------------------------
+     | Import dll descriptor |
+     -------------------------
+     | Import dll descriptor |
+     -------------------------
+     | Import dll descriptor |
+     ~                       ~
+     ~                       ~
+     | Import dll descriptor |
+     -------------------------
+     | 0 (32 bits)           |
+     -------------------------
+     | dll label list        |
+     -------------------------
+     | 0 (32 bits)           |
+     -------------------------
+     | dll label list        |
+     -------------------------
+     | 0 (32 bits)           |
+     ~                       ~
+     ~                       ~
+     | dll label list        |
+     -------------------------
+     | 0 (32 bits)           |
+     -------------------------
+     | Hint-name entry       |
+     -------------------------
+     | Hint-name entry       |
+     ~                       ~
+     ~                       ~
+     | Hint-name entry       |
+     -------------------------
+     
+  The import dll descriptor looks like:
+
+     0:  RVA pointer to dll label list (32)
+     4:  Date/time stamp (32)
+     8:  Major/minor revision ($ffffffff for any revision)
+     12: RVA pointer to dll name string (32)
+     16: I don't know what the hell this is
+
+   The dll label list is simply a zero terminated list of 32 bit RVA pointers
+   to hint-name entries.
+   The format of a hint-name entry is:
+
+     0: Hint (16)
+     2: Name, zero terminated
+
+*******************************************************************************}
+
+procedure prtimp;
+
+label exit; { exit procedure }
+
+var w:      integer;
+    op:     objptr;  { pointer for object }
+    fwd:    integer; { forwarder chain }
+    chs:    integer; { "characteristics" }
+    name:   integer; { dll name RVA }
+    fthunk: integer; { "first thunk" }
+    hint:   integer; { "hint" }
+    dllno:  integer; { dll sequence number }
+    ordin:  boolean; { ordinal flag }
+    i:      integer;
+    b:      byte;
+
+begin
+
+   op := fndrva(import); { index object entry }
+   if op^.vsiz = 0 then goto exit; { object is empty }
+   writeln;
+   writeln('Imports:');
+   dllno := 0; { set dll offset number }
+   repeat { read dll sections }
+
+      position(exefil, fndoff(import)+dllno*20+1); { position to import directory }
+      readdwd(exefil, chs); { get "characteristics" }
+      if chs <> 0 then begin { not end of section }
+
+         readdwd(exefil, w); { discard date/time stamp }
+         readdwd(exefil, fwd); { get forwarder chain }
+         readdwd(exefil, name); { get name rva }
+         readdwd(exefil, fthunk); { get "first thunk" }
+         { to find the RVA's in the table, we must find their
+           relative offset to the object they are in, then add
+           that to the file offset }
+         position(exefil, fndoff(name)+1); { seek to module name }
+         writeln;
+         write('Target name:                            ');
+         repeat { print module name }
+
+            read(exefil, b); { get a character }
+            if b <> 0 then write(chr(b)) { print }
+
+         until b = 0; { until end of string } 
+         writeln;
+         { now dump the import list. this code comes from Schulman, because
+           the Microsoft documentation is wildly incorrect }
+         i := 0; { clear entry counter }
+         writeln;
+         writeln('Symbols:');
+         writeln;
+         repeat { import entries }
+
+            { print import table addresses ? }
+            position(exefil, fndoff(fthunk)+i*4+1); { seek to thunk array }
+            readdwd(exefil, w);
+            if w <> 0 then begin
+
+               write('$');
+               prthex(8, w);
+               write(' ')
+
+            end;
+            { print name table entries }
+            position(exefil, fndoff(chs)+i*4+1); { seek to thunk array }
+            { pull in the next value expecting that it might be
+              negative. The high bit is a flag }
+            ordin := false; { set default not ordinal }
+            readdwd(exefil, w); { get thunk }
+            if w < 0 then begin { its an ordinal }
+
+               w := w and $7fffffff; { remove high bit }
+               ordin := true { flag ordinal }
+
+            end;
+            if w <> 0 then begin { not end of table }
+
+               if ordin then begin
+
+                  write('ord ');
+                  prthex(4, w and $ffff);
+                  writeln(' (', w and $ffff:1, ')')
+
+               end else begin
+
+                  position(exefil, fndoff(w)+1); { seek to thunk array }
+                  readwrd(exefil, hint); { get "hint" }
+                  prthex(4, hint);
+                  write(' (', hint:1, ') '); { output }
+                  if hint < 10000 then write(' ');
+                  if hint < 1000 then write(' ');
+                  if hint < 100 then write(' ');
+                  if hint < 10 then write(' ');
+                  repeat { print name }
+
+                     read(exefil, b); { get label character }
+                     if b <> 0 then write(chr(b)) { output }
+
+                  until b = 0; { until label end }
+                  writeln
+            
+               end
+
+            end;
+            i := i+1 { next entry }
+
+         until w = 0
+
+      end;
+      dllno := dllno+1 { next dll section }
+
+   until chs = 0 { no more dlls }
+
+end;
+
+{*******************************************************************************
+
+Print the export table
+
+*******************************************************************************}
+
+procedure prtexp;
+
+label exit; { exit procedure }
+
+type expptr = ^expnam; { export name entry pointer }
+     expnam = record
+
+        nam:  pstring;    { symbol name }
+        nrva: integer; { RVA for symbol name (used while loading) }
+        ordn: integer; { ordinal number }
+        rva:  integer; { rva }
+        next: expptr   { next entry }
+
+     end;
+
+var dir:    record { export header }
+
+       flags: integer; { export flags }
+       tdat:  integer; { date/time }
+       rev:   integer; { user version }
+       nrva:  integer; { name RVA }
+       bord:  integer; { ordinal base }
+       eatc:  integer; { EAT count }
+       namc:  integer; { name count }
+       atrva: integer; { address table RVA }
+       ntrva: integer; { name table RVA }
+       otrva: integer; { ordinal table RVA }
+       slist: expptr   { export symbol list }
+
+    end;
+    sp:     expptr; { export symbol pointer }
+    sc:     integer; { symbol count }
+    ords:   array [1..10000] of integer; { ordinal holding }
+    rvas:   array [1..10000] of integer; { name rvas }
+    oi:     0..1000; { index for ordinal array }
+    symbuf: labt; { label holding }
+    op:     objptr;  { pointer for object }
+    maxlen: 0..maxlab;
+    i:      integer;
+
+function fndord(o: integer) { ordinal to find }
+               : integer;   { index of ordinal found }
+
+var i: 1..1000; { index for ordinals }
+    r: 0..1000; { index for found ordinal }
+
+begin
+
+   r := 0; { set not found }
+   { find ordinal and set status }
+   for i := 1 to dir.namc do if ords[i] = o then r := i;
+   fndord := r { set status }
+
+end;
+  
+begin
+
+   op := fndrva(export); { index object entry }
+   if op^.vsiz = 0 then goto exit; { object is empty }
+   writeln;
+   writeln('Exports:');
+   writeln;
+   position(exefil, fndoff(export)+1); { position to export directory }
+   { load export header }
+   readdwd(exefil, dir.flags); { get flags }
+   readdwd(exefil, dir.tdat); { get date/time }
+   readdwd(exefil, dir.rev); { get user version }
+   readdwd(exefil, dir.nrva); { get name RVA }
+   readdwd(exefil, dir.bord); { get ordinal base }
+   readdwd(exefil, dir.eatc); { get EAT count }
+   readdwd(exefil, dir.namc); { get name count }
+   readdwd(exefil, dir.atrva); { get address table RVA }
+   readdwd(exefil, dir.ntrva); { get name table RVA }
+   readdwd(exefil, dir.otrva); { get ordinal table RVA }
+   dir.slist := nil; { clear symbols list }
+   { create export symbols, including anonymous }
+   for sc := 1 to dir.eatc do begin
+
+      new(sp); { get a symbol entry }
+      sp^.nam := nil; { clear label }
+      sp^.next := dir.slist; { insert to list }
+      dir.slist := sp;
+      sp^.rva := 0 { clear rva }
+
+   end;
+   { load ordinals }
+   position(exefil, fndoff(dir.otrva)+1);
+   for i := 1 to dir.namc do readwrd(exefil, ords[i]);
+   { load symbol rvas }
+   position(exefil, fndoff(dir.ntrva)+1);
+   for i := 1 to dir.namc do readdwd(exefil, rvas[i]);
+   { assign ordinals to symbols }
+   sp := dir.slist; { index 1st symbol }
+   for i := 1 to dir.eatc do begin
+
+      sp^.ordn := i-1; { place ordinal number }
+      oi := fndord(i-1); { find corresponding ordinal }
+      if oi <> 0 then sp^.nrva := rvas[oi];
+      sp := sp^.next { next symbol }
+
+   end;
+   { load symbols }
+   maxlen := 0; { clear maximum length }
+   sp := dir.slist; { index 1st symbol }
+   for sc := 1 to dir.eatc do begin { read symbols }
+
+      if sp = nil then error(einvffm);
+      if sp^.nrva <> 0 then begin { name exists }
+
+         position(exefil, fndoff(sp^.nrva)+1); { seek to name }
+         clears(symbuf); { clear symbol buffer }
+         i := 1; { set 1st label character }
+         repeat { get next symbol character }
+
+            read(exefil, b); { get a character }
+            if b <> 0 then begin { symbol character }
+
+               if i > maxlab then error(edsymtl); { overflow }
+               symbuf[i] := chr(b); { place character }
+               i := i+1 { next character }
+
+            end
+
+         until b = 0; { until end of string } 
+         copysp(sp^.nam, symbuf); { place symbol }
+         if i > maxlen then maxlen := i { set new max }
+
+      end;
+      sp := sp^.next { next symbol entry }
+
+   end;
+   { load export addresses }
+   position(exefil, fndoff(dir.atrva)+1);
+   sp := dir.slist; { index 1st symbol }
+   for i := 1 to dir.eatc do begin { read addresses }
+
+      if sp = nil then error(einvffm);
+      readdwd(exefil, sp^.rva); { get the RVA }
+      sp := sp^.next { next symbol }
+
+   end;
+   { print module name }
+   position(exefil, fndoff(dir.nrva)+1);
+   write('Module name:                            ');
+   repeat { print module name }
+
+      read(exefil, b); { get a character }
+      if b <> 0 then write(chr(b)) { print }
+
+   until b = 0; { until end of string } 
+   writeln;
+   write('Export flags:                           $'); prthex(8, dir.flags); 
+   writeln;
+   write('Date/time stamp:                        $'); prthex(8, dir.tdat);
+   writeln;
+   writeln('User version:                           ', dir.rev mod 65536:1,
+           '.', dir.rev div 65536:1);
+   writeln('Ordinal base:                           ', dir.bord:1);
+   writeln('EAT entry count:                        ', dir.eatc:1);
+   writeln('Name pointer count:                     ', dir.namc:1);
+   writeln;
+   writeln('Symbols:');
+   writeln;
+   sp := dir.slist; { index top symbol }
+   while sp <> nil do begin { print symbols }
+
+      write(sp^.nam^); { write name }
+      for i := max(sp^.nam^) to maxlen do write(' '); { pad it }
+      write(' ', sp^.ordn+dir.bord:5, ' '); { print ordinal }
+      prthex(8, sp^.rva); { print RVA }
+      writeln; { next line }
+      sp := sp^.next { next symbol }
+
+   end;
+
+   exit: { exit procedure }
+   
+end;
+
+{******************************************************************************
+
+Find named object
+
+Finds if an object exists by name.
+
+******************************************************************************}
+
+function fndobj(view n: objlab): objptr;
+
+
+var op: objptr; { pointer for object list }
+    fop: objptr; { found object }
+
+function matstr(view a, b: objlab): boolean;
+
+var i:     integer;
+    match: boolean;
+
+begin
+
+   match := true;
+   for i := 1 to 8 do
+      if (a[i] <> b[i]) and not ((a[i] = ' ') and (b[i] = chr(0))) then
+         match := false;
+   matstr := match
+
+end;
+
+begin
+
+   fop := nil; { set no object found }
+   op := objlst; { index top of objects list }
+   while op <> nil do begin { objects }
+    
+      if matstr(n, op^.name) then fop := op; { found the object }
+      op := op^.next { next object }
+
+   end;
+   fndobj := fop { return match }
+
+end;
+
+{******************************************************************************
+
+Dump COFF symbol table
+
+Dumps a symbol table in the COFF format, as used by some Microsoft debuggers.
+The format of the COFF symbols is a list of symbol attribute entries, followed
+by a string table of zero terminated strings.
+The offset and number of symbol entries is given in the header, and stored in
+globals.
+The format of each symbol entry is:
+
+00: 32 bit Long symbol flag, or first 4 characters of name.
+04: 32 bit Symbol string offset, or second 4 characters of name.
+08: 32 bit value.
+12: 16 bit section.
+14: 16 bit type.
+16: 8 bit storage class.
+17: 8 bit number of aux symbols.
+
+The way we handle aux symbols is to stuff them in chains onto the head symbol.
+What you do with them after that is a mystery to me, they don't have valid
+labels, so we don't print them.
+
+******************************************************************************}
+   
+procedure dumpcoffs;
+
+type symptr = ^symbol; { pointer to symbol entry }
+     symbol = record { symbol entry }
+
+        next: symptr;  { next entry }
+        loc:  integer; { location of string }
+        str:  pstring; { contents of symbol string }
+        val:  integer; { value of symbol }
+        sec:  integer; { section }
+        typ:  integer; { type of symbol }
+        sto:  byte;    { storage class }
+        aux:  byte;    { number of aux symbols }
+        auxp: symptr   { auxillary symbols chain }
+
+     end;
+
+var symtab: symptr;  { symbol table }
+    p:      symptr;  { symbol pointer }
+    sp:     pstring; { string pointer }
+    soff:   integer; { string table offset }
+    bsoff:  integer; { beginning offset of string }
+    fnd:    boolean; { symbol entry found flag }
+    lab:    packed array [1..8] of char; { short label save }
+    caux:   integer; { remaining auxillary symbols to chain }
+    paux:   symptr;  { symbol getting the aux chain }
+    w:      integer;
+    i:      integer;
+    x:      integer;
+    b:      byte;
+
+{ place string in storage }
+
+procedure putstr(var sp: pstring);
+
+var buffer: packed array [1..1000] of char; { buffer to hold symbols }
+    i:      1..1000; { index for string }
+    len:    0..1000; { length of string }
+
+begin
+
+   sp := nil; { clear string }
+   if not eof(exefil) then begin { not at file end }
+
+      for i := 1 to 200 do buffer[i] := ' '; { clear the symbol buffer }
+      i := 1; { set 1st character }
+      len := 0; { clear string length }
+      repeat { read symbol characters }
+
+         read(exefil, b); { get next character }
+         soff := soff+1; { next file location }
+         if b <> 0 then begin { place next character in buffer }
+
+            buffer[i] := chr(b);
+            i := i+1;
+            len := len+1
+
+         end
+
+      until b = 0;   
+      if len > 0 then begin { there is a symbol, place in storage }
+
+         new(sp, len); { get a string }
+         for i := 1 to len do sp^[i] := buffer[i] { copy in place }
+
+      end
+
+   end
+   
+end;
+    
+begin
+
+   position(exefil, cofsym+1); { position to start of symbols }
+   writeln;
+   writeln('Number of symbols: ', cofnum);
+   writeln;
+   symtab := nil; { clear symbols table }
+   caux := 0; { set no auxillaries being chained }
+   paux := nil; { set aux chainer null }
+   for i := 1 to cofnum do begin { read symbol entries }
+
+      new(p); { get a new symbol entry }
+      { treat as short label for first four characters, then decide based
+        on that }
+      w := 0; { clear flag }
+      for x := 1 to 4 do begin
+
+         read(exefil, b); { get next character }
+         w := w+b; { add in }
+         lab[x] := chr(b); { place }
+         
+      end;
+      if w <> 0 then begin { its a short label }
+
+         p^.loc := -1; { flag no symbol string exists }
+         for x := 5 to 8 do begin { read the rest of the label }
+     
+            read(exefil, b); { get next character }
+            lab[x] := chr(b); { place }
+            
+         end;
+         w := 0; { clear label count }
+         { count label characters }
+         for x := 1 to 8 do if lab[x] <> chr(0) then w := w+1;
+         new(sp, w); { allocate a string for that }
+         for x := 1 to w do sp^[x] := lab[x]; { copy to string }
+         p^.str := sp { plant string }
+
+      end else { long label }
+         readdwd(exefil, p^.loc); { get symbol reference }
+      readdwd(exefil, p^.val); { get symbol value }
+      readwrd(exefil, p^.sec); { get section }
+      readwrd(exefil, p^.typ); { get type }
+      read(exefil, p^.sto); { get storage class }
+      read(exefil, p^.aux); { get number of aux symbols }
+      p^.auxp := nil; { clear aux chain }
+      if caux <> 0 then begin { chain to auxillary }
+
+         p^.next := paux^.auxp;
+         paux := p;
+         caux := caux-1 { count down }
+
+      end else begin { insert to table }
+
+         p^.next := symtab;
+         symtab := p;
+
+      end;
+      { start aux chain if indicated }
+      if p^.aux <> 0 then begin
+
+         { if currently working on a chain, error (do not nest) }
+         if caux <> 0 then error(einvsyt);
+         caux := p^.aux; { load count }
+         paux := p { set root }
+
+      end
+      
+   end;
+   soff := 0; { set 1st offset in file }
+   readdwd(exefil, i); { skip length of string table }
+   soff := soff+4;
+   repeat { get symbols }
+
+      bsoff := soff; { remember starting position of string }
+      putstr(sp); { get and plant a string }
+      if sp <> nil then begin { not end of table }
+
+         { find what symbol entry this attaches to }
+         p := symtab; { index top of symbols }
+         fnd := false; { set no symbol found }
+         while p <> nil do begin { traverse }
+
+            if p^.loc = bsoff then begin { found }
+
+               p^.str := sp; { plant string }
+               fnd := true { set we found it }
+
+            end;
+            p := p^.next { next entry }
+
+         end;
+         if not fnd then 
+            writeln('Warning: unassociated symbol ', sp^, ' offset ', bsoff:1);
+
+      end
+   
+   until sp = nil; { null symbol found }
+   writeln('Symbols in symbol table:');
+   writeln;
+   p := symtab; { index top of symbols table }
+   while p <> nil do begin { dump symbols table }
+
+      write('Symbol: ');
+      if p^.str <> nil then begin
+
+         write(p^.str^);
+         for i := 1 to 20-max(p^.str^) do write(' ')
+
+      end else write('<nil>               ');
+      write(' Loc: ');
+      prthex(8, p^.loc);
+      write(' Value: ');
+      prthex(8, p^.val);
+      write(' Sec: ');
+      prthex(4, p^.sec);
+      write(' Type: ');
+      prthex(4, p^.typ);
+      write(' Sto: ');
+      prthex(2, p^.sto);
+      write(' Aux: ');
+      prthex(2, p^.aux);     
+      writeln;
+      p := p^.next
+
+   end;
+
+end;
+
+{******************************************************************************
+
+Dump GCC STABS symbol table
+
+Dumps a symbol table in the STABS format, as used by GCC. The STABS format
+uses two objects, a .stab for symbol information, and a .stabstr area that
+contains actual symbol strings. The first symbol in the table contains a
+special entry with symbol table parameters.
+Format of a .stab entry:
+
+00: 32 bit: Offset of symbol string in .stabstr table.
+04: 8 bit:  Type of symbol.
+05: 8 bit:  Misc info.
+06: 16 bit: Description field.
+08: 32 bit: Symbol value.
+
+The .stabstr object contains a list of zero terminated strings.
+
+******************************************************************************}
+   
+procedure dumpstabs(styp: objptr; { symbol table object }
+                    sstr: objptr); { symbol strings }
+
+type symptr = ^symbol; { pointer to symbol entry }
+     symbol = record { symbol entry }
+
+        next: symptr;  { next entry }
+        loc:  integer; { location of string }
+        str:  pstring; { contents of symbol string }
+        typ:  byte;    { type of symbol }
+        misc: byte;    { misc }
+        desc: integer; { description }
+        val:  integer  { value of symbol }
+
+     end;
+
+var symtab: symptr;  { symbol table }
+    numsym: integer; { number of symbols }
+    p:      symptr;  { symbol pointer }
+    sp:     pstring; { string pointer }
+    soff:   integer; { string table offset }
+    bsoff:  integer; { beginning offset of string }
+    fnd:    boolean; { symbol entry found flag }
+    i:      integer;
+    b:      byte;
+
+{ place string in storage }
+
+procedure putstr(var sp: pstring);
+
+var buffer: packed array [1..1000] of char; { buffer to hold symbols }
+    i:      1..1000; { index for string }
+    len:    0..1000; { length of string }
+    b:      byte;
+
+begin
+
+   for i := 1 to 200 do buffer[i] := ' '; { clear the symbol buffer }
+   i := 1; { set 1st character }
+   len := 0; { clear string length }
+   repeat { read symbol characters }
+
+      read(exefil, b); { get next character }
+      soff := soff+1; { next file location }
+      if b <> 0 then begin { place next character in buffer }
+
+         buffer[i] := chr(b);
+         i := i+1;
+         len := len+1
+
+      end
+
+   until b = 0;   
+   sp := nil; { clear string }
+   if len > 0 then begin { there is a symbol, place in storage }
+
+      new(sp, len); { get a string }
+      for i := 1 to len do sp^[i] := buffer[i] { copy in place }
+
+   end
+   
+end;
+    
+begin
+
+   position(exefil, styp^.poff+1); { position to start of STABS }
+   { read symbol file header }
+   readdwd(exefil, i); { skip source file }
+   read(exefil, b); { skip type }
+   read(exefil, b); { skip other }
+   readwrd(exefil, numsym); { get number of symbols }
+   readdwd(exefil, i); { skip total string sizes }
+   writeln;
+   writeln('Number of symbols: ', numsym);
+   writeln;
+   symtab := nil; { clear symbols table }
+   for i := 1 to numsym do begin { read symbol entries }
+
+      new(p); { get a new symbol entry }
+      readdwd(exefil, p^.loc); { get symbol reference }
+      read(exefil, p^.typ); { get type }
+      read(exefil, p^.misc); { get misc }
+      readwrd(exefil, p^.desc); { get description }
+      readdwd(exefil, p^.val); { get symbol value }
+      { insert to table }
+      p^.next := symtab;
+      symtab := p
+      
+   end;
+   position(exefil, sstr^.poff+1); { position to start of strings }
+   soff := 0; { set 1st offset in file }
+   read(exefil, b); { read and discard starting zero }
+   soff := soff+1; { next }
+   { skip source file string }
+   repeat read(exefil, b); soff := soff+1 until b = 0; { skip source file string }
+   { read symbols. At the moment, we assume the strings table to be terminated
+     by a null string (0), but since I cannot confirm that in documentation,
+     we need to add a check for passing the end of the object section. }
+   repeat { get symbols }
+
+      bsoff := soff; { remember starting position of string }
+      putstr(sp); { get and plant a string }
+      if sp <> nil then begin { not end of table }
+
+         { find what symbol entry this attaches to }
+         p := symtab; { index top of symbols }
+         fnd := false; { set no symbol found }
+         while p <> nil do begin { traverse }
+
+            if p^.loc = bsoff then begin { found }
+
+               p^.str := sp; { plant string }
+               fnd := true { set we found it }
+
+            end;
+            p := p^.next { next entry }
+
+         end;
+         if not fnd then 
+            writeln('Warning: unassociated symbol ', sp^, ' offset ', bsoff:1);
+
+      end
+   
+   until sp = nil; { null symbol found }
+   writeln('Symbols in symbol table:');
+   writeln;
+   p := symtab; { index top of symbols table }
+   while p <> nil do begin { dump symbols table }
+
+      write('Symbol: ');
+      if p^.str <> nil then begin
+
+         write(p^.str^);
+         for i := 1 to 20-max(p^.str^) do write(' ')
+
+      end else write('<nil>               ');
+      { write(' Loc: ');
+        prthex(8, p^.loc); }
+      write(' Type: ');
+      prthex(2, p^.typ);
+      write(' Misc: ');
+      prthex(2, p^.misc);
+      write(' Desc: ');
+      prthex(4, p^.desc);
+      write(' Value: ');
+      prthex(8, p^.val);
+      writeln;
+      p := p^.next
+
+   end;
+
+end;
+
+begin
+
+   objlst := nil; { clear object list }
+   objend := nil; { set no end }
+   fopnsrc := false; { set source file not open }
+   { open command line and get source file }
+   openpar(cmdhan); { open parser }
+   openfil(cmdhan, '_command', 250); { open command line level }
+   filchr(valfch); { get the filename valid characters }
+   parfil(cmdhan, dmpfil, false, err); { get a file }
+   skpspc(cmdhan); { skip spaces }
+   if not endlin(cmdhan) then error(einvcmd); { invalid command line }
+   brknamp(dmpfil, p, n, e); {break down filename }
+   if lenp(e) > 0 then begin { extention supplied }
+
+      if not exists(dmpfil) then error(efilnf)
+
+   end else begin { fit extentions }
+
+      copyp(e, 'exe'); { try .exe extention }
+      maknamp(dmpfil, p, n, e);
+      if not exists(dmpfil) then begin { try .dll extention }
+
+         copyp(e, 'dll'); { try .exe extention }
+         maknamp(dmpfil, p, n, e);
+         if not exists(dmpfil) then error(efilnf)
+
+      end
+
+   end;
+   assign(exefil, dmpfil); { open the dump file }
+   reset(exefil);
+   fopnsrc := true; { set source file is open }
+   readwrd(exefil, w);
+   if w <> $5a4d then error(einvffm); { must be 'MZ' (.exe magic number) }
+   for i := 1 to (15+4+10)*2 do read(exefil, b); { index new .exe header offset }
+   readdwd(exefil, w); { get offset }
+   position(exefil, w+1); { go to it }
+   readdwd(exefil, w); { check 'PE<0><0>' signiture }
+   if w <> $00004550 then error(einvffm); { invalid file format }
+   writeln; { space off }
+   readwrd(exefil, w); { get the machine type }
+   write('Machine:                                ');
+   if w = $0000 then writeln('Unknown')
+   else if w = $014c then writeln('I80386')
+   else if w = $014d then writeln('I80486')
+   else if w = $014e then writeln('I80586')
+   else if w = $0162 then writeln('R2000/R3000')
+   else if w = $0163 then writeln('R6000')
+   else if w = $0166 then writeln('R4000')
+   else if w = $0184 then writeln('Alpha AXP')
+   else writeln('Undefined (could be from later version of PE specification)');
+   readwrd(exefil, objects); { get the number of objects }
+   write('Number of objects:                      $'); prthex(8, objects);
+   writeln(' (', objects:1, ')');
+   readdwd(exefil, w); { date/time }
+   write('Date/time stamp:                        $'); prthex(8, w); 
+   writeln;
+   readdwd(exefil, cofsym); { symbols pointer }
+   write('Symbols pointer:                        $'); prthex(8, cofsym); 
+   writeln;
+   readdwd(exefil, cofnum); { symbols count }
+   write('Number of symbols:                      $'); prthex(8, cofnum);
+   writeln(' (', cofnum:1, ')');
+   readwrd(exefil, hdrsiz); { get NT header size }
+   write('NT header size:                         $'); prthex(8, hdrsiz);
+   writeln(' (', hdrsiz:1, ')');
+   readwrd(exefil, w); { get flags }
+   write('Relocation info stripped from file      ');
+   if (w and $0001) <> 0 then writeln('Y') else writeln('N');
+   write('File is executable                      ');
+   if (w and $0002) <> 0 then writeln('Y') else writeln('N');
+   write('Line numbers stripped from file         ');
+   if (w and $0004) <> 0 then writeln('Y') else writeln('N');
+   write('Local symbols stripped from file        ');
+   if (w and $0008) <> 0 then writeln('Y') else writeln('N');
+   write('16 bit word machine                     ');
+   if (w and $0040) <> 0 then writeln('Y') else writeln('N');
+   write('Bytes of machine word are reversed      ');
+   if (w and $0080) <> 0 then writeln('Y') else writeln('N');
+   write('32 bit word machine                     ');
+   if (w and $0100) <> 0 then writeln('Y') else writeln('N');
+   write('Debugging info stripped from file       ');
+   if (w and $0200) <> 0 then writeln('Y') else writeln('N');
+   write('System file                             ');
+   if (w and $1000) <> 0 then writeln('Y') else writeln('N');
+   write('File is a DLL                           ');
+   if (w and $2000) <> 0 then writeln('Y') else writeln('N');
+   write('Bytes of machine word are reversed      ');
+   if (w and $8000) <> 0 then writeln('Y') else writeln('N');
+   readwrd(exefil, w); { get nt header magic }
+   if w <> $10b then error(einvffm); { invalid file format }
+   readwrd(exefil, w); { get DB ver }
+   writeln('linker version:                         ', w mod 256:1, '.', w div 256:1);
+   readdwd(exefil, w); { get size of code }
+   write('Size of code:                           $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { get size of initalized data }
+   write('Size of initalized data:                $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { get size of uninitalized data }
+   write('Size of uninitalized data:              $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { get entry point }
+   write('Entry point:                            $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { get base of code }
+   write('Base of code:                           $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { get base of data }
+   write('Base of data:                           $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { get base }
+   write('Image base:                             $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { get object align }
+   write('Object align:                           $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { get file align }
+   write('File align:                             $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { get OS ver }
+   writeln('OS version:                             ', w mod 65536:1, '.', w div 65536:1);
+   readdwd(exefil, w); { get user ver }
+   writeln('User version:                           ', w mod 65536:1, '.', w div 65536:1);
+   readdwd(exefil, w); { get subsystem ver }
+   writeln('Subsystem version:                      ', w mod 65536:1, '.', w div 65536:1);
+   readdwd(exefil, w); { res }
+   readdwd(exefil, w); { image size }
+   write('Image size:                             $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { header size }
+   write('header size:                            $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { file checksum }
+   write('File checksum:                          $'); prthex(8, w); writeln;
+   readwrd(exefil, w); { subsystem type }
+   write('Subsystem type:                         ');
+   if w = $0000 then writeln('Unknown')
+   else if w = $0001 then writeln('Native')
+   else if w = $0002 then writeln('Windows GUI')
+   else if w = $0003 then writeln('Windows Character')
+   else if w = $0005 then writeln('OS/2 Character')
+   else if w = $0007 then writeln('Posix Character')
+   else writeln('Undefined (could be from later version of PE specification)');
+   readwrd(exefil, w); { DLL flags }
+   write('Per-Process Library Initalization:      ');
+   if (w and $0001) <> 0 then writeln('Y') else writeln('N');
+   write('Per-Process Library Termination:        ');
+   if (w and $0002) <> 0 then writeln('Y') else writeln('N');
+   write('Per-Thread Library Initalization:       ');
+   if (w and $0004) <> 0 then writeln('Y') else writeln('N');
+   write('Per-Thread Library Termination:         ');
+   if (w and $0008) <> 0 then writeln('Y') else writeln('N');
+   readdwd(exefil, w); { stack reserve size }
+   write('Stack reserve size:                     $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { stack commit size }
+   write('Stack commit size:                      $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { heap reserve size }
+   write('Heap reserve size:                      $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { heap commit size }
+   write('Heap commit size:                       $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { get loader flags }
+   write('Loader flags:                           $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { interesting va/sizes }
+   write('RVA/size table length:                  $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, export); { export table RVA }
+   write('Export table RVA:                       $'); prthex(8, export); writeln;
+   readdwd(exefil, w); { total export data size }
+   write('Total export data size:                 $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, import); { import table RVA }
+   write('Import table RVA:                       $'); prthex(8, import); writeln;
+   readdwd(exefil, w); { total import data size }
+   write('Total import data size:                 $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { resource table RVA }
+   write('Resource table RVA:                     $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { total resource data size }
+   write('Total resource data size:               $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { exception table RVA }
+   write('Exception table RVA:                    $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { total exception data size }
+   write('Total exception data size:              $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { security table RVA }
+   write('Security table RVA:                     $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { total security data size }
+   write('Total security data size:               $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { fixup table RVA }
+   write('Fixup table RVA:                        $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { Total fixup data size }
+   write('Total fixup data size:                  $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { debug table RVA }
+   write('Debug table RVA:                        $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { Total debug data size }
+   write('Total debug directories:                $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { image description RVA }
+   write('Image description RVA:                  $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { Total image description data size }
+   write('Total image description data size:      $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { machine specific RVA }
+   write('Machine specific RVA:                   $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { machine specific size }
+   write('Machine specific size:                  $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   readdwd(exefil, w); { thread local storage RVA }
+   write('Thread local storage RVA:               $'); prthex(8, w); writeln;
+   readdwd(exefil, w); { total thread local storage size }
+   write('Total thread local storage size:        $'); prthex(8, w);
+   writeln(' (', w:1, ')');
+   { skip the remaining bytes in the header }
+   for i := 1 to hdrsiz-hdrfix do read(exefil, b);
+   lodobj(objects); { load the object directory }
+   prtobj; { print the object table }
+   if import <> 0 then prtimp; { print the import table }
+   if export <> 0 then prtexp; { print the export table }
+   { check for COFF symbols }
+   if cofnum > 0 then begin { COFF symbols exist }
+
+      writeln;
+      writeln('Symbols table format is ''COFF''');
+      dumpcoffs
+
+   end;
+   { check for GCC stabs symbol table information }
+   stbobj := fndobj('.stab   ');
+   stsobj := fndobj('.stabstr');
+   if stbobj <> nil then begin
+
+      if stsobj = nil then error(einvsyt); { invalid symbols table }
+      writeln;
+      writeln('Symbols table format is GCC ''STABS''');
+      dumpstabs(stbobj, stsobj) { dump the table }
+
+   end;
+   
+   99:; { abort program }
+
+   if fopnsrc then close(exefil) { close input file }
+
+end.

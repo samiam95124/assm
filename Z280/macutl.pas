@@ -1,0 +1,584 @@
+{*******************************************************************************
+*                                                                              *
+*                      MACHINE SPECIFIC UTILTITIES MODULE                      *
+*                                                                              *
+*                       Copyright (C) 2007 S. A. Moore                         *
+*                            All rights reserved                               *
+*                                                                              *
+* PURPOSE:                                                                     *
+*                                                                              *
+* Gives all the machine specific utilities for this assembler. The general     *
+* assembler module performs calls to the machine specific section via this     *
+* module. The following interface calls exist:                                 *
+*                                                                              *
+* procedure mexpr(var sym: symptr); forward;                                   *
+* procedure msexpr(var sym: symptr); forward;                                  *
+* procedure mterm(var sym: symptr); forward;                                   *
+* procedure mfactor(var sym: symptr); forward;                                 *
+*                                                                              *
+* All of these routines handle parsing of various expression constructs,       *
+* the expression, simple expression, term and factor levels. The reason the    *
+* main assembler module calls these routines is that it allows the machine     *
+* specific module to implement special expression constructs for the           *
+* particular assembly language being implemented. After performing special     *
+* processing, the calls are sent back to the main assembler calls which        *
+* the same purpose.                                                            *
+*                                                                              *
+* We also implement several machine specific support functions here.           *
+*                                                                              *
+*******************************************************************************}
+
+module macutl(output);
+
+uses asdef,  { generic definitions }
+     common, { global variables }
+     utl,    { generic utilities }
+     macdef, { processor specific definitions }
+     opcdef, { opcode definitions }
+     opcini; { initalize reserved table }
+
+procedure inidep; forward; { initalize processor module }
+function chkcst(s: symptr): boolean; forward; { check constant }
+procedure regcod(var reg: regc); forward; { process register code }
+procedure concod(var cc: condc); forward; { process condition code }
+procedure parcod(var p: regc; var s: symptr); forward; { parse parameter }
+function fndres(var s: string) : opcodet; forward; { find reserved word }
+procedure mexpr(var sym: symptr); forward; { parse expression }
+procedure msexpr(var sym: symptr); forward; { parse simple expression }
+procedure mterm(var sym: symptr); forward; { parse term }
+procedure mfactor(var sym: symptr); forward; { parse factor }
+
+private
+
+{*******************************************************************************
+
+Initalize CPU dependent module
+
+*******************************************************************************}
+
+procedure inidep;
+
+var i: opcodet;
+
+begin
+
+   { output sign - on }
+   writeln;
+   writeln('Z280 assembler vs. 1.2.00 Copyright (C) 2006 S. A. Moore');
+   writeln;
+   alignment := cpualign; { set CPU alignment }
+   bigend := cpubigend; { set CPU endian status }
+   wrdsiz := cpuwrdsiz; { set CPU word size }
+   { clear and initalize reserved table }
+   for i := opnull to opdefdw do begin
+
+      copy(ressym[i].reslab, '');
+      ressym[i].reschn := opnull
+
+   end;
+   resini { initalize reseved symbols }
+
+end;
+
+{*******************************************************************************
+
+Find reserved word
+
+Finds the reserved code corresponding to a given label. The hash value is found
+for the label, then a sequential search of the entry list for a match with the
+label. The result is a code equvalent to the index for the matching label, or 0
+if none is found. See inires for more reserved table details.
+
+*******************************************************************************}
+
+function fndres(var s: string) { label to find }
+                :opcodet;      { resulting opcode }
+
+var i: opcodet; { reserved table index }
+    b: boolean;
+    { free variant to convert opcodes to integers }
+    r: record case boolean of
+
+          false: (a: opcodet);
+          true:  (b: integer)
+
+       end;
+
+begin
+
+   r.b := hash(s, ord(pred(oplast))); { find hash value }
+   i := r.a;
+   { traverse chain at hash entry looking for a match }
+   b := compp(s, ressym[i].reslab); { check equal }
+   while not b and (ressym[i].reschn <> opnull) do begin { traverse }
+
+      i := ressym[i].reschn; { next entry }
+      b := compp(s, ressym[i].reslab) { check equal }
+
+   end;
+   { check match was found }
+   if not b then i := opnull;
+   fndres := i { return resulting index }
+
+end;
+
+{*******************************************************************************
+
+Parse parameter
+
+Parses a parameter, and returns both the type code and any expression tree that
+is required. All Z280 access modes are allowed for.
+
+Parses the following:
+
+     r     - Register.
+     x     - Immediate.
+     (r)   - Indirect register.
+     (r+d) - Indirect register displacement.
+     <xx>  - Relative address.
+
+Handling of displacements: Displacements can come in either byte or word form,
+and are sometimes reducable to 0. This routine tries to use the minimum
+displacement possible, which usually can only be determined if the displacement
+is absolute. Otherwise, word must be used, since that is the only 'universal'
+format. The exception is when 'byte' or 'word' appears before the displacement,
+forcing a certain evaluation.
+
+*******************************************************************************}
+
+procedure parcod(var p: regc; var s: symptr);
+
+var ts: symptr;  { symbol temp }
+    t:  regc;    { parameter type temp }
+    b:  boolean; { byte displacement demand }
+    w:  boolean; { word displacement demand }
+    sn: boolean; { sign state }
+
+begin
+
+   skpspc; { skip spaces }
+   if chkchr = '(' then begin { indirect register }
+
+      b := false; { set no byte demand }
+      w := false; { set no word demand }
+      getchr; { skip '(' }
+      regcod(p); { parse register }
+      if not (p in [rgnl, rgc, rgbc, rgde, rghl, rgix, rgiy,
+                    rgsp, rgpc]) then prterr(epart); { wrong type }
+      case p of { parameter }
+
+         rgnl:  begin { (xx) }
+
+                   nexpr(s); { get address }
+                   p := rgiad { set (xx) }
+
+                end;
+          rgc:  p := rgic;  { set (c) }
+          rgbc: p := rgibc; { set (bc) }
+          rgde: p := rgide; { set (de) }
+          rghl, rgix, rgiy, rgsp, rgpc: begin
+
+                   if (chkchr = '+') or (chkchr = '-') then begin
+
+                      sn := chkchr = '-'; { save sign state }
+                      getchr; { skip sign }
+                      regcod(t); { check byte/word id }
+                      if t = rgbyt then b := true { byte }
+                      else if t = rgwrd then w := true { word }
+                      else if not(t in [rgnl, rgix, rgiy]) then
+                         prterr(epart); { wrong type }
+                      if ((t = rgix) and (p <> rghl)) or
+                         ((t = rgiy) and (p <> rghl) and (p <> rgix)) or
+                         ((t <> rgnl) and (sn = true)) then
+                            prterr(epart); { wrong type }
+                      if t = rgnl then begin
+
+                         nexpr(s); { parse displacement }
+                         if s^.def and not s^.add and
+                            not s^.vrs then begin
+
+                            { operand is defined, process }
+                            if sn then begin { negate }
+
+                               { this has to be done to enable the
+                                 check for 'byte' or 'word' indicators.
+                                 The '+' or '-' cannot be part of the
+                                 expression }
+                               getsym(ts); { get symbol entry }
+                               ts^.def := true; { set defined }
+                               ts^.add := s^.add; { set same addr }
+                               ts^.vrs := s^.vrs; { set save var }
+                               ts^.val := -s^.val; { negate and place }
+                               if s^.lab = nil then
+                                  putsym(s); { dispose if free }
+                               s := ts; { place operand }
+                               if s^.val <> 0 then
+                                  if ((s^.val <= 127) or
+                                     (s^.val >= 65408)) and
+                                     ((p = rgix) or (p = rgiy)) and
+                                     not w then b := true { set is byte }
+                                  else begin
+
+                                     if b then prterr(epoor); { not possible }
+                                     w := true { set is word }
+
+                                  end
+
+                            end else begin { check }
+
+                               if s^.val <> 0 then
+                                  if (s^.val <= 255) and
+                                     ((p = rgix) or (p = rgiy)) and
+                                     not w then b := true { set is byte }
+                                  else begin
+
+                                     if b then prterr(epoor); { not possible }
+                                     w := true { set is word }
+
+                                  end
+
+                            end;
+                            if not b and not w and (s^.lab = nil) then
+                               putsym(s) { dispose if isn't going to be used }
+
+                         end else if not b then w := true { set word }
+
+                      end
+
+                   end;
+                   if b then case p of { register }
+
+                      rghl, rgsp, rgpc:
+                         prterr(epart); { not possible }
+                      rgix: p := rgiixdb; { (ix+d) }
+                      rgiy: p := rgiiydb  { (iy+d) }
+
+                   end else if w then case p of { word }
+
+                      rghl: p := rgihld; { (hl+dd) }
+                      rgix: p := rgiixd; { (ix+dd) }
+                      rgiy: p := rgiiyd; { (iy+dd) }
+                      rgsp: p := rgispd; { (sp+dd) }
+                      rgpc: p := rgipcd  { (pc+dd) }
+
+                   end else if (p = rghl) and (t = rgix) then
+                      p := rgihlix { (hl+ix) }
+                   else if (p = rghl) and (t = rgiy) then
+                      p := rgihliy { (hl+iy) }
+                   else if (p = rgix) and (t = rgiy) then
+                      p := rgiixiy { (ix+iy) }
+                   else case p of { register }
+
+                      rghl: p := rgihl; { hl }
+                      rgix: p := rgiix; { ix }
+                      rgiy: p := rgiiy; { iy }
+                      rgsp: p := rgisp; { sp }
+                      rgpc: begin
+
+                               { since there exists no ipc mode,
+                                 we invent one }
+                               getsym(s); { get symbol entry }
+                               ts^.def := true; { set defined }
+                               p := rgipcd { set type }
+
+
+                            end
+
+                   end
+
+                end
+
+      end;
+      prcnxt(')', elpexp) { process ')' }
+
+   end else if chkchr = '<' then begin { relative address }
+
+      getchr; { skip '<' }
+      nexpr(s); { parse address }
+      prcnxt('>', erarexp) { process '>' }
+
+   end else begin
+
+      regcod(p); { register or null }
+      if not (p in [rgnl, rga, rgb, rgc, rgd, rge, rgh, rgl, rgixh, rgixl,
+                    rgiyh, rgiyl, rgi, rgr, rgbc, rgde, rghl,
+                    rgix, rgiy, rgsp, rgpc,
+                    rgaf, rgafa, rgusp, rgdehl]) then
+                       prterr(epart); { wrong type }
+      if (p = rgnl) and not endlin then begin { parse immediate }
+
+         nexpr(s); { parse expression }
+         p := rgimm { set type }
+
+      end
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Check symbol constant
+
+Checks if the given symbol is a defined constant.
+
+*******************************************************************************}
+
+function chkcst(s: symptr): boolean;
+
+begin
+
+   chkcst := s^.def and not s^.add and not s^.vrs
+
+end;
+
+{*******************************************************************************
+
+Process Z280 register code
+
+Actually a reserved word checker. Parses one of the following: a, b, c, d, e, h,
+l, i, r, af, bc, de, hl, ix, iy, sp, or af'. The input is checked for any of
+these sequences, and the code for the sequence is returned. If no sequence is
+found, the 'nop' code is returned, and the input position left unchanged.
+Otherwise, the input position will be just past the code.
+
+*******************************************************************************}
+
+procedure regcod(var reg { register return } : regc);
+
+var inpsav : inpinx; { input postion save for backtrack }
+
+begin
+
+   inpsav := cmdrot^.inp; { save current input position }
+   skpspc; { skip input spaces }
+   if alpha(chkchr) then begin { possible register }
+
+      getlab; { get register }
+      if compp(labbuf, 'a') then
+         reg := rga { a }
+      else if compp(labbuf, 'b') then
+         reg := rgb { b }
+      else if compp(labbuf, 'c') then
+         reg := rgc { c }
+      else if compp(labbuf, 'd') then
+         reg := rgd { d }
+      else if compp(labbuf, 'e') then
+         reg := rge { e }
+      else if compp(labbuf, 'h') then
+         reg := rgh { h }
+      else if compp(labbuf, 'l') then
+         reg := rgl { l }
+      else if compp(labbuf, 'i') then
+         reg := rgi { i }
+      else if compp(labbuf, 'r') then
+         reg := rgr { r }
+      else if compp(labbuf, 'af') then
+         reg := rgaf { af }
+      else if compp(labbuf, 'bc') then
+         reg := rgbc { bc }
+      else if compp(labbuf, 'de') then
+         reg := rgde { de }
+      else if compp(labbuf, 'hl') then
+         reg := rghl { hl }
+      else if compp(labbuf, 'ix') then
+         reg := rgix { ix }
+      else if compp(labbuf, 'iy') then
+         reg := rgiy { iy }
+      else if compp(labbuf, 'sp') then
+         reg := rgsp { sp }
+      else if compp(labbuf, 'pc') then
+         reg := rgpc { pc }
+      else if compp(labbuf, 'ixl') then
+         reg := rgixl { ixl }
+      else if compp(labbuf, 'ixh') then
+         reg := rgixh { ixh }
+      else if compp(labbuf, 'iyl') then
+         reg := rgiyl { iyl }
+      else if compp(labbuf, 'iyh') then
+         reg := rgiyh { iyh }
+      else if compp(labbuf, 'pc') then
+         reg := rgpc  { pc }
+      else if compp(labbuf, 'usp') then
+         reg := rgusp { usp }
+      else if compp(labbuf, 'dehl') then
+         reg := rgdehl { dehl }
+      else if compp(labbuf, 'byte') then
+         reg := rgbyt { byte }
+      else if compp(labbuf, 'word') then
+         reg := rgwrd { word }
+      else begin
+
+         reg := rgnl; { set null register }
+         cmdrot^.inp := inpsav { restore input position }
+
+      end
+
+   end else begin
+
+      reg := rgnl; { set null register }
+      cmdrot^.inp := inpsav { restore input postion }
+
+   end;
+   if (reg = rgaf) and (chkchr = '''') then begin { af' }
+
+      getchr; { next character }
+      reg := rgafa { set af' }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Process next condition code
+
+A condition code is one of the following:
+
+     z  - zero
+     nz - not zero
+     c  - carry
+     nc - no carry
+     nv - no overflow
+     po - parity odd
+     v  - overflow
+     pe - parity even
+     p  - positive
+     m  - minus
+     s  - sign
+     ns - no sign
+
+The input is checked for any of these sequences. It's code is returned, or 'nop'
+if none is found. If none is found, the input will be returned to the state it
+was found.
+
+*******************************************************************************}
+
+procedure concod(var cc { condition code ret } : condc);
+
+var inpsav : inpinx; { input position save }
+
+begin
+
+   inpsav := cmdrot^.inp; { save current input position }
+   skpspc; { skip spaces }
+   if alpha(chkchr) then begin { possible code }
+
+      getlab; { get code string }
+      { not zero }
+      if compp(labbuf, 'nz        ') then cc := ccnz
+      { zero }
+      else if compp(labbuf, 'z         ') then cc := ccz
+      { no carry }
+      else if compp(labbuf, 'nc        ') then cc := ccnc
+      { carry }
+      else if compp(labbuf, 'c         ') then cc := ccc
+      { no overflow }
+      else if compp(labbuf, 'nv        ') then cc := ccpo
+      { parity odd }
+      else if compp(labbuf, 'po        ') then cc := ccpo
+      { overflow }
+      else if compp(labbuf, 'v         ') then cc := ccpe
+      { parity even }
+      else if compp(labbuf, 'pe        ') then cc := ccpe
+      { positive }
+      else if compp(labbuf, 'p         ') then cc := ccp
+      { minus }
+      else if compp(labbuf, 'm         ') then cc := ccm
+      { sign }
+      else if compp(labbuf, 's         ') then cc := ccm
+      { no sign }
+      else if compp(labbuf, 'ns        ') then cc := ccp
+      else begin
+
+         cc := ccnl; { set null code }
+         cmdrot^.inp := inpsav { restore input position }
+
+      end
+
+   end else begin
+
+      cc := ccnl; { set null code }
+      cmdrot^.inp := inpsav { restore input position }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Parse expression
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+*******************************************************************************}
+
+procedure mexpr(var sym: symptr);
+
+begin
+
+   expri(sym) { pass call to assembler main }
+
+end;
+
+{*******************************************************************************
+
+Parse simple expression
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+*******************************************************************************}
+
+procedure msexpr(var sym: symptr);
+
+begin
+
+   sexpri(sym) { pass call to assembler main }
+
+end;
+
+{*******************************************************************************
+
+Parse term
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+*******************************************************************************}
+
+procedure mterm(var sym: symptr);
+
+begin
+
+   termi(sym) { pass call to assembler main }
+
+end;
+
+{*******************************************************************************
+
+Parse factor
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+*******************************************************************************}
+
+procedure mfactor(var sym: symptr);
+
+begin
+
+   factori(sym) { pass call to assembler main }
+
+end;
+
+begin
+
+   inidep { initalize processor dependent module }
+
+end.

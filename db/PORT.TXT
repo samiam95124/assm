@@ -1,0 +1,95 @@
+                          VIRTUAL PORTS FOR DB SIMULATOR
+
+If not disabled by option, DB will maintain several "virtual ports" for the
+program under simulation. These are addressed by byte I/O operations. In case
+The CPU is memory mapped I/O only, then a default block of addresses will
+serve, changable by option.
+Each virtual port appears as two successive I/O ports (which on some processors
+may be addressed as a word):
+
+   0: Data I/O
+   1: Control I/O
+
+Operation of the port for read an write is simple. You just read from the data
+port or write to the data port. You will automatically read and write
+successive bytes from the port. If a byte is read from the data port and the
+device attached to the port is not ready (the console, for instance), then
+execution will be automatically halted until the device is ready.
+The control port, when read, gives the status for input byte ready. If the
+byte read is 0, an input byte awaits (the device is ready). Otherwise, if
+the byte is not 0, then some problem condition exists or the device is just
+not ready.
+When the control byte is written, the device or file attached to the virtual
+port will be automatically closed, and a sequence of bytes accepted that give
+the name of the device to open next, ie., you write a series of ascii 
+characters giving the name of the file or device desired. A byte of 0
+terminates this operation and opens the file or device. If only a 0 byte is
+written to the control, this is effectively a close operation.
+Note that all bytes < $20 are reserved as operation codes for the port (the
+control characters; 0 is the only such control defined). 
+The format of the status byte returned is:
+
+   Bit
+   7: Unused, allways low.
+   6: Unused, allways low.
+   5: Unused, allways low.
+   4: Unused, allways low.
+   3: Low indicates mid-file, high indicates at end of file.
+   2: Low indicates file open, high indicates not open. If an open operation
+      has just been performed, this typically indicates file not found.
+   1: Unused, allways low.
+   0: Low indicates input byte ready, high indicates not ready.
+
+All the bits set are errors, so that a simple check for 0 indicates if the port
+is functioning or not.
+In the default mode, DB will allow 10 ports as virtual ports, and open the
+first port automatically as the console port, and the second as the printer
+port, and the third as the command file port. Reading and writing the console 
+port will read and write from the screen. Writing to the printer port outputs 
+to the printer. Reading from the command port gives the command line that is
+specified by DB to the program, with a CR-LF at the end of the line, followed
+by the EOF.
+By option, DB can also preopen specified files and assign them to virtual ports
+so that the program can use them without opening them.
+The exact naming conventions of files and devices is left to the operating 
+system that DB runs under, besides a special set of names defined and
+maintained by DB. DB assumes that any file beginning with "_" is a special
+file, and the following such files are defined:
+
+   _console - Is the user console file.
+   _list    - Is the list device file.
+   _command - Is the pseudo-device that allows reading the command line.
+
+For other files, a simple naming convention will allow files to be used on
+virtually any operating system.
+First, use only the alphabetical and numeric characters "a" thru "z", "A" thru 
+"Z", and "0" thru "9". Allways begin the filename with an alphabetical
+character. Never exceed 8 characters for the entire filename (on systems that
+do have a filename limit, any characters after the limit are truncated).
+Files specified this way are disk files, created in the same directory that
+DB is started in, and persist both before and after the file is opened.
+If no file exists by the name, it is created.
+
+OS EMULATION:
+
+Where the target program will exist under an existing OS or other program
+system, the use of DB is typically a two stage process. First, a "runxxx.obj"
+program will be loaded and executed. This program will open the file specified
+for it in the command line and load it into memory, then make all required
+arrangements to translate service calls from the given program to DB virtual
+port calls. The target need not even be in .obj format, since the run program
+can also act as a loader.
+Example: "runcpm.obj" is the cp/m loader/emulator:
+
+   db runcpm target ....
+
+Would first load "runcpm.obj" at address 0 and start it. Runcpm relocates
+itself to the end of memory, formats $0000-$0100 as the cp/m PSP (program
+segment prefix, just like MSDOS), then loads the target.com program to $100
+and executes the program. Each time the target issues a cp/m call, runcpm, 
+now located in high memory, translates the call to an equivalent virtual 
+I/O and executes it. Note that since the system does not rely on MS-DOS
+(cp/m compatible calls) being available, this same sequence works on any
+machine where DB runs.
+
+   

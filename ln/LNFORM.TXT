@@ -1,0 +1,596 @@
+                    OVERVIEW OF LNCUF UNIVERSAL LINKER FORMAT
+
+The "Lncuf" (for Linker Coordinated Universal Format) is a mechanisim for
+passing object files both between stages of program constructors such as
+assemblers, compilers, linkers, etc., and also as a load format for
+operating systems. This is last is possible because a direct image file
+with no imbedded control data suitable for direct load to memory is
+part of the format. 
+Lncuf files are allways kept in two parts:
+
+     .obj
+
+and
+
+     .sym
+
+files. The .obj file is allways an exact image of the program file's code
+being processed, at the last process state. In other words, every byte of
+the program that is DEFINED, will appear as itself, in the right location.
+Bytes that are UNKNOWN in the present link state are undefined, and may
+assume any state. When all bytes of an .obj file are DEFINED, and the
+final link has been processed, the .obj file will contain an exact image of
+the program as it is loaded (and is usually renamed .com, .pgm or other
+executable file type).
+The .sym file is a "meta" file, that contains not only all ascii symbols used
+in the program, but also a complete list of undefined objects and their
+location in the .obj file, plus instructions on how to construct the final
+code, and other data.
+This amounts to a "binary" file system in the sense that two separate files
+(.sym and .obj) files are used to represent the format. 
+This system has it's advantages:
+
+1. Because the "code" side of the format is kept in strict binary image
+format, it directly represents a load module, and also makes it possible
+to easily examine the output code at any stage in the program construction
+process.
+
+2. In many situations, creating the output symbols and the output code files
+separately helps the creating program work. For instance, in assemblers and
+compilers, the symbols for the program are built incrementally while the
+code is being generated, and are not complete at the start of code output.
+This would mean that we must collect symbols internally in a table and
+output them at the end of the output file (or run multiple passes over the
+source file(s)). Since the symbols deck is the FIRST thing the linker must
+see to process the resulting object, the symbols are thus in the wrong
+place in the file, forcing multiple passes over the object file.
+A mixed symbol/object file would also force the linker to hold open ALL
+of it's input files simutaineously, because it must read all symbols decks
+in first before beginning to process the object sections (or again require
+a multiple pass solution).
+
+3. There are uses (such as "image" linking) where only one side of the format
+need be used (symbols only or object only). This means that the processor
+will not have to skip over unwanted data to use the file.
+
+4. Use of the object modules is simplified in the debug mode. The split
+between symbols and object is then natural, with the object side going to
+the operating system as a program load, and the symbols file going to
+the debugger for program analisis.
+
+And the system has disadvantages:
+
+1. The two output files must be kept in "sync". By an error in copying
+or similar problem, it would be possible to create a .sym and .obj that
+do not match, with little or no ability to check this situation.
+
+2. Because the program does not appear as a file unit, a part of it
+can become separated from the other.
+
+Linker "undefined" processing:
+
+The lncuf format is capable of describing not only all addresses and other
+locations that are location dependent, but also ALL the mathematical
+operations that a typical lncuf file generator may perform.
+The reason that this is not commonly done is that not only the operators
+must be passed, but a full description of the expression ordering nessary
+to finish the code must also be passed. The LN format passes these
+descriptions in the format of "expression trees", such as are normal fodder
+of a compiler conversing with it's subsequent passes. In fact, a good book
+on compilers is a good place to study this technique.
+The typical micro assemblers avalible implement only a limited set of
+operators in the linker, so that the need to pass expression constructs
+and conflicts with relocation are avoided.
+The duplication of operators as provided by the assembler
+means that the user does not have to keep in mind whether or not the
+symbols in an expression are in or out of the present module, what operators
+are valid on relocatables, what combinations are valid, etc. This nonsense
+comprises much of the complexity of a typical linking assembler. With the
+LN system, the expression and relocation rules are only slightly more complex
+than an assembler that uses no linker (generates it's own final code).
+In fact, the user can forget that he is using a linker system entirely.
+That these conditions are satisfied is discovered by the ACID TEST. The user
+may break a single assembly file into smaller peices, even as small as a
+line per linked module, and link together for the same result as one large
+assembly. There is no addition of "external" or "global" operators required,
+and no conditioning of expressions.
+The provided "external" and "global" operators are strictly to enforce
+module security.
+
+Module concepts:
+
+Only two address spaces are provided in a LN file. These are the "program"
+and "variable" spaces. The program
+"frame" is contained within two reserved symbols: "_pstr" and "_pend".
+Any object tagged as belonging to the program space is allways contained
+within these address boundaries. In addition, _pend-_pstr is the length
+of the code contained in the .obj module, and _pstr expresses the expected
+location of the .obj module for run. The program frame is thus "hard",
+such that every program address has a byte in the .obj file corresponding.
+The variable frame is similar: "_vstr" and "_vend" are the bound symbols.
+The difference here is that the variable frame does not have a one to
+one correspondence with ANY section of the .obj file, or any actual data.
+It is strictly a frame of uninitalized data, to become real only when the
+program is run. The other difference is that although the variable frame
+may be located anywhere for each module in the link (even overlapping),
+the program frames are forced to occupy consequetive addresses, to reflect
+the fact that the .obj modules are concatenated.
+These spaces cover the typical situations of a program followed by a variable
+space, or a program in PROM with the variables in RAM, and others. The
+"multiple module" situations where program code segments are located at
+disjoint spaces in memory is handled by the LN ability to perform complex
+modular linkage.
+Thus, the system can perform linkage to segments and bank/page selection
+schemes.
+
+"external" and "global" tags:
+
+The external and global assembler operators simply "tag" a symbol as being
+external or global. This is used by the linker to:
+
+     1. Refuse access from one module to another of symbols
+        that are not properly flagged.
+
+     2. Form a list of "keep" symbols that are to be protected
+        when the local symbols in a module are stripped off.
+        Use of this feature is usually only when linking such
+        massive modules that to keep ALL symbols in the entire
+        program in LN memory would cause overflow. Originated
+        when LN was still 64kb limited, this is less of a
+        problem in the current 128kb version of LN, and
+        no problem at all in the expected virtual memory version.
+
+One thing to keep in mind is that the LN format is flexible. When
+a complex module is resolved to the point where it is to be loaded as
+a program, it is axiomatic that NO complex expression trees are left
+in the .sym file, and that the file will contain only:
+
+     1. The ascii name of the symbols used, and their value.
+
+     2. A list of locations that are eligible for relocation
+        (as jump addresses).
+
+HOWEVER: complex expressions that have relocatable operands must allways
+stay in the module, since they must be recalculated upon each link.
+An assembler that never allowed such expressions would have no problem,
+however, since these type of expressions are never generated. A foreign
+linker would simply reject such expressions, requiring a AS/LN user to
+simply restrict his expression useage, much as in a normal assembler/linker.
+A link format "converter", which would translate lncuf format to other object
+and load formats (such as microsoft .obj and .exe formats),
+would simply reject any construct that did not have an equivalent in the target
+format.
+
+Format description of Lncuf files:
+
+The format of the link file is quite simple. No real attempt
+was made to save space in the format, since each program that uses the format
+is free to convert from a more packed and specific one. The format IS designed
+to be universal by upgradeability. There is virtually no limit to the
+number of new construct types that can be added, Since the linker does not
+need to know anything about the TYPE of code being linked.
+The .sym file consists of a "list" of "objects", each of which is preceded
+by a "type byte". There is no standard object length. To sequence from one
+object to the next, each object must be inspected and skipped, although
+in practice this is not much of a problem.
+There are at present only five different object types, of which one is the
+single byte that indicates termination. Here is the list:
+
+     \/ -- object type code byte
+     ||
+     ||
+     -----
+     | 0 |
+     -----
+
+     The .sym file terminator.
+
+     ---------------------------------------
+     | 1 | OP | LABEL         | FL | VALUE |
+     ---------------------------------------
+
+     The symbol "carrier". This entry is used to define an ascii
+     symbol.
+
+     OP refers to the operation code. If OP <> 0 (meaning that this
+     entry is part of an expression) the entries following this
+     will form part of that expression.
+
+     LABEL is a variable length string.
+
+     FL is the attribute flags.
+
+     VALUE is the symbol value in "variger" format.
+
+     -----------------------
+     | 2 | OP | FL | VALUE |
+     -----------------------
+
+     This is an "aynonomus" entry, required to mark nodes in an expression.
+     It has the same effect as a symbol entry, except that it has
+     no ascii label.
+
+     OP is the operation code, as in a symbol entry.
+
+     FL are the attribute flags.
+
+     VALUE is the symbol value in "variger" format, appears only if the
+     defined flag is true in FL.
+
+     ---------------
+     | 3 | IT | AD |
+     ---------------
+
+     This is a "patch" entry. It specifies the location in the .obj module
+     of a location to receive the value of the symbol.
+     Any number of these may appear after object types (1) and (2),
+     but all must appear BEFORE any expression parts.
+
+     IT is the insertion type.
+
+     AD is the address within the module, in "variger" format.
+
+     ----------------------------
+     | 4 | IT | AD | FL | VALUE |
+     ----------------------------
+
+     This is a general relocation entry. It specifies the location in
+     the .obj which must be modified whenever it is relocated.
+
+     IT is the insertion type.
+
+     AD is the address in the .obj file, in "variger" format.
+
+     FL are the flags
+
+     VALUE is the value in "variger" format. General relocation entrys
+     allways have the defined bit set in FL.
+
+Symbol strings:
+
+The format of a variable length symbol string is:
+
+     ----------------
+     | LEN | STRING |
+     ----------------
+
+     LEN is a 1-256 length of string byte, in -1 format.
+
+     STRING is the characters of the symbol.
+
+"varigers" are a way to pass numbers using the most efficient length of
+representation:
+
+     ---------------
+     | VT | NUMBER |
+     ---------------
+
+     VT is the value type.
+
+     NUMBER is the bytes making up the integer or float, in order of
+     appearence from most significant byte to least significant byte
+     ("big endian" format).
+
+Definition of VT field:
+
+     bit
+     7 - low for integer number, high for float number.
+     6 - low for unsigned representation, high for signed representation.
+     5 - unused
+     4 - Length in number in bytes, 1-32 (stored -1).
+     3 -      ""          ""
+     2 -      ""          ""
+     1 -      ""          ""
+     0 -      ""          ""
+
+Varigers can represent integers or floats with any width from 1 - 256 bits
+(or even larger if desired by extention of the format). Floats are all
+IEEE standard, and so only lengths of 32, 64 and 80 bits are possible
+(currently, larger formats may be forthcoming). The signed/unsigned
+representation bit is meaningless for floats.
+Integers are represented as signed magnitude variable byte quantities
+(NOT 2's complement format). The reason for separation of the sign bit
+is that use of unsigned representation is common in small integers
+(8, 16 and sometimes 32 bits).
+Integers are usually passed in their most efficient format, which is
+the smallest number of bytes that can represent the number. Therefore,
+passing an odd number of bytes is common. A byte count of 3 would probally
+mean a 32 bit integer that did not require a full 32 bit length.
+Of course, varigers are mainly used to create the most compact possible
+file format. A typical processor will implement a fixed internal format
+for integers (say 32 or 64 bits), and convert to and from this format.
+Therefore there is a limit to the length of number a processor will
+accept, and an error will be produced.
+An error may also be produced if the format contains a signed magnitude
+number that is unrepresentable in 2's complement format, since that is
+the most common internal format. But since most or all programs will
+work in 2's complement format, this problem should not arise.
+Varigers are a compromise between having a symbol value form that is
+large enough to cover all possible microprocessors (at this writing that
+would take 64 bits), and allowing a compact form suitable for smaller
+word length processors.
+
+Definition of OP types:
+
+     0  - No operation       (not a complex entry).
+     1  - add                (binary operator)
+     2  - subtract           (binary)
+     3  - multiply           (binary)
+     4  - divide             (binary)
+     5  - modulo             (binary)
+     6  - shift left         (binary)
+     7  - shift right        (binary)
+     8  - and                (binary)
+     9  - or                 (binary)
+     10 - xor                (binary)
+     11 - not                (unary)
+     12 - negate             (unary)
+
+Definition of FL flags:
+
+     bit
+     7   - unused.
+     6   - unused.
+     5   - unused.
+     4   - Entry is in variable space.
+     3   - Entry is typed "external".
+     2   - Entry is typed "global".
+     1   - Entry is in program space.
+     0   - Entry is defined (this will allways be matched
+           by a OP of 0 where present).
+
+Definition of IT (insertion type) field:
+
+The insertion type appears as follows:
+
+     ------------------
+     | IT | LEN | OFF |
+     ------------------
+
+     IT is the IT flag byte.
+
+     LEN is the bit length of insertion in -1 format.
+
+     OFF is the PC offset constant.
+
+Definition of the IT flag byte:
+
+     bit
+     7 - Low for "big endian" format insertion, high for "little endian".
+     6 - Unused
+     5 - Unused
+     4 - Insertion type code
+     3 - ""	   ""	""
+     2 - Starting bit offset (0-7)
+     1 - ""       ""  ""     ""
+     0 - ""       ""  ""     ""
+
+The endian mode indicates whether the most significant bytes or bits occur
+first in the output.
+The insertion type code is:
+
+     0 - Normal insertion
+     1 - Signed offset (PC+LEN+1)
+     2 - Signed offset, non-standard offset (PC+LEN+1+OFF)
+
+The signed offset insertion indicates that the value is to be offset by
+the program count value AFTER the value field (or PC+LEN+1).
+The non-standard offset insertion indicates if a non-standard offset constant
+is to be used, in which case the result is PC+LEN+1+OFF. If insertion type is
+not present, then the offset byte will not appear.
+The bit offset field and length byte describe just how the insertion is to be
+done. The offset gives the starting bit in the first byte where the insertion
+is to begin, and the length gives the total number of bits in -1 format.
+Thus, 256 bits of value can be placed anywhere in the object.
+If the starting bit offset is 0, and the length is divisible by 8, then
+the insertion is by byte, and more efficient routines can be used on this
+special case (which can be determined by BITOFF+(LEN+1 DIV 8) = 0).
+This means that from 1 to 32 bytes can be placed as a value.
+Note that ITs imply error checking on the value inserted. If the given
+value cannot be placed into the insertion field, an error will be generated.
+Note that although the IT system tries to take into account the known systems
+whereby instructions and data are built, it is allways possible to find
+a system that is too complex to be handled by ITs. In these cases, the
+output code can be modified by a complex expression sequence that gives
+the output desired.
+
+Special symbols:
+
+Four "special" or "reserved" symbols are allways present in a .sym file:
+
+     _pstr - Indicates the location of the first byte of .obj code.
+     _pend - Indicates the last location of .obj code, +1.
+     _vstr - Indicates the location of the first variable byte.
+     _vend - Indicates the location of the last variable byte +1.
+
+These symbols appear just as ordinary symbols. The only exception to this is
+the fact that most LN format family utilities reject attempts to dulicate
+these definitions.
+The purpose of making these link parameters standard symbols is that the
+user can specify such things as:
+
+     _pend-_pstr - The length of the code module.
+     _vend-_vstr - The length of the variable module.
+     _vend       - In a program, followed by variable, type construction
+                   (the default under LN), this would be the true end
+                   of the module, and a place, perhaps, to put a heap
+                   or somesuch.
+
+A basic file:
+
+Lets ignore the expression stuff for now, and consider a file that only:
+
+     1. Lists the symbols used in the program, and their values.
+
+     2. Has a list of addresses to be relocated.
+
+The file in this case will be a mix of type (1), (3) and (4) objects. They will
+be in NO PARTICULAR order (actually LN does order them somewhat, but you're
+not supposed to count on it, and since the last time I even LOOKED at the
+LN program was 3 years ago, I really don't remember).
+The fields in (1) will be:
+
+     OP    - allways 0, since no complex expressions exist.
+
+     LABEL - The ascii symbol.
+
+     FL    - The defined flag will always be set. If the program space
+             bit is set, this is a program space symbol, or if the
+             variable space symbol is set, etc. If NEITHER are set,
+             the symbol is usually a constant (such as X EQU Y).
+
+     VALUE - Will allways be present, and contain the symbol value.
+
+The fields in (3) will be:
+
+     IT    - Will usually be a 1 (unsigned word), since that is
+             the type of an address.
+
+     AD    - Will contain the address to modify. Remeber, the address
+             allways the REAL address that the .obj module is presumed
+             to load at (say, $100 for CP/M .com's). To find the
+             offset from the beginning of the .obj file, you find
+             AD - _pstr.
+
+Note that you will allways find (3) entries trailing after a (1) entry.
+It contains no FL field because it is the same type as the symbol it trails
+after. The only purpose of the (3) entry is to say "ok, that symbol value
+goes here, and here, etc".
+
+The fields in (4) will be:
+
+     IT    - Will usually be a 1 (unsigned word), since that is
+             the type of an address.
+
+     AD    - Will contain the address to modify. Remeber, the address
+             allways the REAL address that the .obj module is presumed
+             to load at. To find the offset from the beginning of the 
+             .obj file, you find AD - _pstr.
+
+     FL    - The defined flag will allways be set (in fact, there isn't
+             a case where a (4) entry EVER is undefined, since it
+             would then be a complete NOP). Global and external bits
+             won't be set. The program space and variable space
+             bits define what relocation mode is to be used.
+             Note that a "constant" relocation is possible (neither
+             program space or variable space bits set), and in fact
+             occurs quite often just after an assembly, but will never
+             appear in a "final" module, since it can allways be
+             jammed into the code and discarded.
+
+Relocation and processing of such a file as described:
+
+To use the symbols in such a file, they would just need to be stripped off
+from the other objects. The objects around the symbol just give the
+information of:
+
+     1. Where the symbol is used in the program.
+
+     2. What size of (number of bytes) the symbol value is used in.
+
+To relocate the file, the _pstr and _vstr symbols are found, and offset
+calculated by the difference between the present and target locations,
+then that offset added to each symbol with a matching program or variable
+typing bit.
+
+More complex files:
+
+The first true bit of complexity that occurs is the passing of expression
+trees. These are passed in polish notation order (operator, followed by
+operands). A quick reveiw:
+
+     (2+4)*(9-3)
+
+     becomes:
+
+     *,+,2,4,+,9,3
+
+This is a standard method for passage of tree structured data. Ok, lets see
+what the format of a symbol, say "junk", would look like in the file, which
+found the equation given above:
+
+     ---------------------------
+     | 1 | 2 | JUNK       | FL |
+     --------------------------
+
+     Note: 1. "2" for multiply.
+           2. "value" field not present in a complex symbol.
+
+     --------------
+     | 2 | 1 | FL |
+     --------------
+
+     Note: 1. "1" for add.
+           2. "value" field not present.
+
+     ----------------------
+     | 2 | 0 | FL | 2 | 0 |
+     ----------------------
+
+     Note: 1. "0" for nop (it's a constant !).
+           2. "value" field exists, it's 2.
+
+     ----------------------
+     | 2 | 0 | FL | 4 | 0 |
+     ----------------------
+
+     Note: 1. "0" for nop.
+           2. "value" field exists, it's 4.
+
+     --------------
+     | 2 | 1 | FL |
+     --------------
+
+     Note: 1. "1" for add.
+           2. "value" field not present.
+
+     ----------------------
+     | 2 | 0 | FL | 9 | 0 |
+     ----------------------
+
+     Note: 1. "0" for nop.
+           2. "value" field exists, it's 9.
+
+     ----------------------
+     | 2 | 0 | FL | 4 | 0 |
+     ----------------------
+
+     Note: 1. "0" for nop.
+           2. "value" field exists, it's 3.
+
+Without going into gigantic examples, it can be seen that any complexity
+of expression can be passed. Each expression is passed "self contained".
+The way this works is that when a expression part references a symbol,
+the whole symbol (ascii part and all) is output, but with the undefined
+bit set and no value field. When LN reads a .sym file, it automatically
+merges the deck with itself, so that the original complex tree symbol table
+is built up.
+The individual FL flag bits (excepting undefined) are irrelivant to the
+expression processing mechanisim. This is because any relocation is done
+FIRST, such that by expression evaluation time the value is what it will be
+in the output .obj module. Thus, if the user wants to do something like
+do:
+
+     ld a,addr ! get low half address
+     ld l,a
+     ld a,addr shr 8 ! get high half address
+     ld h,a
+
+or something equally silly it is no problem. When the final module is made,
+the truncation of addr low bits and the shift and truncate of the high
+bits will occur on the actual final addresses.
+The way LN deals with expressions based on something like addresses that
+will never be finalized (that LN can, or would want to detect), is that the
+expressions are allways kept, and recalcuated so that they are right for each
+.obj module produced.
+LN does try to eliminate expression trees in general. For instance:
+
+     ld a,3+other
+
+Where "other" exists in a different module, and therefore this expression
+cannot be resolved until linked with that module. When linked, however, the
+result would be known (assuming "other" is a constant), and the expression
+tree can be safely thrown out so that it does not clutter up the .sym file
+any further. LN determines whether an expression can be safely discarded
+by examining it's components for variable members (items that can change
+during relocation).

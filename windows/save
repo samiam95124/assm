@@ -1,0 +1,45 @@
+
+{*******************************************************************************
+
+Find file on paths
+
+Finds the given file on multple paths. Searches in order these paths:
+
+1. The current directory.
+2. The user path.
+3. The program path.
+
+This search order is typical for program related data files. The master path
+is the same location the program came from, the program path. The user path
+would allow each user to override the master installation. Finally, placing
+a file in the current directory overrides all others.
+
+The resulting path is returned in the same string. The status returns true if
+the file is found.
+
+*******************************************************************************}
+
+procedure fndpth(var s:  string;   { filename to find }
+                     cf: boolean); { file found flag }
+
+begin
+
+   cf := false; { set no catalog file found }
+   copy(cfn, 'catalog'); { set catalog name }
+   if exists(cfn) then cf := true
+   else begin { search paths for it }
+   
+      getusr(pth); { get the user path }
+      maknam(cfn, pth, 'catalog', ''); { create name }
+      if exists(cfn) then cf := true
+      else begin { search the program path }
+
+         getpgm(pth); { get the program path }
+         maknam(cfn, pth, 'catalog', ''); { create name }
+         cf := exists(cfn)
+
+      end
+
+   end;
+
+end;

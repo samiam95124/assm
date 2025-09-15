@@ -1,0 +1,1647 @@
+{*******************************************************************************
+*                                                                              *
+*                     MACHINE SPECIFIC OPCODE PROCESS MODULE                   *
+*                                                                              *
+*                       Copyright (C) 2007 S. A. Moore                         *
+*                            All rights reserved                               *
+*                                                                              *
+* PURPOSE:                                                                     *
+*                                                                              *
+* Implements all of the opcodes for the machine being implemented. All of the  *
+* opcodes, even the directives, are implemented here. The processor            *
+* independent directives are sent back to the main assembler module, but some  *
+* processor specific directives are handled here.                              *
+*                                                                              *
+*******************************************************************************}
+
+module opcode;
+
+uses asdef,  { generic definitions }
+     common, { global variables }
+     utl,    { generic utilities }
+     direct, { generic assembler directives }
+     asmain, { error handling }
+     macdef, { processor specific definitions }
+     macutl; { processor specific utilities }
+
+procedure mprcopc; forward; { process opcode }
+
+private
+
+{******************************************************************************
+ 
+'push' handler
+ 
+Encodes a statement:
+ 
+     push  ww
+ 
+Where 'ww' is a word register ix, iy, hl, de, bc, or af.
+No variant fields are produced.
+ 
+******************************************************************************}
+ 
+procedure push;
+ 
+var lftcod : regc; { holds register code }
+ 
+begin
+
+   regcod(lftcod); { parse a register }
+   case lftcod of { register }
+
+      rgafa, rga, rgb, rgc, rgd, rge, rgh, rgl, { byte, msc. }
+      rgsp, rgi, rgr: prterr(eregt); { wrong register type }
+      rgnl: prterr(eregexp); { no register }
+      rgaf: outbyt(245); { push af }
+      rgbc: outbyt(197); { push bc }
+      rgde: outbyt(213); { push de }
+      rghl: outbyt(229); { push hl }
+      rgix: begin outbyt(221); outbyt(229) end; { push ix }
+      rgiy: begin outbyt(253); outbyt(229) end { push iy }
+
+   end
+
+end;
+
+{******************************************************************************
+ 
+'pop' handler
+ 
+Encodes a statement:
+ 
+     pop   ww
+ 
+Where 'ww' is a word register ix, iy, hl, de, bc, or af.
+No variant fields are produced.
+ 
+******************************************************************************}
+ 
+procedure pop;
+ 
+var lftcod : regc; { holds a register code }
+ 
+begin
+
+   regcod(lftcod); { parse register }
+   case lftcod of { register }
+
+      rgafa, rga, rgb, rgc, rgd, rge, rgh, rgl, { byte, msc }
+      rgsp, rgi, rgr: prterr(eregt); { wrong type }
+      rgnl: prterr(eregexp); { missing }
+      rgaf: outbyt(241); { pop af }
+      rgbc: outbyt(193); { pop bc }
+      rgde: outbyt(209); { pop de }
+      rghl: outbyt(225); { pop hl }
+      rgix: begin outbyt(221); outbyt(225) end; { pop ix }
+      rgiy: begin outbyt(253); outbyt(225) end { pop iy }
+
+   end
+
+end;
+
+{******************************************************************************
+ 
+Math operations with a single operand
+ 
+Encodes statements of the form:
+ 
+     sub   b
+     and   b
+     or    b
+     xor   b
+     cp    b
+ 
+Where 'b' is any of a, b, c, d, e, h, l, (ix+d), (iy+d).
+A variant field is produced for the displacement.
+Backtracking is used to determine wether the '(' leading an operand indicates 
+a displacement or just an expression.
+
+******************************************************************************}
+
+procedure maths(i: opcodet); { opcode to process }
+
+var lftcod : regc; { holds register }
+    opcode : byte; { holds opcode being built }
+    inpsav : inpinx; { holds inpptr for backtrack }
+    sym    : symptr; { for displacements }
+
+begin
+
+   case i of { opcode }
+
+      opsub: opcode := 144; { sub }
+      opand: opcode := 160; { and }
+      opor:  opcode := 176; { or }
+      opxor: opcode := 168; { xor }
+      opcp:  opcode := 184 { cp }
+
+   end;
+   regcod(lftcod); { parse register }
+   case lftcod of { register }
+
+      rgaf, rgbc, rgde, rghl, rgix, rgiy, rgsp,
+      rgi, rgr, rgafa: prterr(eregt); { wrong registers }
+      rga: outbyt(opcode + 7); { op a }
+      rgb: outbyt(opcode); { op b }
+      rgc: outbyt(opcode + 1); { op c }
+      rgd: outbyt(opcode + 2); { op d }
+      rge: outbyt(opcode + 3); { op e }
+      rgh: outbyt(opcode + 4); { op h }
+      rgl: outbyt(opcode + 5); { op l }
+      rgnl: begin { no register }
+
+         inpsav := cmdrot^.inp; { save current input position }
+         if chkchr = '(' then begin { look ahead }
+
+            getchr; { skip '(' }
+            regcod(lftcod); { get register ]
+            { check (hl) }
+            if lftcod = rghl then outbyt(opcode + 6)
+            else if (lftcod = rgix) or
+               (lftcod = rgiy) then begin { op (r+/-n) }
+
+               if lftcod = rgix then outbyt(221)
+               else outbyt(253);
+               outbyt(opcode + 6);
+               skpspc; { skip spaces }
+               if chkchr = ')' then outbyt(0) { no displace }
+               { parse, generate expression }
+               else begin 
+
+                  nexpr(sym); { parse expression }
+                  gensym(sym, 0, false, imnorm, 0, 0, 8) { generate }
+
+               end
+
+            { invalid register }
+            end else if lftcod <> rgnl then prterr(eregt)
+            else cmdrot^.inp := inpsav; { restore original position }
+            skpspc; { skip spaces }
+            { check ')' after indirection }
+            if (lftcod = rghl) or (lftcod = rgix) or
+               (lftcod = rgiy) then prcnxt(')', erpexp)
+
+         end;
+         if lftcod = rgnl then begin { op imm }
+
+            outbyt(opcode + 70);
+            nexpr(sym); { parse expression }
+            gensym(sym, 0, false, imnorm, 0, 0, 8) { generate }
+
+         end
+
+      end
+
+   end
+
+end;
+
+{******************************************************************************
+ 
+Increment/decrement single
+ 
+Encodes the following:
+ 
+     inc   des
+     dec   des
+ 
+Where 'des' is any of ix, iy, hl, de, bc, sp, a, b, c, d, e, h, l, (ix+d), or 
+(iy+d).
+A variant field is produced for a displacement.
+
+******************************************************************************}
+
+procedure ids(i: opcodet); { opcode to process }
+
+var lftcod : regc; { holds register }
+    opcode : byte; { holds opcode being built }
+    sym    : symptr; { displacement }
+
+begin
+
+   if i = opinc then opcode := 4 { inc }
+   else opcode := 5; { dec }
+   regcod(lftcod); { parse regsiter }
+   case lftcod of { register }
+
+      rgaf, rgi, rgr, rgafa: prterr(eregt); { wrong register }
+      { inc/dec bc }
+      rgbc: if i = opinc then outbyt(3) else outbyt(11);
+      { inc/dec de }
+      rgde: if i = opinc then outbyt(19) else outbyt(27);
+      { inc/dec hl }
+      rghl: if i = opinc then outbyt(35) else outbyt(43);
+      { inc/dec sp }
+      rgsp: if i = opinc then outbyt(51) else outbyt(59);
+      rgix: begin { inc/dec ix }
+
+         outbyt(221);
+         if i = opinc then outbyt(35) else outbyt(43)
+
+      end; { inc/dec iy }
+      rgiy: begin
+
+         outbyt(253);
+         if i = opinc then outbyt(35) else outbyt(43)
+
+      end;
+      rga: outbyt(opcode + 56); { inc/dec a }
+      rgb: outbyt(opcode); { inc/dec b }
+      rgc: outbyt(opcode + 8); { inc/dec c }
+      rgd: outbyt(opcode + 16); { inc/dec d }
+      rge: outbyt(opcode + 24); { inc/dec e }
+      rgh: outbyt(opcode + 32); { inc/dec h }
+      rgl: outbyt(opcode + 40); { inc/dec l }
+      rgnl: begin { no register }
+
+         { must be displacement }
+         prcnxt('(', eregexp);
+         regcod(lftcod); { parse register }
+         if lftcod = rghl then outbyt(opcode + 48) { op (hl) }
+         else if (lftcod = rgix) or
+                 (lftcod = rgiy) then begin { displacement }
+
+            if lftcod = rgix then outbyt(221) { op (ix+d) }
+            else outbyt(253); { op (iy+d) }
+            outbyt(opcode + 48);
+            skpspc; { skip spaces }
+            if chkchr = ')' then outbyt(0) { no displace }
+            { else parse displacement }
+            else begin 
+
+               nexpr(sym); 
+               gensym(sym, 0, false, imnorm, 0, 0, 8) { generate }
+
+            end
+
+         end else prterr(eregt); { wrong register }
+         skpspc; { skip spaces }
+         prcnxt(')', erpexp) { must end ')' }
+
+      end
+
+   end
+
+end;
+
+{******************************************************************************
+
+Rotate single
+
+Encodes the following:
+
+     rlc   des
+     rl    des
+     rrc   des
+     rr    des
+     sla   des
+     sra   des
+     srl   des
+
+Where 'des' is on of a, b, c, d, e, h, l, (ix+d), or (iy+d).
+A variant field is produced for the displacement.
+
+******************************************************************************}
+
+procedure rots(i: opcodet); { opcode to process }
+
+var lftcod : regc; { register }
+    opcode : byte; { opcode under construction }
+    sym    : symptr; { displacement }
+
+begin
+
+   case i of { opcode }
+
+      oprlc: opcode := 0; { rlc des }
+      oprl:  opcode := 16; { rl des }
+      oprrc: opcode := 8; { rrc des }
+      oprr:  opcode := 24; { rr des }
+      opsla: opcode := 32; { sla des }
+      opsra: opcode := 40; { sra des }
+      opsrl: opcode := 56 { srl des }
+
+   end;
+   regcod(lftcod); { parse register }
+   if lftcod <> rgnl then begin { register }
+
+      outbyt(203); { prefix }
+      case lftcod of { register }
+
+         rgaf, rgbc, rgde, rghl, rgix, rgiy, rgsp,
+         rgi, rgr, rgafa: prterr(eregt); { wrong register }
+         rga: outbyt(opcode + 7); { op a }
+         rgb: outbyt(opcode); { op b }
+         rgc: outbyt(opcode + 1); { op c }
+         rgd: outbyt(opcode + 2); { op d }
+         rge: outbyt(opcode + 3); { op e }
+         rgh: outbyt(opcode + 4); { op h }
+         rgl: outbyt(opcode + 5) { op l }
+
+      end
+
+   end else begin { displacement }
+
+      prcnxt('(', eregexp); { no '(' }
+      regcod(lftcod); { parse register }
+      if lftcod = rgnl then prterr(eregexp); { none found }
+      if lftcod = rghl then begin { op (hl) }
+
+         outbyt(203);
+         outbyt(opcode + 6)
+
+      end else if (lftcod = rgix) or
+                  (lftcod = rgiy) then begin
+
+         if lftcod = rgix then outbyt(221) { op (ix+d) }
+         else outbyt(253); { op (iy+d) }
+         outbyt(203);
+         skpspc; { skip spaces }
+         if chkchr = ')' then outbyt(0) { no ')' }
+         { parse and generate displacement }
+         else begin 
+
+            nexpr(sym); { parse expression }
+            gensym(sym, 0, false, imnorm, 0, 0, 8) { generate }
+
+         end;
+         outbyt(opcode + 6)
+
+      end else prterr(eregt); { wrong register }
+      skpspc; { skip spaces }
+      prcnxt(')', erpexp) { no ')' }
+
+   end
+
+end;
+
+{******************************************************************************
+ 
+Decrement jump - not - zero
+ 
+Encodes the following:
+ 
+     djnz  l
+ 
+Where l is a program location.
+A variant field is created for the displacement.
+Note that the relative jump value is determined by prgmc-$+2.
+No checking on the validity of the offset is done at present.
+ 
+******************************************************************************}
+ 
+procedure djnz;
+ 
+var sym   : symptr; { displacement }
+ 
+begin
+
+   outbyt(16); { djnz n }
+   nexpr(sym); { parse displacement }
+   gensym(sym, 0, false, imsgof, 0, 0, 8) { generate }
+
+end;
+
+{******************************************************************************
+ 
+Restart
+ 
+Encodes the following:
+ 
+     rst   n
+ 
+Where n is a value between 0 and 7. If n is not absolute, we output an 
+expression describing how to construct the final opcode. This is:
+ 
+     opcode := (n and $38) or $c7
+ 
+Note that a single undefined will be output.
+ 
+******************************************************************************}
+ 
+procedure rst;
+ 
+var sym, opr, fld : symptr; { values }
+ 
+begin
+
+   nexpr(fld); { parse expression }
+   { check absolute }
+   if not fld^.def or fld^.add or fld^.symvrs then begin
+
+      { variant, construct expression for opcode }
+      getsym(sym); { get entry }
+      sym^.def := true; { set defined }
+      sym^.val := $c7; { set base opcode }
+      getsym(opr); { get operator entry }
+      opr^.opr := oor; { set 'or' }
+      opr^.lft := fld; { masked field }
+      opr^.rgt := sym; { base opcode }
+      gensym(opr, 0, false, imnorm, 0, 0, 8) { generate }
+
+   end else begin { absolute field }
+
+      { check valid value }
+      if fld^.val and $c7 <> 0 then prterr(epoor);
+      outbyt($c7 + fld^.val); { rst n }
+      if fld^.lab = nil then putsym(fld) { free, dispose }
+
+   end
+
+end;
+
+{******************************************************************************
+ 
+Return
+ 
+Encodes the following:
+ 
+     ret [cc]
+ 
+Where 'cc' is a condition code z, nz, c, nc, po, pe, p, or m.
+ 
+******************************************************************************}
+ 
+procedure ret;
+ 
+var lftcon : condc; { condition code }
+ 
+begin
+
+   concod(lftcon); { parse condition }
+   case lftcon of { condition }
+
+      ccnl: outbyt(201); { ret }
+      ccnz: outbyt(192); { ret nz }
+      ccz:  outbyt(200); { ret z }
+      ccnc: outbyt(208); { ret nc }
+      ccc:  outbyt(216); { ret c }
+      ccpo: outbyt(224); { ret po }
+      ccpe: outbyt(232); { ret pe }
+      ccp:  outbyt(240); { ret p }
+      ccm:  outbyt(248) { ret m }
+
+   end
+
+end;
+
+{******************************************************************************
+ 
+Exchange registers
+
+Encodes the following:
+
+     ex      de,hl
+     ex      af,af'
+     ex      (sp),hl
+     ex      (sp),ix
+     ex      (sp),iy
+
+No variant fields are produced.
+
+******************************************************************************}
+
+procedure exch;
+
+var lftcod, rgtcod : regc; { registers }
+
+begin
+
+   regcod(lftcod); { parse register }
+   if lftcod = rgde then begin { ex de,hl }
+
+      skpspc; { skip spaces }
+      prcnxt(',', ecmaexp); { no ',' }
+      regcod(rgtcod); { parse register }
+      if rgtcod = rgnl then prterr(eregexp); { no register }
+      if rgtcod = rghl then outbyt(235) { hl }
+      else prterr(eregt) { wrong register }
+
+   end else if lftcod = rgaf then begin { ex af,af' }
+
+      skpspc; { skip spaces }
+      prcnxt(',', ecmaexp); { no ',' }
+      regcod(rgtcod); { parse register }
+      if rgtcod = rgnl then prterr(eregexp); { no register }
+      if rgtcod = rgafa then outbyt(8) { af' }
+      else prterr(eregt) { wrong register }
+
+   end else if lftcod = rgnl then begin { ex (sp),ww }
+
+      prcnxt('(', eregexp); { no '(' }
+      skpspc; { skip spaces }
+      regcod(lftcod); { parse register }
+      if lftcod = rgnl then prterr(eregexp); { no register }
+      if lftcod <> rgsp then prterr(eregt); { wrong register }
+      skpspc; { skip spaces }
+      prcnxt(')', erpexp); { no ')' }
+      skpspc; { skip spaces }
+      prcnxt(',', ecmaexp); { no ',' }
+      regcod(rgtcod); { parse register }
+      if rgtcod = rghl then outbyt(227) { ex (sp),hl }
+      else if rgtcod = rgix then begin { ex (sp),ix }
+
+         outbyt(221);
+         outbyt(227)
+
+      end else if rgtcod = rgiy then begin { ex (sp),iy }
+
+         outbyt(253);
+         outbyt(227)
+
+      end else if rgtcod = rgnl then prterr(eregexp) { no reg }
+      else prterr(eregt) { wrong register }
+
+   end else prterr(eregt) { wrong register }
+
+end;
+
+{******************************************************************************
+
+Set interrupt mode
+
+Encodes the following:
+
+     im      n
+
+Where n is 0, 1 or 2. N must be absolute (defined before the statement).
+No variant fields are produced.
+
+******************************************************************************}
+
+procedure intm;
+
+var sym : symptr; { mode number }
+
+begin
+
+   nexpr(sym); { parse mode number }
+   { check absolute }
+   if not sym^.def or sym^.add or sym^.symvrs then
+      prterr(epmba);
+   outbyt(237); { im n }
+   if sym^.val = 0 then outbyt(70) { im 0 }
+   else if sym^.val = 1 then outbyt(86) { im 1 }
+   else if sym^.val = 2 then outbyt(94) { im 2 }
+   else prterr(epoor); { wrong value }
+   if sym^.lab = nil then putsym(sym) { free, dispose }
+
+end;
+
+{******************************************************************************
+
+Math operators with dual operands
+
+Encodes the following:
+
+     add   des,src
+     adc   des,src
+     sbc   des,src
+
+Where des is a, hl, ix, or iy. Src is a, b, c, d, e, h, l, bc, de, (ix+d), and 
+(iy+d). Note that the valid combination of src and des is determined by the 
+word/byte status and context.
+A variant field is produced for a displacement or immediate operand.
+
+******************************************************************************}
+
+procedure mathd(i: opcodet); { opcode to process }
+
+var lftcod, rgtcod : regc; { registers }
+    opcode         : byte; { opcode construction site }
+    inpsav         : inpinx; { backtracking save }
+    sym            : symptr; { displacement }
+
+begin
+
+   case i of { opcode }
+
+      opadd: opcode := 128; { add des,src }
+      opadc: opcode := 136; { adc des,src }
+      opsbc: opcode := 152 { sbc des,src }
+
+   end;
+   regcod(lftcod); { parse register }
+   if lftcod = rgnl then prterr(eregexp); { no register }
+   skpspc; { skip spaces }
+   prcnxt(',', ecmaexp); { no ',' }
+   regcod(rgtcod); { parse register }
+   if lftcod = rga then { op a,src }
+      case rgtcod of { register }
+
+      rgaf, rgbc, rgde, rghl, rgix, rgiy, rgsp,
+      rgi, rgr, rgafa: prterr(eregt); { wrong register }
+      rga: outbyt(opcode + 7); { op a,a }
+      rgb: outbyt(opcode); { op a,b }
+      rgc: outbyt(opcode + 1); { op a,c }
+      rgd: outbyt(opcode + 2); { op a,d }
+      rge: outbyt(opcode + 3); { op a,e }
+      rgh: outbyt(opcode + 4); { op a,h }
+      rgl: outbyt(opcode + 5); { op a,l }
+      rgnl: begin { look ahead }
+
+         inpsav := cmdrot^.inp; { save current input position }
+         if chkchr = '(' then begin { check (ww+d) }
+
+            getchr; { skip '(' }
+            regcod(rgtcod); { parse register }
+            { op a,(hl) }
+            if rgtcod = rghl then outbyt(opcode + 6)
+            else if (rgtcod = rgix) or
+                    (rgtcod = rgiy) then begin
+
+               { op a,(ix+d) }
+               if rgtcod = rgix then outbyt(221)
+               else outbyt(253); { op (iy+d) }
+               outbyt(opcode + 6);
+               skpspc; { skip spaces }
+               if chkchr = ')' then outbyt(0) { no displace }
+               { else parse, generate displacement }
+               else begin 
+
+                  nexpr(sym); { parse expression }
+                  gensym(sym, 0, false, imnorm, 0, 0, 8) { generate }
+
+               end
+
+            { wrong register }
+            end else if lftcod <> rgnl then prterr(eregt)
+            else cmdrot^.inp := inpsav; { restore line position }
+            skpspc; { skip spaces }
+            if (rgtcod = rghl) or (rgtcod = rgix) or
+               (rgtcod = rgiy) then
+                  if chkchr = ')' then getchr { skip ')' }
+                  else prterr(erpexp) { no ')' }
+
+         end;
+         if rgtcod = rgnl then begin { op a,n }
+
+            outbyt(opcode + 70);
+            nexpr(sym); { parse constant }
+            gensym(sym, 0, false, imnorm, 0, 0, 8) { generate }
+
+         end
+
+      end
+
+   end else if (lftcod = rghl) or (lftcod = rgix) or
+      (lftcod = rgiy) then begin { word operation }
+
+      if rgtcod = rgnl then prterr(eregexp); { no register }
+      if lftcod = rgix then outbyt(221) { op ix,src }
+      else if lftcod = rgiy then outbyt(253); { op iy,src }
+      if i = opadd then begin { add ww,src }
+
+         if rgtcod = rgbc then outbyt(9) { add ww,bc }
+         else if rgtcod = rgde then outbyt(25) { add ww,de }
+         else if (lftcod = rghl) and (rgtcod = rghl) or
+            (lftcod = rgix) and (rgtcod = rgix) or
+               (lftcod = rgiy) and (rgtcod = rgiy) then
+                  outbyt(41) { add ww,ww }
+         else if rgtcod = rgsp then outbyt(57) { add ww,sp }
+         else prterr(eregt) { wrong regsiter }
+
+      end else begin
+
+         if (lftcod = rgix) or (lftcod = rgiy) then
+            prterr(eregt); { wrong register }
+         outbyt(237);
+         if i = opadc then opcode := 74 { adc hl,ww }
+         else opcode := 66; { sbc hl,ww }
+         if rgtcod = rgbc then outbyt(opcode) { op hl,bc }
+         { op hl,de }
+         else if rgtcod = rgde then outbyt(opcode + 16)
+         { op hl,hl }
+         else if rgtcod = rghl then outbyt(opcode + 32)
+         { op hl,sp }
+         else if rgtcod = rgsp then outbyt(opcode + 48)
+         else prterr(eregt) { wrong register }
+
+      end
+
+   end else prterr(eregt) { wrong register }
+
+end;
+
+{******************************************************************************
+
+Jump conditional
+
+Encodes the following:
+
+     jp    [cc,]loc
+     call  [cc,]loc
+
+Where cc is one of z, nz, c, nc, po, pe, p, or m. Loc is a program location, 
+(hl), (ix), or (iy). Valid combinations are determined by context.
+A variant field is generated for the program location.
+
+******************************************************************************}
+
+procedure jpcl(i: opcodet); { opcode to process }
+
+var rgtcod : regc; { register }
+    lftcon : condc; { condition }
+    opcode : byte; { opcode construction site }
+    inpsav : inpinx; { position save for backtrack }
+    sym    : symptr; { location }
+
+begin
+
+   if i = opjp then opcode := 194 { jp des }
+   else opcode := 196; { call des }
+   concod(lftcon); { parse condition }
+   rgtcod := rgnl; { set no register }
+   if lftcon <> ccnl then begin { process condition }
+
+      case lftcon of { condition }
+
+         ccnz: outbyt(opcode); { jp/call nz,des }
+         ccz:  outbyt(opcode + 8); { jp/call z,des }
+         ccnc: outbyt(opcode + 16); { jp/call nc,des }
+         ccc:  outbyt(opcode + 24); { jp/call c,des }
+         ccpo: outbyt(opcode + 32); { jp/call po,des }
+         ccpe: outbyt(opcode + 40); { jp/call pe,des }
+         ccp:  outbyt(opcode + 48); { jp/call p,des }
+         ccm:  outbyt(opcode + 56) { jp/call m,des }
+
+      end;
+      skpspc; { skip spaces }
+      prcnxt(',', ecmaexp) { no ',' }
+
+   end else begin
+
+      if i = opcall then opcode := opcode + 8; { call des }
+      inpsav := cmdrot^.inp; { save position for backtrack }
+      if chkchr = '(' then begin { (ix), (iy), or (hl) }
+
+         getchr; { skip '(' }
+         regcod(rgtcod); { parse register }
+         if rgtcod <> rgnl then begin { not null }
+
+            if i <> opjp then prterr(eparam); { must be 'jp' }
+            if rgtcod = rghl then outbyt(233) { jp (hl) }
+            else if rgtcod = rgix then begin { jp (ix) }
+
+               outbyt(221);
+               outbyt(233)
+
+            end else if rgtcod = rgiy then begin { jp (iy) }
+
+               outbyt(253);
+               outbyt(233)
+
+            end else prterr(eregt); { wrong register }
+            skpspc; { skip spaces }
+            prcnxt(')', erpexp) { no ')' }
+
+         end else begin { jp/call des }
+
+            cmdrot^.inp := inpsav; { restore position }
+            outbyt(opcode + 1)
+
+         end
+
+      end else outbyt(opcode + 1) { jp/call des }
+
+   end;
+   { generate destination address }
+   if rgtcod = rgnl then begin 
+
+      nexpr(sym); 
+      gensym(sym, 0, false, imnorm, 0, 0, 16) { generate }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Jump relative conditional
+
+Encodes the following:
+
+     jr    [cc,]des
+
+Where cc is any of z, nz, c, or nc.
+A variant field is produced for the destination. The jump byte is expressed by 
+pc+2-des.
+
+******************************************************************************}
+
+procedure jrel;
+
+var lftcon : condc; { condition }
+    sym    : symptr; { destination }
+
+begin
+
+   concod(lftcon); { parse condition }
+   if lftcon <> ccnl then begin { jr cc,des }
+
+      case lftcon of { condition }
+
+         ccpo, ccpe, ccp, ccm: prterr(eparam); { wrong cond }
+         ccz:  outbyt(40); { jr z,des }
+         ccnz: outbyt(32); { jr nz,des }
+         ccc:  outbyt(56); { jr c,des }
+         ccnc: outbyt(48) { jr nc,des }
+
+      end;
+      skpspc; { skip spaces }
+      prcnxt(',', ecmaexp) { no ',' }
+
+   end else outbyt(24); { jr des }
+   nexpr(sym); { parse destination }
+   gensym(sym, 0, false, imsgof, 0, 0, 8) { generate }
+
+end;
+
+{******************************************************************************
+ 
+Input port
+ 
+Encodes the following:
+ 
+     in    src,des
+ 
+Where src is any of a, b, c, d, e, h, or l. Des is (c) or immediate. Valid 
+combinations are determined by context.
+A variant field is produced for an immediate operand.
+ 
+******************************************************************************}
+ 
+procedure inp;
+ 
+var lftcod, rgtcod : regc; { registers }
+    sym            : symptr; { immediate }
+
+begin
+
+   regcod(lftcod); { register }
+   if lftcod = rgnl then prterr(eregexp); { no register }
+   skpspc; { skip spaces }
+   prcnxt(',', ecmaexp); { no ',' }
+   skpspc; { skip spaces }
+   prcnxt('(', elpexp); { no '(' }
+   regcod(rgtcod); { parse register }
+   if rgtcod = rgc then begin { in des,(c) }
+
+      outbyt(237);
+      case lftcod of { register }
+
+         rgbc, rgde, rghl, rgix, rgiy, rgsp, rgaf,
+         rgafa, rgi, rgr: prterr(eregt); { wrong regisiter }
+         rga: outbyt(120); { in a,(c) }
+         rgb: outbyt(64); { in b,(c) }
+         rgc: outbyt(72); { in c,(c) }
+         rgd: outbyt(80); { in d,(c) }
+         rge: outbyt(88); { in e,(c) }
+         rgh: outbyt(96); { in h,(c) }
+         rgl: outbyt(104) { in l,(c) }
+
+      end
+
+   end else begin { immediate }
+
+      if lftcod <> rga then prterr(eregt); { must be 'a' }
+      outbyt(219);
+      nexpr(sym); { parse immediate }
+      gensym(sym, 0, false, imnorm, 0, 0, 8) { generate }
+
+   end;
+   skpspc; { skip spaces }
+   prcnxt(')', erpexp) { no ')' }
+
+end;
+
+{******************************************************************************
+ 
+Output port
+ 
+Encodes the following:
+ 
+    out   des,src
+ 
+Where src is any of a, b, c, d, e, h or l. des is (c) or immediate. Valid 
+combinations are determined by context.
+A variant field is produced for immediates.
+ 
+******************************************************************************}
+
+procedure out;
+
+var lftcod, rgtcod : regc; { registers }
+    sym            : symptr; { immediate }
+
+begin
+
+   prcnxt('(', elpexp); { no '(' }
+   regcod(lftcod); { parse register }
+   if lftcod = rgc then begin { out (c),src }
+
+      outbyt(237);
+      skpspc; { skip spaces }
+      prcnxt(')', erpexp); { not ')' }
+      skpspc; { skip spaces }
+      prcnxt(',', ecmaexp); { not ',' }
+      regcod(rgtcod); { parse register }
+      case rgtcod of { register }
+
+         rgbc, rgde, rghl, rgix, rgiy, rgsp,
+         rgi, rgr, rgaf, rgafa: prterr(eregt); { wrong reg }
+         rgnl: prterr(eregexp); { no register }
+         rga: outbyt(121); { out (c),a }
+         rgb: outbyt(65); { out (c),b }
+         rgc: outbyt(73); { out (c),c }
+         rgd: outbyt(81); { out (c),d }
+         rge: outbyt(89); { out (c),e }
+         rgh: outbyt(97); { out (c),h }
+         rgl: outbyt(105) { out (c),l }
+
+      end
+
+   end else if lftcod = rgnl then begin { immediate }
+
+      outbyt(211);
+      nexpr(sym); { parse immediate }
+      skpspc; { skip spaces }
+      prcnxt(')', erpexp); { no ')' }
+      skpspc; { skip spaces }
+      prcnxt(',', ecmaexp); { no ',' }
+      regcod(rgtcod); { parse register }
+      if rgtcod = rgnl then prterr(eregexp); { no register }
+      if rgtcod <> rga then prterr(eregt); { must be 'a' }
+      gensym(sym, 0, false, imnorm, 0, 0, 8) { generate }
+
+   end else prterr(eregt) { wrong register }
+
+end;
+
+{******************************************************************************
+ 
+Store immediate address indirect
+ 
+Encodes the following:
+ 
+     ld    (loc),src
+ 
+Where location is a program/variable location, and src is any of a, bc, de, hl, 
+ix, iy, sp.
+A variant field is produced for the location and displacements.
+ 
+******************************************************************************}
+ 
+procedure stimm;
+ 
+var rgtcod : regc; { register }
+    sym    : symptr; { displacement, location }
+
+begin
+
+   nexpr(sym); { parse expression }
+   prcnxt(')', erpexp); { no ')' }
+   skpspc; { skip spaces }
+   prcnxt(',', ecmaexp); { no ',' }
+   regcod(rgtcod); { parse register }
+   case rgtcod of { register }
+
+      rgnl: prterr(eregexp); { no register }
+      rgb, rgc, rgd, rge, rgh, rgl, rgaf,
+      rgafa, rgi, rgr: prterr(eregt); { wrong register }
+      rga:  outbyt(50); { ld (loc),a }
+      rgbc: begin outbyt(237); outbyt(67) end; { ld (loc),bc }
+      rgde: begin outbyt(237); outbyt(83) end; { ld (loc),de }
+      rghl: outbyt(34); { ld (loc),hl }
+      rgix: begin outbyt(221); outbyt(34) end; { ld (loc),ix }
+      rgiy: begin outbyt(253); outbyt(34) end; { ld (loc),iy }
+      rgsp: begin outbyt(237); outbyt(115) end { ld (loc),sp }
+
+   end;
+   gensym(sym, 0, false, imnorm, 0, 0, 16) { generate immediate location }
+
+end;
+
+{******************************************************************************
+
+Store double register indirect
+
+Encodes the following:
+
+     ld    (des),src
+
+Where des is any of bc, de, hl, ix, or iy. Src is any of a, b, c, d, e, h, l, 
+(ix+d), or (iy+d). Valid combinations are determined by context.
+A variant field is produced for displacements.
+
+******************************************************************************}
+
+procedure stdregi(lftcod : regc { left register });
+
+var sym    : symptr; { displacement }
+    rgtcod : regc; { register }
+
+begin
+
+   skpspc; { skip spaces }
+   case lftcod of { register }
+
+      rga, rgb, rgc, rgd, rge, rgh, rgl,
+      rgi, rgr, rgaf, rgafa: prterr(eregt); { wrong register }
+      rgbc, rgde: begin { ld (des),a }
+
+         prcnxt(')', erpexp); { no ')' }
+         skpspc; { skip spaces }
+         prcnxt(',', ecmaexp); { no ',' }
+         regcod(rgtcod); { parse register }
+         if rgtcod <> rga then prterr(eregt); { must be 'a' }
+         if lftcod = rgbc then outbyt(2) else outbyt(18)
+
+      end;
+      rgix, rgiy, rghl: begin
+
+         sym := nil; { flag }
+         if lftcod = rgix then outbyt(221) { (ix+d) }
+         else if lftcod = rgiy then outbyt(253); { (iy+d) }
+         skpspc; { skip spaces }
+         if chkchr = ')' then getchr { skip ')' }
+         else begin { displacement }
+
+            if lftcod = rghl then prterr(erpexp); { ix, iy }
+            nexpr(sym); { displacement }
+            skpspc; { skip spaces }
+            prcnxt(')', erpexp); { no ')' }
+
+         end;
+         skpspc; { skip spaces }
+         prcnxt(',', ecmaexp); { no ',' }
+         regcod(rgtcod); { parse register }
+         case rgtcod of { register }
+
+            rgbc, rgde, rghl, rgaf, rgafa,
+            rgix, rgiy, rgsp, rgi, rgr: prterr(eregt); { wrong }
+            rgnl: outbyt(54); { ld (des),imm }
+            rga:  outbyt(119); { ld (des),a }
+            rgb:  outbyt(112); { ld (des),b }
+            rgc:  outbyt(113); { ld (des),c }
+            rgd:  outbyt(114); { ld (des),d }
+            rge:  outbyt(115); { ld (des),e }
+            rgh:  outbyt(116); { ld (des),h }
+            rgl:  outbyt(117) { ld (des),l }
+
+         end;
+         if lftcod <> rghl then { displacement }
+            if sym = nil then outbyt(0) { no displacement }
+            else gensym(sym, 0, false, imnorm, 0, 0, 8); { generate }
+         if rgtcod = rgnl then begin { imm. byte }
+
+            nexpr(sym); { parse expression }
+            gensym(sym, 0, false, imnorm, 0, 0, 8) { generate }
+
+         end
+
+      end
+
+   end
+
+end;
+
+{******************************************************************************
+
+Load single register
+
+Encodes the following:
+
+     ld    des,src
+
+Where des is one of a, b, c, d, e, h, l, i, or r. Src is one of a, b, c, d, e, 
+h, l, i, r, (hl), (ix+d), (iy+d), immediate, or indirect. Valid combinations 
+are determined by context.
+A variant field is produced for displacements.
+
+******************************************************************************}
+
+{ load single register }
+
+procedure ldsreg(lftcod : regc { left register });
+
+var rgtcod : regc; { register }
+    opcode : byte; { opcode construction site }
+    inpsav : inpinx; { position save for backtrack }
+    sym    : symptr; { displacement or immediate }
+
+begin
+
+   skpspc; { skip spaces }
+   prcnxt(',', ecmaexp); { no ',' }
+   regcod(rgtcod); { register }
+   if lftcod = rgi then begin { ld i,a }
+
+      if rgtcod <> rga then prterr(eregt); { must be 'a' }
+      outbyt(237);
+      outbyt(71)
+
+   end else if lftcod = rgr then begin { ld r,a }
+
+      if rgtcod <> rga then prterr(eregt); { must be 'a' }
+      outbyt(237);
+      outbyt(79)
+
+   end else begin
+
+      case lftcod of { register }
+
+         rga : opcode := 56; { ld a,src }
+         rgb : opcode := 0; { ld b,src }
+         rgc : opcode := 8; { ld c,src }
+         rgd : opcode := 16; { ld d,src }
+         rge : opcode := 24; { ld e,src }
+         rgh : opcode := 32; { ld h,src }
+         rgl : opcode := 40 { ld l,src }
+
+      end;
+      case rgtcod of { register }
+
+         rgaf, rgafa, rgbc, rgde, rghl, rgix, rgiy,
+         rgsp: prterr(eregt); { wrong register }
+         rgi: begin { ld a,i }
+
+            if lftcod <> rga then prterr(eregt); { must be 'a' }
+            outbyt(237);
+            outbyt(87)
+
+         end;
+         rgr: begin { ld a,r }
+
+            if lftcod <> rga then prterr(eregt); { must be 'a' }
+            outbyt(237);
+            outbyt(95)
+
+         end;
+         rga: outbyt(opcode + 71); { ld des,a }
+         rgb: outbyt(opcode + 64); { ld des,b }
+         rgc: outbyt(opcode + 65); { ld des,c }
+         rgd: outbyt(opcode + 66); { ld des,d }
+         rge: outbyt(opcode + 67); { ld des,e }
+         rgh: outbyt(opcode + 68); { ld des,h }
+         rgl: outbyt(opcode + 69); { ld des,l }
+         rgnl: begin { no register }
+
+            inpsav := cmdrot^.inp; { save input position }
+            if chkchr = '(' then begin { ld des,(ww) }
+
+               getchr; { skip '(' }
+               regcod(rgtcod); { parse register }
+               if rgtcod <> rgnl then begin
+
+                  if (rgtcod <> rgbc) and (rgtcod <> rgde) and
+                        (rgtcod <> rghl) and (rgtcod <> rgix)
+                              and (rgtcod <> rgiy) then
+                                 prterr(eregt); { wrong reg }
+                  { wrong register }
+                  if ((rgtcod = rgde) or (rgtcod = rgbc)) and
+                        (lftcod <> rga) then prterr(eregt);
+                  case rgtcod of { register }
+
+                     rgbc: outbyt(10); { ld a,(bc) }
+                     rgde: outbyt(26); { ld a,(de) }
+                     rghl: outbyt(opcode + 70); { ld des,(hl) }
+                     rgix, rgiy: begin { ld des,(ww+d) }
+
+                        if rgtcod = rgix then outbyt(221)
+                        else outbyt(253);
+                        outbyt(opcode + 70);
+                        nexpr(sym); { parse displacement }
+                        gensym(sym, 0, false, imnorm, 0, 0, 8) { generate }
+
+                     end
+
+                  end;
+                  skpspc; { skip spaces }
+                  { no ')' }
+                  prcnxt(')', erpexp)
+
+               { ld a,(src) }
+               end else if lftcod = rga then begin
+
+                  nexpr(sym); { parse location }
+                  skpspc; { skip spaces }
+                  { no ')' }
+                  prcnxt(')', erpexp);
+                  outbyt(58);
+                  gensym(sym, 0, false, imnorm, 0, 0, 16); { generate }
+                  rgtcod := rga { just to bipass next test }
+
+               end else cmdrot^.inp := inpsav { restore position }
+
+            end;
+            if rgtcod = rgnl then begin { ld des,imm }
+
+               nexpr(sym); { parse immediate }
+               outbyt(opcode + 6);
+               gensym(sym, 0, false, imnorm, 0, 0, 8) { generate }
+
+            end
+
+         end
+
+      end
+
+   end
+
+end;
+
+{******************************************************************************
+
+Load double register
+ 
+Encodes the following:
+ 
+     ld    des,src
+ 
+Where des is one of bc, de, hl, ix, iy, or sp. Src is one of hl, ix, iy, 
+immediate, or indirect immediate. Valid combinations are determined by context.
+A variant field is generated for any immediate.
+ 
+******************************************************************************}
+ 
+procedure lddreg(lftcod : regc { left register });
+
+var rgtcod : regc; { register }
+    sym    : symptr; { immediate }
+    inpsav : inpinx; { position save for backtrack }
+
+begin
+
+   skpspc; { skip spaces }
+   prcnxt(',', ecmaexp); { not ',' }
+   regcod(rgtcod); { parse register }
+   if (lftcod = rgsp) and (rgtcod = rgix) then begin
+
+      outbyt(221); { ld sp,ix }
+      outbyt(249)
+
+   end else if (lftcod = rgsp) and (rgtcod = rgiy) then begin
+
+      outbyt(253); { ld sp,iy }
+      outbyt(249)
+
+   end else if (lftcod = rgsp) and (rgtcod = rghl) then
+
+      outbyt(249) { ld sp,hl }
+
+   else begin
+
+      sym := nil; { flag no value }
+      skpspc; { skip spaces }
+      inpsav := cmdrot^.inp; { save current input position }
+      if chkchr = '(' then begin { ld ww,(src) }
+
+         getchr; { skip '(' }
+         nexpr(sym); { parse location }
+         prcnxt(')', erpexp); { not ')' }
+         skpspc; { skip spaces }
+         if endlin or (chkchr = ';') then { end of line }
+            case lftcod of { register }
+
+            { ld bc,(src) }
+            rgbc: begin outbyt(237); outbyt(75) end;
+            { ld de,(src) }
+            rgde: begin outbyt(237); outbyt(91) end;
+            rghl: outbyt(42); { ld hl,(src) }
+            { ld ix,(src) }
+            rgix: begin outbyt(221); outbyt(42) end;
+            { ld iy,(src) }
+            rgiy: begin outbyt(253); outbyt(42) end;
+            { ld sp,(src) }
+            rgsp: begin outbyt(237); outbyt(123) end
+
+         end else begin { something after ')', must be expr }
+
+            sym := nil; { reset value }
+            cmdrot^.inp := inpsav { restore psotion }
+
+         end
+
+      end;
+      if sym = nil then begin { ld ww,src }
+
+         nexpr(sym); { parse location }
+         case lftcod of { register }
+
+            rgbc : outbyt(1); { ld bc,src }
+            rgde : outbyt(17); { ld de,src }
+            rghl : outbyt(33); { ld hl,src }
+            { ld ix,src }
+            rgix : begin outbyt(221); outbyt(33) end;
+            { ld iy,src }
+            rgiy : begin outbyt(253); outbyt(33) end;
+            { ld sp,src }
+            rgsp : outbyt(49)
+
+         end
+
+      end;
+      gensym(sym, 0, false, imnorm, 0, 0, 16) { generate }
+
+   end
+
+end;
+
+{******************************************************************************
+ 
+Load process
+ 
+Encodes the following:
+ 
+     ld    des,src
+ 
+Where des is any of a, b, c, d, e, h, l, i, r, sp, (hl), (ix+d), (iy+d), hl, 
+de, bc, ix, or iy. Src is any of a, b, c, d, e, h, l, i, r, (hl), (ix+d), or 
+immediate. Valid combinations are determined by context.
+A variant field is produced for displacements or immediates.
+ 
+******************************************************************************}
+ 
+procedure load;
+ 
+var lftcod : regc; { register }
+ 
+begin
+
+   if chkchr = '(' then begin { des is indirect }
+
+      getchr; { skip '(' }
+      regcod(lftcod); { parse register }
+      { dispatch to store immediate or store dbl reg }
+      if lftcod = rgnl then stimm else stdregi(lftcod)
+
+   end else begin { sreg or dreg }
+
+      regcod(lftcod); { parse register }
+      case lftcod of { register }
+
+         rgnl: prterr(eregexp); { no register }
+         rgaf, rgafa: prterr(eregt); { wrong register }
+         rga, rgb, rgc, rgd, rge,
+         rgh, rgl, rgi, rgr: ldsreg(lftcod); { load single }
+         { load double register }
+         rgbc, rgde, rghl, rgix, rgiy, rgsp: lddreg(lftcod)
+
+      end
+
+   end
+
+end;
+
+{******************************************************************************
+
+Bit operations
+
+Encodes the following:
+
+     bit   n,src
+     set   n,des
+     res   n,des
+
+Where n is a bit number, 0 - 7. des are the following: a, b, c, d, e, h, l, 
+(hl), (ix+d) or (iy+d).
+A variant field is produced for displacements.
+If the bit number is not absolute, we output an expression describing how to 
+construct the final opcode. Where 'op' is the extention opcode consisting of 
+all fields except the bit number:
+
+     opcode := ((n and 7) * 8) or op
+
+Note that this byte is allways at the end of the instruction, and that it will 
+be output completely undefined.
+
+******************************************************************************}
+
+procedure bit(i: opcodet); { opcode to process }
+
+var rgtcod : regc; { register }
+    opcode : byte; { opcode construction site }
+    sym, fld, opr : symptr; { bit number, displacement }
+
+begin
+
+   case i of { opcode }
+
+      opbit: opcode := 64; { bit n,src }
+      opset: opcode := 192; { set n,des }
+      opres: opcode := 128 { res n,des }
+
+   end;
+   nexpr(fld); { parse bit number }
+   skpspc; { skip spaces }
+   prcnxt(',', ecmaexp); { no ',' }
+   regcod(rgtcod); { parse register }
+   if rgtcod <> rgnl then begin { op n,reg }
+      outbyt(203);
+      case rgtcod of { register }
+
+         rgaf, rgbc, rgde, rghl, rgix, rgiy, rgsp,
+         rgi, rgr, rgafa: prterr(eregt); { wrong register }
+         rga: opcode := opcode + 7; { op n,a }
+         rgb: ; { op n,b }
+         rgc: opcode := opcode + 1; { op n,c }
+         rgd: opcode := opcode + 2; { op n,d }
+         rge: opcode := opcode + 3; { op n,e }
+         rgh: opcode := opcode + 4; { op n,h }
+         rgl: opcode := opcode + 5 { op n,l }
+
+      end
+
+   end else begin
+
+      { must be op n,(ww+d) }
+      prcnxt('(', eregexp);
+      regcod(rgtcod); { parse register }
+      if rgtcod = rgnl then prterr(eregexp); { no register }
+      if rgtcod = rghl then begin { op n,(hl) }
+
+         outbyt(203);
+         opcode := opcode + 6
+
+      end else if (rgtcod = rgix) or (rgtcod = rgiy) then begin
+
+         { op n,(ww+d) }
+         if rgtcod = rgix then outbyt(221) else outbyt(253);
+         outbyt(203);
+         skpspc; { skip spaces }
+         if chkchr = ')' then outbyt(0) else { no displacement }
+            { parse, generate displacement }
+            begin 
+
+            nexpr(sym); { parse expression }
+            gensym(sym, 0, false, imnorm, 0, 0, 8) { generate }
+
+         end;
+         opcode := opcode + 6
+
+      end else prterr(eregt); { wrong register }
+      skpspc; { skip spaces }
+      prcnxt(')', erpexp) { no ')' }
+
+   end;
+   if not fld^.def or fld^.add or fld^.symvrs then begin
+
+      { variant bit field }
+      getsym(sym); { get mask entry }
+      sym^.def := true; { set defined }
+      sym^.val := $7; { set mask }
+      getsym(opr); { get 'and' operator entry }
+      opr^.opr := oand; { set 'and' }
+      opr^.lft := fld; { set bit field }
+      opr^.rgt := sym; { set mask }
+      fld := opr; { set new top }
+      getsym(sym); { get shift value entry }
+      sym^.def := true; { set defined }
+      sym^.val := 8; { set shift left 3 bits }
+      getsym(opr); { get shift operator entry }
+      opr^.opr := omult; { shift by multiply }
+      opr^.lft := fld; { set masked field to shift }
+      opr^.rgt := sym; { set shift by value }
+      fld := opr; { set new top }
+      getsym(sym); { get opcode entry }
+      sym^.def := true; { set defined }
+      sym^.val := opcode; { set value opcode }
+      getsym(opr); { get combine entry }
+      opr^.opr := oor; { combine with 'or' }
+      opr^.lft := fld; { set masked, shifted field }
+      opr^.rgt := sym; { set opcode }
+      gensym(sym, 0, false, imnorm, 0, 0, 8) { generate opcode complex }
+
+   end else begin { generate absolute opcode }
+
+      if fld^.val > 7 then prterr(epoor); { chk >= 0 < 7 }
+      outbyt(opcode + fld^.val * 8); { output opcode }
+      if fld^.lab = nil then putsym(fld) { free, dispose }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Process opcode
+
+Expects the opcode in labbuf. A search is done for the opcode, and a handler is 
+executed for the opcode.
+Note that the entire process may be carried out here (for simple instructions), 
+and that multiple opcodes are sometimes assigned to a single handler. In the 
+multiple opcode case, the actuall 'code' for the instruction is passed to the 
+handler.
+for all opcodes except 'equ', 'glbl', 'extl', 'macro' and 'dv' a default line 
+label declaration is performed.
+
+******************************************************************************}
+
+procedure mprcopc;
+
+var i: opcodet; { code to execute }
+
+begin
+
+   i := fndres(labbuf); { get reserved code }
+   if i = opnull then prterr(eopcnf); { none found }
+   { check perform label equation }
+   if (i <> opequ) and (i <> opglobal) and (i <> opextern) and
+      (i <> opmacro) and (i <> opdefvs) then prclab;
+   skpspc; { skip spaces }
+   case i of { opcode }
+ 
+      opexx:   outbyt(217); { exx }
+      opldi:   begin outbyt(237); outbyt(160) end; { ldi }
+      opldir:  begin outbyt(237); outbyt(176) end; { ldir }
+      opldd:   begin outbyt(237); outbyt(168) end; { ldd }
+      oplddr:  begin outbyt(237); outbyt(184) end; { lddr }
+      opcpi:   begin outbyt(237); outbyt(161) end; { cpi }
+      opcpir:  begin outbyt(237); outbyt(177) end; { cpir }
+      opcpd:   begin outbyt(237); outbyt(169) end; { cpd }
+      opcpdr:  begin outbyt(237); outbyt(185) end; { cpdr }
+      opdaa:   outbyt(39); { daa }
+      opcpl:   outbyt(47); { cpl }
+      opneg:   begin outbyt(237); outbyt(68) end; { neg }
+      opccf:   outbyt(63); { ccf }
+      opscf:   outbyt(55); { scf }
+      opnop:   outbyt(0); { nop }
+      ophalt:  outbyt(118); { halt }
+      opdi:    outbyt(243); { di }
+      opei:    outbyt(251); { ei }
+      oprlca:  outbyt(7); { rlca }
+      oprla:   outbyt(23); { rla }
+      oprrca:  outbyt(15); { rrca }
+      oprra:   outbyt(31); { rra }
+      opreti:  begin outbyt(237); outbyt(77) end; { reti }
+      opretn:  begin outbyt(237); outbyt(69) end; { retn }
+      opini:   begin outbyt(237); outbyt(162) end; { ini }
+      opinir:  begin outbyt(237); outbyt(178) end; { inir }
+      opind:   begin outbyt(237); outbyt(170) end; { ind }
+      opindr:  begin outbyt(237); outbyt(186) end; { indr }
+      opouti:  begin outbyt(237); outbyt(163) end; { outi }
+      opotir:  begin outbyt(237); outbyt(179) end; { otir }
+      opoutd:  begin outbyt(237); outbyt(171) end; { outd }
+      opotdr:  begin outbyt(237); outbyt(187) end; { otdr }
+      oprld:   begin outbyt(237); outbyt(111) end; { rld }
+      oprrd:   begin outbyt(237); outbyt(103) end; { rrd }
+      oppush:  push; { push ww }
+      oppop:   pop; { pop ww }
+      opsub, opand, opor, opxor, opcp: maths(i); { op b }
+      opinc, opdec: ids(i); { inc/dec s/ww }
+      opim:    intm; { im n }
+      { rot b }
+      oprlc, oprl, oprrc, oprr, opsla, opsra, opsrl: rots(i);
+      opdjnz:  djnz; { djnz n }
+      oprst:   rst; { rst n }
+      opret:   ret; { ret [cc] }
+      opld:    load; { ld des,src }
+      opex:    exch; { ex des,src }
+      opadd, opadc, opsbc: mathd(i); { op des,src }
+      opbit, opset, opres: bit(i); { bit n,des }
+      opjp, opcall: jpcl(i); { jp/call [cc,]loc }
+      opjr: jrel; { jr [cc,]loc }
+      opin: inp; { in des,src }
+      opout: out; { out des,src }
+
+      { assembler pseudo operations }
+
+      opmacro:   macro;   { lab: macro x }
+      opendmac:  endmac;  { endmac }
+      opinclude: include; { include file }
+      opequ:     equlab;  { lab: equ n }
+      opglobal:  gbllab;  { lab: global }
+      opextern:  extlab;  { lab: extern }
+      opalignp:  alignp;  { align program }
+      opalignv:  alignv;  { align variable }
+      opif:      iftr;    { if n }
+      opelse:    elsec;   { else }
+      opelseif:  elseif;  { elseif }
+      opendif:   endif;   { endif }
+      opassm:    assm;    { assm string }
+      opbendian: prterr(encend); { Z80 is not endian configurable }
+      oplendian: prterr(encend); { Z80 is not endian configurable }
+      opdefb:    defvall(true, false, 1); { defb b/str[,b/str]... }
+      opdefps:   defps;   { defps n }
+      opdefvs:   defvs;   { defvs n }
+      opdefbe:   defval(true, false); { defbe l, n }
+      opdefle:   defval(false, false); { defle l, n }
+      opdefbef:  defval(true, true); { defbef l, n }
+      opdeflef:  defval(false, true); { deflef l, n }
+      opdeff:    defvall(cpubigend, true, 8); { deff n }
+      opdefsf:   defvall(cpubigend, true, 4); { defsf n }
+      opdeflf:   defvall(cpubigend, true, 10); { deflf n }
+      opdefhw:   defvall(cpubigend, false, cpuwrdsiz div 2); { defhw n }
+      opdefw:    defvall(cpubigend, false, cpuwrdsiz); { defw w[,w]... }
+      opdefdw:   defvall(cpubigend, false, cpuwrdsiz*2); { defdw n }
+      opdefqw:   defvall(cpubigend, false, cpuwrdsiz*4); { defqw n }
+
+   end
+
+end;
+
+begin
+end.
+

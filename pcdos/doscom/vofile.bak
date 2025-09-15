@@ -1,0 +1,7 @@
+                          VO FILE SYSTEM
+
+The standard file system for VO is based on progressive indexing (see previous
+work with progressive indexing). The first sector on the disk is reserved for
+the bootstrap sector. The second sector is the prime root directory sector.
+
+The format of the boot sector is not specified, as it

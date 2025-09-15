@@ -1,0 +1,103 @@
+{*******************************************************************************
+
+I8080 CPU definition file
+
+*******************************************************************************}
+
+module defi8080;
+
+const maxmem  = 65535; { maximum memory address }
+
+
+type 
+
+   { 8080 registers, mostly byte }
+   regtyp = (rega,   { a }
+             regb,   { b }
+             regc,   { c }
+             regd,   { d }
+             rege,   { e }
+             regh,   { h }
+             regl,   { l }
+             regpc,  { pc }
+             regsp,  { sp }
+             regfz,  { zero flag }
+             regfc,  { carry flag }
+             regfa,  { auxiliary carry flag }
+             regfs,  { sign flag }
+             regfp,  { parity flag }
+             regf5,  { bit 5 of flags register }
+             regf3,  { bit 3 of flags register }
+             regf1,  { bit 1 of flags register }
+             regie); { interrupt enable flag }
+
+   { command codes }
+   mchcod = (mcnull, { no command }
+             mcfpe,  { flag parity even }
+             mcfpo,  { flag parity odd }
+             mcfp,   { flag positive }
+             mcfm,   { flag minus }
+             mcfz,   { flag zero }
+             mcfnz,  { flag non-zero }
+             mcfa,   { flag arithmetic carrry }
+             mcfna,  { flag no arithmetic carry }
+             mcfc,   { flag carry }
+             mcfnc,  { flag no carry }
+             mcend); { end sentry }
+
+   { intermediate codes }
+   mincod = (mifpe,   { flag parity even }
+             mifpo,   { flag parity odd }
+             mifp,    { flag positive }
+             mifm,    { flag minus }
+             mifz,    { flag zero }
+             mifnz,   { flag not zero }
+             mifa,    { flag arithmetic carry }
+             mifna,   { flag no arithmetic carry }
+             mifc,    { flag carry }
+             mifnc,   { flag no carry }
+             miendl); { end of line }
+
+   { Reserable resources }
+   rsvtyp = (rsinvi08,   { reserve invalid instruction $08 }
+             rsinvi10,   { reserve invalid instruction $10 }
+             rsinvi18,   { reserve invalid instruction $18 }
+             rsinvi20,   { reserve invalid instruction $20 }
+             rsinvi28,   { reserve invalid instruction $28 }
+             rsinvi30,   { reserve invalid instruction $30 }
+             rsinvi38,   { reserve invalid instruction $38 }
+             rsinvicb,   { reserve invalid instruction $cb }
+             rsinvid9,   { reserve invalid instruction $d9 }
+             rsinvidd,   { reserve invalid instruction $dd }
+             rsinvied,   { reserve invalid instruction $ed }
+             rsinvifd,   { reserve invalid instruction $fd }
+             rsmemread,  { reserve memory read }
+             rsmemwrite, { reserve memory write }
+             rsmemrdwr,  { reserve memory read or write }
+             rsioread,   { reserve I/O read }
+             rsiowrite,  { reserve I/O write }
+             rsiordwr,   { reserve I/O read or write }
+             rshalt);    { reserve halt instruction }
+
+   { Events }
+   evttyp = (etinvi08,   { invalid instruction $08 }
+             etinvi10,   { invalid instruction $10 }
+             etinvi18,   { invalid instruction $10 }
+             etinvi20,   { invalid instruction $10 }
+             etinvi28,   { invalid instruction $10 }
+             etinvi30,   { invalid instruction $10 }
+             etinvi38,   { invalid instruction $10 }
+             etinvicb,   { invalid instruction $10 }
+             etinvid9,   { invalid instruction $10 }
+             etinvidd,   { invalid instruction $10 }
+             etinvied,   { invalid instruction $10 }
+             etinvifd,   { invalid instruction $10 }
+             etmemread,  { memory read }
+             etmemwrite, { memory write }
+             etioread,   { I/O read }
+             etiowrite,  { I/O write }
+             ethalt);    { halt }
+
+
+begin
+end.

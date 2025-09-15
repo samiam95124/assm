@@ -1,0 +1,1356 @@
+{*******************************************************************************
+*                                                                              *
+*                                DIRECTIVE MODULE                              *
+*                                                                              *
+*                        COPYRIGHT (C) 2006 SCOTT A. MOORE                     *
+*                                                                              *
+* Contains the parsing and implementation for assembler directives.            *
+*                                                                              *
+*******************************************************************************}
+
+module direct(output);
+
+uses strlib,  { string library }
+     asdef,   { generic definitions }
+     common,  { global variables }
+     utl,     { generic utilities }
+     machine, { custom assembler module }
+     asmain;  { error processing }
+
+procedure gbllab; forward; { process global operator }
+procedure extlab; forward;  { process external operator }
+procedure equlab; forward;  { process equation }
+procedure setlab; forward;  { process 'set' }
+procedure defps; forward;   { define program space }
+procedure defvs; forward;   { define variable space }
+procedure alignp; forward;  { align program counter }
+procedure alignv; forward;  { align varaible counter }
+procedure iftr; forward;    { process if statement }
+procedure elsec; forward;   { process else statement }
+procedure elseif; forward;  { process elseif statement }
+procedure endif; forward;   { process endif statement }
+procedure include; forward; { process include statement }
+procedure assm; forward;    { process assemble string }
+procedure asprint(err: boolean); forward; { print from source }
+procedure asstop; forward;  { user ordered stop }
+procedure macro; forward;   { begin macro definition }
+procedure endmac; forward;  { end macro definition }
+{ define value }
+procedure defval(big: boolean; float: boolean); forward;
+{ define value with length }
+procedure defvall(big: boolean; float: boolean; len: integer); forward;
+procedure block; forward; { start block }
+procedure endblk; forward; { end block }
+
+private
+
+{*******************************************************************************
+ 
+Begin macro definition
+
+Processes a full macro definition. The end of a macro is actually found by
+directly searching for it, not via the command mechanisim. This is because
+the lines in a macro are not executed.
+Macros are "precompiled", which means we come up with a list of instructions
+on how to create the macro. First, we form a list of all the labels that make
+up the parameter list, then we read each line of the macro. The line is
+searched for each of the parameter labels, and also for the special macro
+parameters:
+
+   __     - Replaced by the number of parameters in the invocation.
+   ______ - Replaced by the number of times the macro is invoked.
+
+Note the number of spaces in the parameter matches the number of digits each
+parameter produces, so that the actual and prototype forms take up the same
+amount of space.
+As each string section, parameter and instruction is produced, it is placed
+on the macro's "contructor list". Note that even the termination of each line
+is a constructor. To keep from using too many contructors, the introduction
+of a string and another instruction is often overlapped.
+The final contructor list then becomes the macro. The macro is registered as
+a symbol, and placed in the symbol table. Macro symbols cannot be used as
+normal symbols, nor are they exported in any way.
+Macros can be nested. We keep track of how many nested "macro"/"endmac"
+sequences we encounter, which is nessary to find our macro's end, but otherwise
+treat the embedded macro as a string.
+
+*******************************************************************************}
+
+procedure macro;
+
+var c:      char;      { character holder }
+    opcode: boolean;   { opcode found flag }
+    maccnt: integer;   { nested macro definition count }
+    endmac: boolean;   { 'endmac' found flag }
+    quote:  boolean;   { quote flag }
+    ml:     macptr;    { macro constructor list }
+    mlst:   macptr;    { macro constructor list last }
+    mp:     macptr;    { macro contructor pointers }
+    str:    linbuf;    { macro line string }
+    slen:   inpinx;    { index for that }
+    strsav: inpinx;    { save for string index }
+    alone:  boolean;   { macro content alone on line }
+    parstr: array [1..maxpar] of pstring; { parameter string keepers }
+    pc:     0..maxpar; { parameter counter }
+    i:      inpinx;    { index for string data }
+    err:    boolean;   { error processed flag }
+
+{ get character and place in macro string }
+
+procedure getchrs;
+
+begin
+
+   slen := slen+1; { count character }
+   str[slen] := chkchr; { place character }
+   getchr { skip }
+
+end;
+
+{ skip spaces with reserve }
+
+procedure skpspcs;
+
+begin
+
+   repeat
+
+      { skip any spaces }
+      while not endlin and (chkchr <= ' ') do getchrs;
+      if chkchr = '!' then begin { skip comment }
+
+         getchrs; { skip '!' }
+         { skip to eoln }
+         while not endlin do getchrs
+
+      end
+
+   until endlin or (chkchr > ' ')
+
+end;
+
+{ parse label with output reserve }
+
+procedure getlabs;
+ 
+var i: labinx; { label index }
+ 
+begin
+
+   for i := 1 to maxlab do labbuf[i] := ' '; { clear buff }
+   i := 1;
+   while alpha(chkchr) or digit(chkchr) or (chkchr = '_') or (chkchr = '.') do
+
+      begin { accept valid characters }
+      if i >= maxlab then prterr(elabtl); { too long }
+      labbuf[i] := chkchr; { place character }
+      getchrs; { skip character }
+      i := i+1 { count }
+
+   end
+
+end;
+
+{ insert new macro contructor in list }
+
+procedure insmac(var mp: macptr); 
+
+begin
+
+   new(mp); { get a new macro contructor }
+   if mlst = nil then { insert at top }
+      begin mp^.next := ml; ml := mp end
+   else { insert middle }
+      begin mp^.next := nil; mlst^.next := mp end;
+   mlst := mp; { set new last }
+   mp^.sp := nil; { set no string }
+   mp^.par := 0 { clear code }
+
+end;
+
+{ place section of buffer string }
+
+procedure plcsec(i: inpinx);
+
+var mp: macptr; { macro contructor pointer }
+    si: inpinx; { index for string }
+
+begin
+
+   if i > 0 then begin { not a null string }
+
+      { place string }
+      insmac(mp); { get a new macro contructor }
+      new(mp^.sp, i); { get a new string }
+      for si := 1 to i do mp^.sp^[si] := str[si] { copy contents }
+
+   end
+
+end;
+
+{ place macro op-code }
+
+procedure plcmop(c: byte);
+
+begin
+
+   { check no previous entry exists, and place one if so }
+   if mlst = nil then begin insmac(mp); mp^.par := c end
+   { check if previous entry has no code attached }
+   else if mlst^.par = 0 then mlst^.par := c
+   { start new entry if previous one already used }
+   else begin insmac(mp); mp^.par := c end
+
+end;
+
+{ place buffer string as macro contructor }
+
+procedure plcmac;
+
+var x, y: inpinx;    { string indexes }
+    pi:   1..maxpar; { parameter count }
+    fp:   0..maxpar; { found parameter }
+
+begin
+
+   { search for parameter substrings }
+   i := 1; { set 1st character }
+   while i <= slen do begin { match substrings }
+
+      if strsub(str, i, '______') then begin
+      
+         { invocation count macro }
+         plcsec(i-1); { place left side string }
+         { gap left side from string }
+         y := 1; { set 1st character }
+         for x := i+4 to slen do begin str[y] := str[x]; y := y+1 end;
+         slen := slen-(i+4-1); { find new string length }
+         i := 0; { set at start again (to be incremented) }
+         plcmop(253) { place macro count code }
+      
+      end else if strsub(str, i, '__') then begin
+      
+         { parameter count macro }
+         plcsec(i-1); { place left side string }
+         { gap left side from string }
+         y := 1; { set 1st character }
+         for x := i+2 to slen do begin str[y] := str[x]; y := y+1 end;
+         slen := slen-(i+2-1); { find new string length }
+         i := 0; { set at start again (to be incremented) }
+         plcmop(254) { place parameter count code }
+      
+      end else begin 
+
+         { search for a parameter }
+         fp := 0; { set no parameter }
+         for pi := 1 to pc do
+            if strsub(str, i, parstr[pi]^) then
+               if fp > 0 then begin { we already have a parameter }
+
+                  { check this string is longer, and substitute if so }
+                  if max(parstr[pi]^) > max(parstr[fp]^) then fp := pi
+
+               end else fp := pi; { set 1st found parameter }
+         if fp > 0 then begin
+
+            { found parameter macro }
+            plcsec(i-1); { place left side string }
+            { gap left side from string }
+            y := 1; { set 1st character }
+            for x := i+max(parstr[fp]^) to slen do
+               begin str[y] := str[x]; y := y+1 end;
+            { find new string length }
+            slen := slen-(i+max(parstr[fp]^)-1);
+            i := 0; { set at start again (to be incremented) }
+            plcmop(fp); { place parameter count code }
+
+         end
+      
+      end;
+      if i <= slen then i := i+1 { next string character }
+   
+   end;
+   plcsec(slen); { place remaining string }
+   plcmop(255) { place line terminator }
+
+end;
+
+begin
+
+   if linlab = nil then prterr(emlab); { no label }
+   if linlab^.def then prterr(eduplab); { duplicate }
+   if linlab^.ext or linlab^.gbl then prterr(emsatt); { external }
+   pc := 0; { clear parameter count }
+   err := false; { set no error occurred }
+   skpspc; { skip spaces }
+   if not endcmd then repeat { there are parameters }
+
+      skpspc; { skip spaces }
+      if not (chkchr in ['a'..'z', 'A'..'Z', '_', '.']) then 
+         prterr(elabexp); { label expected }
+      getlab; { get label }
+      if pc <= maxpar then begin { register parameter }
+
+         pc := pc+1; { count parameters }
+         new(parstr[pc], len(labbuf)); { create a string for parameter }
+         copy(parstr[pc]^, labbuf); { copy into place }
+
+      end else begin { error, too many parameters }
+
+         { this error would be really hard to do. we supress all errors but the
+           first, and just ignore further parameters }
+         if not err then prterr(eparnum); { too many parameters }
+         err := true { flag error has occured }
+
+      end;
+      c := chkchr; { get next character }
+      if c = ',' then getchr { ',', another label present }
+
+   until c <> ','; { no more parameters }
+   { finish macro command }
+   skpspc; { skip spaces }
+   if not endcmd then prterr(eparam); { bad parameter error }
+   if chkchr = ';' then getchr; { skip to next command }
+   { skip forward until we find 'endmac'. Note that this direct
+     comparision method for finding endmac means that it isn't
+     really an opcode }
+   maccnt := 0; { clear nested macro count }
+   endmac := false; { set 'endmac' not found }
+   ml := nil; { clear macro constructor list }
+   mlst := nil; { clear macro constructor list last }
+   clears(str); { clear construction string }
+   slen := 0; { clear contruction string }
+   strsav := 0; { set that as last save }
+   alone := false; { set not alone on line }
+   repeat { parse commands }
+
+      skpspcs; { skip spaces }
+      if endlin then begin { get next line }
+
+         { if a macro line exists, add to list }
+         if alone or (slen <> 0) then plcmac; { create macro line }
+         newlin; { load new line }
+         if flend then prterr(eutmac); { unterminated macro }
+         slen := 0; { clear contruction string }
+         strsav := 0; { set that as last save }
+         alone := true { set macro content alone on line }
+
+      end;
+      { at next command, parse and check for "endmac" }
+      skpspcs; { skip spaces }
+      opcode := false; { set no opcode found }
+      while (chkchr in ['a'..'z', 'A'..'Z', '_']) and 
+            not opcode do begin { parse label/opcode }
+
+         getlabs; { get label }
+         if chkchr = ':' then getchrs { it's a label }
+         else begin { found the opcode }
+
+            if compp(labbuf, 'macro') then 
+               maccnt := maccnt+1 { count macro crossings }
+            else if compp(labbuf, 'endmac') then begin
+
+               { 'endmac' found }
+               if maccnt = 0 then begin { found }
+
+                  endmac := true; { it's ours }
+                  slen := strsav; { restore position before }
+                  alone := false { set not alone on line } 
+
+               end else maccnt := maccnt-1 { count endings }
+
+            end;
+            opcode := true { set opcode found }
+
+         end;
+         skpspcs { skip spaces }
+
+      end;
+      { skip all parameters, taking quotes into account }
+      quote := false; { set not in quote }
+      while not endlin and ((chkchr <> ';') or quote) do begin
+
+         { invert quote status on every quote found. Note that
+           this is ok even for the quote image, since it just
+           looks like two strings back to back }
+         if chkchr = '''' then { quote found }
+            quote := not quote { invert quote status }
+         else if quote and (chkchr = '\\') then getchrs; { process force }
+         if not endlin then getchrs { get next }
+
+      end;
+      if not endmac then begin { not end of macro }
+
+         skpspcs; { skip spaces }
+         c := chkchr; { save next character }
+         if c = ';' then begin
+ 
+            strsav := slen; { set new 'keep' position }
+            getchrs { another command follows }
+
+         end
+
+      end
+
+   until endmac; { until the end of macro found }
+   { if a macro line exists, add to list }
+   if alone or (slen <> 0) then plcmac; { create macro line }
+   { if the macro was empty, the macro is a no-op. We must place SOMETHING
+     in the list, else it won't be flagged as a macro }
+   if ml = nil then plcmop(0); { place no-op macro }
+   linlab^.mac := ml; { place macro list in symbol }
+   linlab^.typ := stmac; { set macro type }
+   { now, we continue after 'endmac' as if terminating a normal
+     command, as we have loaded the next line(s) for the 
+     command processor }
+
+end;
+
+{*******************************************************************************
+ 
+End macro definition
+
+Since a macro definition finds it's own end, a macro end instruction executed
+normally is automatically an error.
+ 
+*******************************************************************************}
+
+procedure endmac;
+
+begin
+
+   prterr(emismac) { missing 'macro' statement }
+
+end;
+
+{*******************************************************************************
+ 
+Process global operator
+ 
+Types the line label as global. The line label is given to us without other 
+process. It may be in any state except global or external (must not have a 
+previous attribute). Symbols may be typed global before or after their 
+definition.
+It is an error if no line label is present.
+ 
+*******************************************************************************}
+ 
+procedure gbllab;
+ 
+begin
+
+   if linlab = nil then prterr(emlab); { no label }
+   if linlab^.mac <> nil then prterr(esymmac); { is macro }
+   { check previous attribute }
+   if linlab^.gbl or linlab^.ext then prterr(epvatt);
+   linlab^.gbl := true { set global }
+
+end;
+
+{*******************************************************************************
+ 
+Process external operator
+ 
+Types the line label as external. The line label is given to us without prior 
+process. It may be in any state except global or external (must not have a 
+previous attribute). Symbols may be typed external before or after their 
+declaration.
+It is an error if the line label does not exist.
+ 
+*******************************************************************************}
+ 
+procedure extlab;
+ 
+begin
+
+   if linlab = nil then prterr(emlab); { no line label }
+   if linlab^.mac <> nil then prterr(esymmac); { is macro }
+   { check previous attribute }
+   if linlab^.gbl or linlab^.ext then prterr(epvatt);
+   linlab^.ext := true { set external }
+
+end;
+
+{*******************************************************************************
+
+Process equation
+
+Equates the line label to an expression. The line label is given to us without 
+prior process. The expression as operand is processed, and the result assigned 
+to the line label. This is done such that any non-symbolized operation is 
+assigned to the label. The label receives all flags except global and external 
+(a label may not inherit such types).
+
+*******************************************************************************}
+
+procedure equlab;
+
+var sym: symptr; { value }
+
+begin
+
+   if linlab = nil then prterr(emlab); { no label }
+   if linlab^.mac <> nil then prterr(esymmac); { is macro }
+   if linlab^.def then prterr(eduplab); { duplicate }
+   if linlab^.ext then prterr(edfext); { external }
+   expr(sym); { parse value }
+   linlab^.opr := sym^.opr; { copy operation }
+   linlab^.def := sym^.def; { copy defined status }
+   linlab^.add := sym^.add; { copy address status }
+   linlab^.vrs := sym^.vrs; { copy variable status }
+   linlab^.typ := sym^.typ; { copy type }
+   linlab^.val := sym^.val; { copy value }
+   linlab^.lft := sym^.lft; { copy left linkage }
+   linlab^.rgt := sym^.rgt; { copy right linkage }
+   if sym^.typ = ststr then { place string in storage }
+      linlab^.str := copy(sym^.str^)
+   else if sym^.typ <> stint then prterr(eimpl); { no float yet }
+   if sym^.lab = nil then putsym(sym); { free, dispose }
+   addinc(linlab) { add inclusion block entry }
+
+end;
+
+{*******************************************************************************
+
+Process set
+
+Set the line label to an expression. The line label is given to us without 
+prior process. The expression as operand is processed, and the result assigned 
+to the line label. This is done such that any non-symbolized operation is 
+assigned to the label. The label receives all flags except global and external 
+(a label may not inherit such types).
+
+Set expressions must be absolute and defined, since they cannot be resolved
+later. Labels can be 'set' any number of times, but an equate label can not
+be turned into a set label.
+
+*******************************************************************************}
+
+procedure setlab;
+
+var sym: symptr; { value }
+
+begin
+
+   if linlab = nil then prterr(emlab); { no label }
+   if linlab^.mac <> nil then prterr(esymmac); { is macro }
+   if linlab^.def and not linlab^.stv then prterr(eduplab); { duplicate }
+   if linlab^.ext then prterr(edfext); { external }
+   expr(sym); { parse value }
+   if not sym^.def or sym^.add or sym^.vrs then
+      prterr(epmba); { flag invalid }
+   linlab^.stv := true; { indicate 'set' variable }
+   linlab^.opr := sym^.opr; { copy operation }
+   linlab^.def := sym^.def; { copy defined status }
+   linlab^.add := false; { set not address }
+   linlab^.vrs := false; { set not variable }
+   linlab^.typ := sym^.typ; { copy type }
+   linlab^.val := sym^.val; { copy value }
+   linlab^.lft := nil; { set no linkage }
+   linlab^.rgt := nil; { set no linkage }
+   if sym^.typ = ststr then { place string in storage }
+      linlab^.str := copy(sym^.str^)
+   else if sym^.typ <> stint then prterr(eimpl); { no float yet }
+   if sym^.lab = nil then putsym(sym) { free, dispose }
+
+end;
+
+{*******************************************************************************
+
+Define value
+
+Given the endian and floating point statuses of the value to be generated, 
+parses the length of value to be output, then parses any number of values to be 
+output, separated by ','. The type of the expression must match the type of the
+output, except in the case of a string, which is treated as a sequence of 
+discrete values.
+
+*******************************************************************************}
+
+procedure defval(big:   boolean;  { big endian mode }
+                 float: boolean); { floating point mode }
+
+var sym: symptr; { value }
+    c:   char;
+    i:   inpinx; { string index }
+    l:   integer; { length of value }
+
+begin
+
+   if float then prterr(eimpl); { no float yet }
+   nexpr(sym); { parse length }
+   { check absolute }
+   if not sym^.def or sym^.add or sym^.vrs then
+      prterr(epmba);
+   l := sym^.val; { get length }
+   if l <= 0 then prterr(eparam); { bad length value }
+   skpspc; { skip spaces }
+   if chkchr <> ',' then prterr(ecmaexp); { ',' expected }
+   getchr; { skip ',' }
+   repeat { parse values }
+
+      expr(sym); { parse value }
+      if sym^.typ = stint then { value is integer }
+         { output value in proper endian mode and length }
+         gensym(sym, 0, big, imnorm, 0, 0, l*8)
+      else if sym^.typ = ststr then begin { output string }
+
+         for i := 1 to max(sym^.str^) do
+            outval(chr2ascii(sym^.str^[i]), l, big);
+         { if symbol is free, dispose }
+         if (sym^.lab = nil) and sym^.def then putsym(sym)
+
+      end else prterr(eimpl); { no float yet }
+      skpspc; { skip spaces }
+      c := chkchr; { check next }
+      if c = ',' then getchr { ',', another value present }
+
+   until c <> ',' { no more values }
+
+end;
+
+{*******************************************************************************
+
+Define value with length
+
+Given the endian, floating point, and length statuses of the value to be 
+generated, parses the length of value to be output, then parses any number of 
+values to be output, separated by ','. The type of the expression must match 
+the type of the output, except in the case of a string, which is treated as a 
+sequence of discrete values.
+
+*******************************************************************************}
+
+procedure defvall(big:   boolean;  { big endian mode }
+                  float: boolean;  { floating point mode }
+                  len:   integer); { length in bytes }
+
+var sym: symptr; { value }
+    c:   char;
+    i:   inpinx; { string index }
+
+begin
+
+   if float then prterr(eimpl); { no float yet }
+   repeat { parse values }
+
+      expr(sym); { parse value }
+      if sym^.typ = stint then { value is integer }
+         { output value in proper endian mode and length }
+         gensym(sym, 0, big, imnorm, 0, 0, len*8)
+      else if sym^.typ = ststr then begin { output string }
+
+         for i := 1 to max(sym^.str^) do
+            outval(chr2ascii(sym^.str^[i]), len, big);
+         { if symbol is free, dispose }
+         if (sym^.lab = nil) and sym^.def then putsym(sym)
+
+      end else prterr(eimpl); { no float yet }
+      skpspc; { skip spaces }
+      c := chkchr; { check next }
+      if c = ',' then getchr { ',', another value present }
+
+   until c <> ',' { no more values }
+
+end;
+
+{*******************************************************************************
+
+Define program space
+
+The given value is added to the program counter by outputting that many 0's and 
+advancing the program counter for each. The value must be absolute.
+
+*******************************************************************************}
+
+procedure defps;
+
+var sym: symptr; { value }
+    x:   integer;
+
+begin
+
+   nexpr(sym); { parse value }
+   { check absolute }
+   if not sym^.def or sym^.add or sym^.vrs then prterr(epmba);
+   x := sym^.val; { get value }
+   { output null field }
+   while x <> 0 do begin outbyt(0); x := pred(x) end;
+   if sym^.lab = nil then putsym(sym) { free, dispose }
+
+end;
+
+{*******************************************************************************
+
+Define variable space
+
+The given value is added to the variable space counter. No data is output for 
+this operation. The line label, left to us unprocessed, is equated to the 
+variable counter BEFORE the allocation, and has a variable space type. In 
+addition, since only one label is allowed per line, 'dv' with no value is
+considered equivalent to 'dv 0'. This is a terse form for 'allocate the label 
+at the present variable location', so that:
+
+     here:     dv
+     there:    dv
+     space:    dv    20
+
+Would allocate all the above labels to the same variable block start.
+
+*******************************************************************************}
+
+procedure defvs;
+
+var sym: symptr; { value }
+
+begin
+
+   if linlab <> nil then begin { equate variable space label }
+
+      if linlab^.mac <> nil then prterr(esymmac); { is macro }
+      if linlab^.def then prterr(eduplab); { already def }
+      if linlab^.ext then prterr(edfext); { external }
+      linlab^.def := true; { set defined }
+      linlab^.vrs := true; { set variable }
+      linlab^.val := glblc; { equate to current variable cnt }
+      addinc(linlab) { add inclusion block entry }
+
+   end;
+   if not endlin and (chkchr <> ';') then begin { parse value }
+
+      nexpr(sym);
+      { check absolute }
+      if not sym^.def or sym^.add or sym^.vrs then prterr(epmba);
+      { allocate variable space }
+      glblc := glblc + sym^.val;
+      if sym^.lab = nil then putsym(sym) { free, dispose }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Align program counter
+
+Aligns the program counter to a givien alignment value. This means that the 
+alignment value will divide evenly into the program counter. This is required 
+for processors with alignment characteristics. The program counter is advanced
+to meet the given boundary by outputting 0's (as in "dp"). Note that the 
+alignment defaults to the "generic" alignment of the processor.
+
+*******************************************************************************}
+
+procedure alignp;
+
+var sym: symptr; { symbol temp }
+    x:   integer;
+
+begin
+
+   skpspc; { check no parameter }
+   if endlin or (chkchr = ';') then begin
+
+      { find advancement count }
+      x := alignment -(prgmc mod alignment);
+      { output null field }
+      if x <> alignment then { not at a boundary }
+         while x <> 0 do begin outbyt(0); x := x - 1 end
+
+   end else begin
+
+      nexpr(sym); { parse value }
+      { check absolute }
+      if not sym^.def or sym^.add or sym^.vrs then prterr(epmba);
+      x := sym^.val; { get value }
+      x := x -(prgmc mod x); { find advancement count }
+      { output null field }
+      if x <> sym^.val then { not at a boundary }
+         while x <> 0 do begin outbyt(0); x := x - 1 end;
+      if sym^.lab = nil then putsym(sym) { free, dispose }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Align variable counter
+
+Aligns the variable counter to a givien alignment value. This means that the 
+alignment value will divide evenly into the variable counter. This is required 
+for processors with alignment characteristics. The variables counter is advanced
+by simple addition. Note that the alignment defaults to the "generic" alignment
+of the processor.
+
+*******************************************************************************}
+
+procedure alignv;
+
+var sym: symptr; { symbol temp }
+
+begin
+
+   skpspc; { check no parameter }
+   if endlin or (chkchr = ';') then begin
+
+      { advance variables counter }
+      if (glblc mod alignment) <> 0 then { not at boundary }
+         glblc := glblc + (alignment -(glblc mod alignment))
+
+   end else begin
+
+      nexpr(sym); { parse value }
+      { check absolute }
+      if not sym^.def or sym^.add or sym^.vrs then prterr(epmba);
+      { advance variables counter }
+      if (glblc mod sym^.val) <> 0 then { not at boundary }
+         glblc := glblc + (sym^.val -(glblc mod sym^.val));
+      if sym^.lab = nil then putsym(sym) { free, dispose }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Process if statement
+
+A given value is evaluated for = 0. If the value is non-zero, coding procedes 
+as usual. If the value is 0 (false), we enter suppess mode, where statements
+are skipped without processing.
+
+This is done via an if 'list', which is a stack where the values encountered by
+an if are recorded. This list allows us to know, upon an endif, wether or not to
+'back out' an if level. It also allows absoute checking for if - endif pairing.
+
+The value for the if, at present, must be absolute. A possible extention is an
+undefined if, which would allow ifs to delete code at link time.
+
+*******************************************************************************}
+
+procedure iftr;
+
+var sym:   symptr; { value }
+    ptr:   ifptr; { if list index }
+    oldif: boolean; { stacked if save }
+
+begin
+
+   nexpr(sym); { parse value }
+   { check absolute }
+   if not sym^.def or sym^.add or sym^.vrs then prterr(epmba);
+   { pull up status of nesting if }
+   if ifrot <> nil then oldif := ifrot^.ifsup or ifrot^.ifold
+   else oldif := false; { no nested if, allways false }
+   if iffre <> nil then begin { get an old entry }
+
+      ptr := iffre; { equate free root }
+      iffre := iffre^.nxtif { gap list }
+
+   end else new(ptr); { or a new one }
+   ptr^.nxtif := ifrot; { stack on 'if' list }
+   ifrot := ptr; { insert }
+   ptr^.iftyp := cif; { set 'if' type }
+   ptr^.ifold := oldif; { set status of nested if }
+   if sym^.val = 0 then begin { false, process supression }
+
+      ptr^.ifsts := false; { condition failed }
+      ptr^.ifsup := true { set supress active }
+   
+   end else begin
+
+      ptr^.ifsts := true; { condition met }
+      ptr^.ifsup := false { set no supress }
+
+   end;
+   if sym^.lab = nil then putsym(sym) { free, dispose }
+
+end;
+
+{*******************************************************************************
+
+Process else statement
+
+The operation of the if system is decribed if statement handler (see above). We
+check the matching if, and reverse it's condition. It is an error if the if
+stack is empty.
+
+*******************************************************************************}
+
+procedure elsec;
+
+begin
+
+   if ifrot = nil then prterr(etmei); { unmatched 'if' }
+   if (ifrot^.iftyp <> cif) and (ifrot^.iftyp <> celseif) then 
+      prterr(etmei); { improper match }
+   ifrot^.iftyp := celse; { set to 'else' type }
+   { reverse supress status }
+   ifrot^.ifsup := ifrot^.ifsts { reverse supress status }
+
+end;
+
+{*******************************************************************************
+
+Process elseif statement
+
+The operation of the if system is decribed in the if statement handler (see
+above). If the last if or elseif was true, we supress, else we go active.
+
+Note that a true condition "ripples through" a chain of elseif's. It is an 
+error if the if stack is empty.
+
+*******************************************************************************}
+
+procedure elseif;
+
+var sym: symptr; { value }
+
+begin
+
+   nexpr(sym); { parse value }
+   { check absolute }
+   if not sym^.def or sym^.add or sym^.vrs then prterr(epmba);
+   if ifrot = nil then prterr(etmei); { unmatched 'if' }
+   if (ifrot^.iftyp <> cif) and (ifrot^.iftyp <> celseif) then
+      prterr(etmei); { improper match }
+   ifrot^.iftyp := celseif; { set to 'elseif' type }
+   { reverse supress status }
+   if ifrot^.ifsts then ifrot^.ifsup := true
+   else if sym^.val = 0 then begin
+
+      ifrot^.ifsts := false;
+      ifrot^.ifsup := true
+
+   end else begin
+
+      ifrot^.ifsts := true;
+      ifrot^.ifsup := false
+
+   end;
+   if sym^.lab = nil then putsym(sym) { free, dispose }
+
+end;
+
+{*******************************************************************************
+
+Process endif statement
+
+The operation of the if system is decribed in the if statement handler (see
+above). Upon endif, we check to see if the matching if was false, and if so, the
+the top if on the stack is removed. It is an error if the if stack is empty.
+
+*******************************************************************************}
+
+procedure endif;
+
+var ptr: ifptr; { if list index }
+
+begin
+
+   if ifrot = nil then prterr(etmei); { to many ends }
+   ptr := ifrot; { pop last 'if' entry }
+   ifrot := ifrot^.nxtif; { gap list }
+   ptr^.nxtif := iffre; { push onto free list }
+   iffre := ptr { insert }
+
+end;
+
+{*******************************************************************************
+
+Process include file
+
+A filespecification appears after the statement. The given file is stacked on 
+the source file system, and assembly resumes with the first statement of the 
+included file. When the end of the included file is reached, the included file 
+is removed from the stack, and assembly resumes with the statement after this
+include.
+
+If there is any error in opening the include file, the assembly WILL NOT STOP, 
+but will resume with the statement after the include.
+
+*******************************************************************************}
+
+procedure include;
+
+var str: blab; { file string }
+
+begin
+
+   parnam(str, false); { parse file w/ soft error }
+   skpspc; { skip to end }
+   if not endlin then prterr(eterm) { bad termination }
+   else begin { do the include }
+
+      addext(str, '.asm      ', false); { add source extention }
+      if not exists(str) then prterr(efnfn) { no file found }
+      else opnsrc(str) { open the file }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Assemble string
+
+A string expression is parsed, and then the contents are assembled in - line. 
+The string may be any valid assembly line, including label declarations, etc.
+
+*******************************************************************************}
+
+procedure assm;
+
+var sym: symptr; { value }
+
+begin
+
+   expr(sym); { parse expression }
+   if sym^.typ <> ststr then prterr(etyp); { error not string }
+   newcmd; { establish new command level }
+   cmdrot^.sp := copy(sym^.str^); { place string in line }
+   if sym^.lab = nil then putsym(sym); { free, dispose }
+   cmdrot^.inp := 1; { reset execute position }
+   prclin; { process line }
+   discmd { back out level }
+
+end;
+
+{*******************************************************************************
+
+Print
+
+Prints any number of string or numeric expressions on a line. Used for
+diagnostic purposes.
+
+Prints any of an integer, string or real. Accepts a field specification after
+':', which can be:
+
+<number> - The field or fraction (if the second field on same item)
+$        - Hex formatting.
+&        - Octal formatting.
+%        - Binary formatting.
+
+So:
+
+x:5$
+
+Means print "x" with field of 5 with hex formatting.
+
+x:10:5
+
+Means format real into field of 10 with fraction of 5.
+
+Invalid combinations, such as hex on float, generate an error. Accepts
+negative and 0 formats, which have the same meaning as negative or zero formats
+on Pascal write formats.
+
+There are two versions of print, one for ordinary messages, and one for
+exceptional (error) messages. A different header is placed on the message
+depending on type.
+
+*******************************************************************************}
+
+procedure asprint(err: boolean); { error status }
+
+var sym:    symptr;  { value }
+    fld:    integer; { field to print into }
+    fldf:   boolean; { field found }
+    frac:   integer; { fraction length }
+    fracf:  boolean; { fraction found }
+    mode:   (mdnone, mdhex, mdoct, mdbin); { type of formatting }
+    ff:     boolean; { field item found }
+    schr:   char;    { sign character }
+    declen: integer; { number of digits in integer }
+    hexlen: integer; { number of digits in integer }
+    octlen: integer; { number of digits in integer }
+    binlen: integer; { number of digits in integer }
+    v:      integer; { digit testing value }
+    c:      char;
+    i:      integer;
+
+{ print error on next line }
+
+procedure error(e: errcod);
+
+begin
+
+   writeln;
+   prterr(e)
+
+end;
+
+begin
+
+   { find number of digits in dec print of integer }
+   declen := 0; { clear count }
+   v := maxint; { find maximum value }
+   while v > 0 do begin declen := declen+1; v := v div 10 end;
+
+   { find number of digits in hex print of integer }
+   hexlen := 0; { clear count }
+   v := maxint; { find maximum value }
+   while v > 0 do begin hexlen := hexlen+1; v := v div 16 end;
+
+   { find number of digits in octal print of integer }
+   octlen := 0; { clear count }
+   v := maxint; { find maximum value }
+   while v > 0 do begin octlen := octlen+1; v := v div 8 end;
+
+   { find number of digits in binary print of integer }
+   binlen := 0; { clear count }
+   v := maxint; { find maximum value }
+   while v > 0 do begin binlen := binlen+1; v := v div 2 end;
+
+   if err then write('*** User Source Error: ')
+   else write('Assembler Source Message: ');
+   repeat { parse and print arguments }
+
+      expr(sym); { parse expression }
+      { check proper type, integer, string or float }
+      if not (sym^.typ in [stint, ststr, stflt]) then error(etyp);
+      skpspc; { skip spaces }
+      mode := mdnone; { set decimal mode }
+      fldf := false; { set no field found }
+      fracf := false; { set no fraction found }
+      if chkchr = ':' then begin { field exists }
+
+         getchr; { skip ':' }
+         ff := false; { set no field item found }
+         repeat { parse field items }
+
+            skpspc; { skip spaces }
+            if chkchr = '$' then begin { hex }
+
+               if mode <> mdnone then error(edupmod); { duplicate }
+               mode := mdhex; { set mode }
+               ff := true; { set field item found }
+               getchr { skip '$' }
+
+            end else if chkchr = '&' then begin { octal }
+
+               if mode <> mdnone then error(edupmod); { duplicate }
+               mode := mdoct; { set mode }
+               ff := true; { set field item found }
+               getchr { skip '&' }
+
+            end else if chkchr = '%' then begin { binary }
+
+               if mode <> mdnone then error(edupmod); { duplicate }
+               mode := mdbin; { set mode }
+               ff := true; { set field item found }
+               getchr { skip '%' }
+
+            end else if chkchr in ['+', '-', '0'..'9'] then begin { number }
+
+               if (chkchr = '+') or (chkchr = '-') then begin
+
+                  schr := chkchr; { save sign }
+                  getchr { skip }
+
+               end;
+               if fldf then error(edupfld); { duplicate }
+               getval(fld); { get field }
+               if schr = '-' then fld := -fld; { negate }
+               fldf := true; { set field found }
+               ff := true { set field item found }
+
+            end else error(ebadfld); { bad field parameter }
+            skpspc { skip spaces }
+
+         until (chkchr = ',') or (chkchr = ':') or 
+               endcmd; { end of parameter, or command }
+         if chkchr = ':' then begin { fraction exists }
+
+            { cannot use radix modes with floating point }
+            if mode <> mdnone then error(einvrad);
+            getchr; { skip ':' }
+            if (chkchr = '+') or (chkchr = '-') then begin
+
+               schr := chkchr; { save sign }
+               getchr { skip }
+
+            end;
+            getval(frac); { get field }
+            if schr = '-' then frac := -frac; { negate }
+            fracf := true { set fraction found }
+
+         end;
+
+      end;
+      case sym^.typ of { data item }
+  
+         stint: begin
+
+            if fracf then error(einvfrc); { fraction used with int }
+            if fldf and (fld <= 0) then error(einvfld); { invalid field }
+            { print with field }
+            if fldf then case mode of { radix }
+
+               mdnone: prtnum(10, fld, sym^.val);
+               mdhex: prtnum(16, fld, sym^.val);
+               mdoct: prtnum(8, fld, sym^.val);
+               mdbin: prtnum(2, fld, sym^.val)
+            
+            end else
+               { print with default }
+               case mode of { radix }
+
+               mdnone: prtnum(10, declen, sym^.val);
+               mdhex: prtnum(16, hexlen, sym^.val);
+               mdoct: prtnum(8, octlen, sym^.val);
+               mdbin: prtnum(2, binlen, sym^.val)
+            
+            end
+
+         end;
+         ststr: begin
+
+            if mode <> mdnone then error(einvrad); { should not be radix }
+            if fracf then error(einvfrc); { fraction used with string }
+            if fldf and (fld <= 0) then error(einvfld); { invalid field }
+            { print with field }
+            if fldf then begin
+
+               if fld < max(sym^.str^) then 
+                  for i := 1 to fld do write(sym^.str^[i])
+               else begin
+
+                  for i := 1 to fld-max(sym^.str^) do write(' ');
+                  write(sym^.str^)
+
+               end;
+
+            { print with default }
+            end else write(sym^.str^)
+
+         end;
+         stflt: begin
+
+            if mode <> mdnone then error(einvrad); { should not be radix }
+            { print fielded and fractioned }
+            if fracf then write(sym^.flt^:fld:frac)
+            { print field }
+            else if fldf then write(sym^.flt^:3)
+            { print with defaults }
+            else write(sym^.flt^)
+
+         end
+
+      end;
+      skpspc; { skip spaces }
+      c := chkchr; { check next }
+      if c = ',' then getchr { ',', another value present }
+      
+   until c <> ','; { no more values }
+   writeln
+
+end;
+
+{*******************************************************************************
+
+Stop assembly
+
+Stops the assembly. If verbose is on, prints a user stop statement.
+The stop directive is used to stop assembly for error or other reasons.
+
+*******************************************************************************}
+
+procedure asstop;
+
+begin
+
+   if fverb then begin
+
+      writeln;
+      writeln('User Source Stop Ordered')
+
+   end;
+   abort
+
+end;
+
+{*******************************************************************************
+
+Begin block
+
+Starts a new block. Blocks collect symbols, program code and variable space
+into groups that can be eliminated at link time. This is typically done by
+determining if any symbol in the block is referenced externally, then removing
+the block if it is not referenced.
+
+Each block contains the following information:
+
+1. The start and end address in program space.
+2. The start and end address in variable space.
+3. A list of all blocks and symbols included in the block.
+
+Because a block need only list another block as included, the sublists belonging
+to that block need not be listed again.
+
+We keep track of each new block start on the block stack, then each block is
+removed and sent to the symbols deck.
+
+Labels are not allowed on either the beginning or ending of a block construct.
+The reason for this is we may have a use for named blocks later.
+
+*******************************************************************************}
+
+procedure block;
+
+var bp: blkptr; { block construction entry }
+    ip: bicptr; { block include entry }
+
+begin
+
+   if linlab <> nil then prterr(enolab); { no label allowed here }
+   getblk(bp); { get a new block constructor }
+   bp^.startp := prgmc; { set starting program address }
+   bp^.startv := glblc; { set starting variable address }
+   bp^.endp := prgmc; { set program side 0 length by default }
+   bp^.endv := glblc; { set variable side 0 length by default }
+   bp^.inclst := nil; { clear included objects list }
+   if blkstk <> nil then begin 
+
+      { There is a nested block, add this block to the included block list of
+        the containing block. }
+      getbic(ip); { get a new inclusion entry }
+      ip^.blk := bp; { link to new block }
+      ip^.next := blkstk^.inclst; { push onto inclusion list }
+      blkstk^.inclst := ip
+
+   end;
+   bp^.next := blkstk; { push new block onto list }
+   blkstk := bp
+
+end;
+
+{*******************************************************************************
+
+End block
+
+Terminates a block construct. Its an error if there is no current block active
+to terminate. The top block on the stack is output to the symbols file, then
+removed and discarded.
+
+*******************************************************************************}
+
+procedure endblk;
+
+var bp: blkptr; { block construction entry }
+
+begin
+
+   if blkstk = nil then prterr(enoblk); { no block is active to terminate }
+   bp := blkstk; { index top block }
+   bp^.endp := prgmc; { set program side length }
+   bp^.endv := glblc; { set variable side length }
+   blkstk := blkstk^.next; { remove block from stack }
+   bp^.next := blklst; { push onto defined block list }
+   blklst := bp
+
+end;
+
+begin
+end.

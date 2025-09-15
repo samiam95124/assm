@@ -1,0 +1,97 @@
+                INSTRUCTION NOTES ON MPC7400 PROCESSOR ASSEMBLER
+
+WHAT THIS DOCUMENT CONTAINS
+
+The information the contained software and documentation is based on is the the
+following:
+
+   MPC7400 RISC Microprocessor
+   User's Manual
+   MPC7400UM/D
+   Rev. 0, 3/2000
+
+   Programming Environments Manual
+   For 32-Bit Implementations of the PowerPC Architecture
+   MPCFPE32B/AD
+   12/2001
+   REV 2
+
+Both of these documents were available for downloading at the time of this
+writing.
+
+THE LANGUAGE OF AS7400
+
+AS7400 uses the "normal" machine memonics for the MPC7400, and not the Power
+memonics.
+
+The memonics are as from above documentation, with the exception of the
+Motorola "." notation. "." is not a valid character in AS memonics, and is
+replaced by "R", for "record" in the AS memonic set. For example, the following
+memonics are uses for the "add" instructions:
+
+AS FORM         MOTOROLA FORM
+----------------------------------------
+add             add
+addr            add.
+addo            addo
+addor           addo.
+
+AS uses "unreserved" forms for registers. This means that registers are
+specified by absolute expressions or values in the source. The following
+notations are equivalent:
+
+add r1, r1, r2
+
+add 1, 1, 2
+
+The registers used with MPC7400 are predefined in the file def7400.asm, which
+should be included in every assembly file.
+
+It is up to the programmer to use register equates in the correct context.
+
+ADDRESS SPECIFICATION
+
+Immediate values are specified as values without other punctuation. The MPC7400
+only specifies one indirect access mode using an immediate value. All other
+indirect references are via registers. The format for a displaced register is
+
+disp(reg)
+
+This is the original Motorola specification method.
+
+WORD SIZE
+
+The default word size of the MPC7400 is 32 bits. The following operators are
+defined for data:
+
+OPERATION       DEFINES
+---------------------------------
+defb            Bytes.
+defw            32 bit with current endian mode.
+defhw           16 bit with current endian mode.
+defdw           64 bit with current endian mode.
+defqw           128 bit with current endian mode (a vector).
+
+ENDIAN MODE
+
+The default endiam mode for MPC7400 is big endian. The PowerPC family is endian
+configurable. The following instructions perform endian configuration:
+
+OPERATION       SELECTS
+---------------------------------
+bendian         Big endian mode.
+lendian         Little endian mode.
+
+Note that selecting endian mode in AS only sets the output format of AS. The
+setup of the MPC7400 processor to the proper endian mode is up to the
+programmer.
+
+MACHINE TYPES
+
+The default machine type is the MPC7400, which is the most capable processor
+in the PowerPC family. Several other machine types can be set:
+
+
+INSTRUCTION SET
+
+The following is the short form instruction set as processed by AS.

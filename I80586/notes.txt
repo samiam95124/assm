@@ -1,0 +1,9 @@
+                              80586 Assembler notes
+
+1. The error arrow does not appear to indicate the right place. Try:
+
+   flds   eax
+
+Although this might be an AS problem in general.
+
+2. Are we missing any operations that might be escapeable ?

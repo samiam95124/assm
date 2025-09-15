@@ -1,0 +1,365 @@
+                         DEVELOPING FOR WINDOWS 95
+
+OVERVIEW
+
+To create loadable modules for Windows 95, the utility genpe is used. Genpe
+is invoked:
+
+   genpe [outfile.exe]=infile file.dll [file.dll]... [/option]...
+
+Genpe takes a "finalized" object file (a .sym and .obj pair) and creates an
+output .exe file in the Windows 95 "Portable Executable" format. The .dll
+files specified contain all the system calls that are to be linked by the
+program.
+
+OPTIONS
+
+The following options are implemented:
+
+/v or /verbose          Issue messages about the program being created,
+including a map of where items in the program are.
+
+/v or /noverbose        Turn verbose messages off.
+
+/wg or /wingui          Indicate the program is to be GUI mode.
+
+/wc or /winchr          Indicate the program is to be character mode.
+
+/sc or /symcoff         Output all symbols in COFF format.
+
+/ss or /symstabs        Output all symbols in STABS format.
+
+/s=<size>
+
+or
+
+/stack=<size>           Set the size of the stack.
+
+/h=<size>
+
+or
+
+/heap=<size>            Set the size of the heap.
+
+SPECIFYING SYSTEM LINKAGES
+
+For a program to be usefull in Win95, it must access the system calls. In
+Win95, all system calls are specified by actually linking to the target
+symbol by name. The target symbols will be contained in one or more ".dll"
+files, which contain the system code for the call. Win95 will either link
+the program to the code already resident in memory, or specifically load
+the target .dll and link to that.
+Genpe makes direct use of the .dll files themselves to generate the required
+linkage information. No library is required, but you must know which .dll
+contains the system call you want to access (use the Microsoft quickview
+program to see if a dll contains the call you need).
+Genpe places all the code and symbols required to link the program to it's
+dll's and load the program into the single .exe run file.
+The symbols that are eligable for system linkage must be undefined in the
+input file, and must further be specifically tagged as "external" symbols.
+Genpe does not qualify the symbol as to type.
+In order that genpe can be used as a finalization step, it resolves and
+locates the file at the prescribed Win95 address ($00400000). After all the
+system linkages are found, there must not be any undefined left in the file.
+Also, all arithmetic errors are output at this time. Genpe therefore performs
+the maximum amount of checking that the input is complete and correct.
+
+SPECIFYING A SYSTEM CALL
+
+The actual location that is given to the program is NOT the location of a
+system call entry but rather A 32 BIT ADDRESS OF THAT ENTRY. This
+distinction is important. The program must use either a indirect call or
+indirect jump to access the system code:
+
+   !
+   ! Call system
+   !
+      call     [sysfunc]
+
+The reason for this is discussed below.
+
+NAMING CONVENTIONS
+
+When specifying calls using microsoft documentation, you must be aware of a
+naming quirk. Microsoft specifies all call names for functions that accept
+a string of characters in two forms internally. One of these is the version
+that accepts ASCII strings, and another accepts UNICODE strings. The difference
+between the two versions is specified by appending one of the following
+characters:
+
+   "A" - Specifies the ASCII version of the routine.
+
+   "W" - Specifies the UNICODE version of the routine ("W" means "Wide 
+         character").
+
+So for example, the "DeleteFile" function actually maps to two different
+routines:
+
+   DeleteFileA - ASCII version.
+
+   DeleteFileW - UNICODE version.
+
+The reason that the Microsoft documents don't mention this is that Microsoft
+"C" header files contain define statements that automatically map the function
+name as specified in the source to one of the above forms based on the ASCII/
+UNICODE status of the compilation. But if you are not using C, you must specify
+the proper name manually.
+
+SPECIFYING DLL FILES
+
+In order to link to the system functions, the executable must be
+"pretargeted" to the dlls in question(1). This means that the dll you wish to
+use a system call from must be specified on the genpe command line. Genpe
+forms a catalog of the exports listed in the dlls, and matches those to the
+undefined externals in the source module.
+In order for this to work, the system symbols used MUST BE UNIQUE to a 
+particular dll. In other words, if the symbol "thatcall" is used, it cannot
+exist in multiple dlls without generating an error. No means is provided to
+specify the target dll for individual references. Using normal Windows calls,
+this requirement is satisfied, since all windows calls have unique names.
+
+DLL LINKAGE EFFICENTCY
+
+Windows matches DLLs by name, which implies that an inefficient search
+operation must be done on each symbol during the load operation. However,
+the .exe file contains a "speed reference" that tells Windows exactly where
+the target symbol is. This reduces the search comparisions to one, to check
+if the specified reference is the correct label. This is a "fail safe"
+system, since it allows for a recompiled dll to be used, since all dll
+symbols will be found even if the reference is incorrect.
+However, the net result of a dll change is that the load efficientcy is
+reduced, since "missed" speed references must undergo a full lookup operation.
+If you suspect that one of your component dlls has changed, rerunning the
+genpe process is a wise precaution.
+
+LAYOUT OF FINAL PROGRAM
+
+The layout of a running program in memory is:
+
+   --------------- $00400000
+   | .exe header |
+   ---------------
+   | Program     |
+   ---------------
+   | Variable    |
+   ---------------
+   | Heap        |
+   ---------------
+   | Stack       |
+   ---------------
+   | Free        |
+   ~             ~
+   ~             ~
+   |             |
+   --------------- $80000000
+   | Operating   |
+   | system      |
+
+Win95 uses a "preallocate" model for memory. If you are going to access any
+memory other than the predefined sections in your program, you must make a
+specific memory allocation call to do so. Note that MOORE/CAD languages allways
+use the predefined areas above, so this is not a problem.
+The .exe header contains the Win95 system information, including the system
+linkage directory. It may seem wastefull to keep this information in memory
+after the inital load, but in Win95's virtual memory scheme, note that these
+pages get rapidly "paged out" of working storage.
+The two areas after that, program and variable, correspond directly to the
+"program" and "variable" areas normally found in the MOORE/CAD system. The
+program section will be a direct image of the object file, but will be padded
+to the nearest page (4kb) to allow efficient memory management. It is typed
+as both readable and executable, but will generate faults if written.
+The variable area may be null if no variable declarations are used. However,
+this is not a practical solution, as all of the program area is write
+protected as mentioned. All global variables should, therefore either be
+placed in the variable area or placed in an area arranged by the user at
+runtime. The advantage to this system is that the program code and data is
+protected, and also may be shared between multiple executions of the same
+program.
+The variable area is also rounded up to the next nearest page. Its contents
+are "officially undefined", meaning that programs should not count on the
+content, but in most cases is set to all zeros.
+The heap and stack for the program are, as usual for MOORE/CAD, left up to
+the programmer. Win95 provides these two resources automatically to the
+program. The stack can be found by simply using the ESP register passed to
+the program on startup, and all MOORE/CAD language libraries assume the
+existence of this stack and use it.
+The heap is also given by Win95, and use of the Win95 heap calls will
+automatically refer to it. MOORE/CAD language libraries all use this "default"
+heap.
+
+SPECIFYING THE SIZE OF THE STACK AND HEAP
+
+Under Win95, the stack has a fixed allocation size, but the heap may grow to
+any size, bounded only by the 2gb address space size. The default allocation
+for both items is 1mb, but may be changed by option:
+
+   /stack=xxx
+   /heap=xxx
+
+The size of the stack/heap can be specified using the prefixes:
+
+   $ - Hex
+   & - Octal
+   % - Binary
+
+And also the following postfixes:
+
+   k - Kilo
+   M - Mega
+   G - Giga
+
+Because the heap can grow without limit, there is rarely any need to directly
+specify it's allocation. You may, however, wish to specify a different stack
+based on need.
+Both the stack and the heap are guarded against both overflow AND underflow.
+A system error will result on either of these incidences.
+
+GETTING SYSTEM INFORMATION
+
+The option:
+
+   /verbose
+
+Will cause the significant program locations and sizes to be reported. This
+will assist in program planning.
+
+SYSTEM CALL LINKAGE MECHANISIM
+
+It was mentioned above that system calls or jumps must be indirect. Why is 
+that ?
+The dll mechanisim used in windows is a facillity that performs final binding
+between modules at load time. It's an old idea. Batch systems from the 50's
+and 60's employed such advanced loaders to eliminate the need to "hard code"
+calls to the batch monitor elsewhere in memory.
+Unfortunately, this idea does not carry over well into virtual memory based
+systems. The reason for this is that the model that considers the program
+as it lies on the disk and the program as it exists in memory as two different
+entities. In a virtual memory system, this is no longer true. The system
+is free to discard pages corresponding to program pages, and reload them,
+at will. If the OS must modify the pages that are incoming, as to "fix up"
+dll linkages, it must either:
+
+   1. Modify the dll linkages for every incoming program page as it is
+      demand loaded. This involves keeping a database that can track needed
+      modifications on a page by page basis.
+
+   2. Load and modify each page, but tag it for writing in the swap file.
+      This may still involve tracking modifications on a page by page
+      basis, because the OS may not load the entire program at once.
+
+Either of these solutions is not very efficient. Windows 95 avoids the problem
+by allowing program pages to be loaded UNMODIFIED in memory. To facillitate
+this, we do two things:
+
+   1. The program is hard located at the Win95 application address
+      ($00400000).
+
+   2. All dll references are routed via an "address table" in the .exe
+      header area.
+
+The address table is simply a table of 32 bit addresses, one per dll entry
+used. Win95 fills in the contents of this table when the program is loaded.
+The difficulty is that these addresses are in the form of an address, instead
+of a vector(2). Most system call formats use a standard call format, and
+Microsoft solves this problem by keeping "vector tables" that point to the
+address list. So the flow of a Microsoft C call is:
+
+          call sysfunc ! original call
+
+          jmp [sysfuncv] ! as vectored
+
+sysfuncv: dq  sysfuncdll ! address list
+
+Instead, we leave it up to you as to how you wish to call a system function.
+You can use the indirect call model to save one step in the vectoring 
+process. The language libraries that serve to encapsulate the system functions
+in MOORE/CAD use an indirect call method for efficientcy.
+
+SYSTEM CALL FORMAT
+
+Under Win95, all of the system functions are C/C++. Also, all arguments are
+accepted as 32 bits, regardless of their declaration.
+In the system call convention, all parameters to a function are placed on the
+stack. When reading the C header for the call, the parameters are pushed onto
+the stack in right to left order. The function result is allways returned in
+the EAX register. As stated before, the call must be made via an indirect
+vector.
+For example, the call with the header:
+
+        int sysfunc(int a, int b, int c);
+
+Would look like this on the stack:
+
+        ---------------
+        |     C       |
+        ---------------
+        |     B       |
+        ---------------
+        |     A       |
+        ---------------
+        |   RETURN    |
+    SP->---------------
+
+The system returns with nothing on the stack (system functions are
+self-cleaning).
+A typical call to the above sequence would be:
+
+        pushd   myparm          ! place C on stack
+        pushd   55              ! place B on stack
+        pushd   thatparam       ! place A on stack
+        call    [sysfunc]       ! execute system function
+        mov     [trash],eax     ! save result
+
+When using Win95 documentation and C header files to format calls, keep in
+mind that AS/LN do NOT differentiate labels by case, and genpe will match
+to a system label regardless of it's case.
+
+DUPLICATE SYMBOLS
+
+It is possible to create a DLL with one or more entry names identical to those
+in another DLL, or have a DLL entry name that relies on case to differentiate
+between one entry and another. Normally, the Win95 API's do not contain such
+duplications (even with different cases), so this is typically an error caused
+by a user created library or third pary library. Genpe outputs an error if
+such duplications are found. It is up to the programmer to find and correct
+these errors.
+
+DEBUGGING WITH SYMBOLS
+
+Genpe outputs two known formats of symbols for third party tooling use. There
+is no ability to output line number equates at present.
+The two formats are COFF and STABS format files. Note that both formats
+can be ON at the same time, meaning that the program can be used with debuggers
+for either format. This can be usefull under Windows NT, which uses the COFF
+format for system fault messages, then STABS can be used for another debugger.
+
+DEBUGGING WITH GDB
+
+GDB will accept the COFF format, which makes it automatically revert to
+assembly language debugging mode. GDB will not accept the program as debuggable
+unless it has a symbol "_main", and that symbol equates to within the program
+code area. This is the convention with C programs, and has no parallel in IP
+Pascal. One method to add this is to use the file "main.asm" to insert the
+"_main" symbol just before the point you want to debug. The main.asm file
+simply looks like this:
+
+_main:
+
+Ie., just has a single equate to the present location. A typical application
+of this is to specify linkage as:
+
+ln prog=serlib main hello cap
+
+This places the _main location after the support library is started, but before
+the main program is started. Note that for any module, the first location may
+be a jump to the startup procedure for the module, instead of the module itself.
+If it is desired to start debugging at another module, or start before any
+library code is executed, the location of main should be moved in the link list.
+
+Notes:
+
+(1) "pretargeting" is our terminology.
+
+(2) It is not known exactly why Microsoft chose to do it this way. Perhaps to
+keep the header pages typed "read only - not executable".
+                                             

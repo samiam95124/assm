@@ -1,0 +1,2 @@
+cp genpe.exe /mnt/windrv/ip/windows/i80386/bin
+cp genpe /mnt/windrv/ip/linux/i80386/bin

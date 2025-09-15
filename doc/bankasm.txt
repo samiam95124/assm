@@ -1,0 +1,203 @@
+                      BANK/OVERLAY PROGRAMMING UNDER AS
+
+OVERVIEW
+
+AS/LN can be used for banked programming. On some processors where a bank
+selection mechanisim is integrated with the processor (such as 64180), AS
+will provide built in support for bank selection.
+Bank selection, overlay selection, or segmented addressing systems work by
+separating the code into multiple, possibly overlapping address spaces.
+At runtime, each of the code or data spaces are switched into the processor's
+limited address space by a hardware bank switch, disk read or segment
+pointer change.
+
+MECHANISIM
+
+Bank selection is an attempt to expand the address space of a processor by
+selecting one or more alternate memory "arrangements" under processor
+control. Bank selection schemes are many and varied, but what most bank
+selection schemes have in common is a need to assemble multiple program
+parts that overlay the same memory address.
+
+IMPLEMENTATION
+
+If the program parts that live in different banks are wholly separate
+(don't call, jump to or reference each other), they can simply be treated
+as separate assembly and link operations. When program parts reference each
+other, however, we must link together different program blocks without
+combining the blocks themselves.
+This is done by "phantom" linking. For example, if we have a bank select
+system with "A", "B" and "C" banks:
+
+   -----------
+   |         |
+   |    A    |
+   |         |
+   -----------      -----------
+   |         |      |         |
+   |    B    |----->|    C    |
+   |         |      |         |
+   -----------      -----------
+
+In this scheme, bank A allways exists, but bank "B" and "C" trade places under
+processor control. A and B may reference each other, and A and C may reference
+each other, but B and C may NOT reference each other.
+What is required here is to link three modules, and to phantom link A to B,
+and A to C:
+
+   ln b=b #ps=$8000
+   ln c=c #ps=$8000
+
+   ln a=a b.sym c.sym
+
+   ln b=b a.sym #ps=$8000
+   ln c=c a.sym #ps=$8000
+
+In the first part, modules B and C are located at the second "partition". This
+link will leave references to A undefined.
+In the second part, A is built and fully resoved by linking to the phantoms
+of B and C. Specifying the symbol part of the binary file pair for B and C
+resolves the references from A to B and C, but leaves B and C unchanged, and
+does not combine A with B or C as in a typical link.
+Finally, B and C are resolved using the phantom of A, which should leave them
+completely defined. The result is separate A, B and C files that mutually
+reference each other.
+
+VECTOR SCHEME
+
+To actually implement a bank select or overlay scheme on the processor, the
+most generally applicable plan is "vector tabling". This is not the only
+way to implement bank selections or overlays.
+The center of the vector scheme is the "vector table". The vector table is
+a code section that contains one entry per each routine or data structure
+that might be swapped out of main memory.
+So a call to another, possibly non-resident routine would look like:
+
+   ------------------------------|
+   | ThisCode                    |
+   |                             |
+   | call mylabel                |----+
+   |                             |    |
+   ------------------------------|    |
+                                      |
+                                      |
+   ------------------------------|    |
+   | Vector table                |    |
+   |                             |    |
+   | mylabel:                    |<---+ 
+   |   <save original select>	 |
+   |   <select mylabel module>	 |
+   |   call _mylabel             |----+
+   |   <restore original select> |    |
+   |   ret                       |    |
+   |                             |    |
+   |                             |    |
+   ------------------------------|    |
+                                      |
+   ------------------------------|    |
+   | Thatcode                    |    |
+   |                             |    |
+   | mylabel:                    |<---+
+   |                             |     
+   ------------------------------|     
+
+This assumes that the two sections of code are or may be mutually
+exclusive (may not be resident at the same time).
+If it is data we must access, the call is similar:
+
+   ------------------------------|
+   | ThisCode                    |
+   |                             |
+   | call makeres                |----+
+   |                             |    |
+   ------------------------------|    |
+                                      |
+                                      |
+   ------------------------------|    |
+   | Vector table                |    |
+   |                             |    |
+   | makeres:                    |<---+ 
+   |   <select data module>      |
+   |   ret                       |
+   |                             |
+   ------------------------------|
+
+The difference is that the call just selects the proper data bank, then
+returns. Since data must be accessed by code, the data bank will be in
+the same memory map as the code, so switching to it and back is not
+required.
+When a section of data is about to be used, a vector call is made before
+performing any operations on it.
+In order for the vector system to work, the vector table and the call stack
+should both be resident at all times (not bank selected).
+To make this same scheme work for overlays, we simply load the code or
+data segments off a disk instead of performing a hardware select.
+
+The vector system is very flexible in that the code used need not be specially
+modified to work within the system. The code or data must just be laid out
+(planned) in advance, then the vector tables created as appropriate.
+This also means that standard (limited address) compiler output modules can
+also be used. The vector tables themselves, of course, are typically
+constructed in assembly language.
+
+CONSTRUCTION OF A VECTOR MODULE
+
+The code modules in this system are created as for bank selection (phantom
+linked to each other). The vector table must also be specially constructed,
+because it both defines and uses the same symbol names, one to allow access
+to the individual vectors, and another to allow access from it to the actual
+vectored routine. To do this, special program is used:
+
+   genvec output=file1 file2 file3
+
+Genvec takes all of the input files, each of which should be a prelocated
+bank file, takes all the global symbols in those files, and generates two
+output files: output.sym and output.asm. The .sym file contains all the
+global symbols in the bank modules in the form:
+
+   _label
+
+or in other words, adds a "_" to the front of the name.
+The .asm file contains statements of the following form:
+
+   clabel: prgcal _clabel
+
+   vlabel: varcal _vlabel
+
+Genvec determines which kind of statement to generate depending on the type
+of the symbol.
+"prgcal" and "varcal" are macros which the programmer creates that define
+the sequence to switch banks or overlays and access the new sections:
+
+   prgcal: macro label
+
+           <save current bank/overlay>
+           <switch banks/load overlay>
+           <flush instruction queue>
+           call _label
+           <restore original bank/overlay>
+           ret
+
+           endm
+
+   varcal: macro label
+
+           <save current overlay>
+           <switch banks/load overlay>
+           <flush data queue>
+           ret
+
+So to create a bank selection system, you just need to create a file that
+contains those macros, and then the vector module is easy to create:
+
+   genvec vecform=mod1 mod2 mod3
+   as vector=bankmac vecform
+
+PROCESSORS WITH BUILT IN BANK SELECTION
+
+It has become the trend to build bank selection into many processors. Having
+the bank selection built in means that the bank selection mechanisim is
+standardized across implementations, and typically the queue or cache flushing
+required when switching banks is eliminated.
+Where possible, we have done the work for you, and given you predefined
+bankmac.asm modules for such processors.

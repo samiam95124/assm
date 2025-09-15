@@ -1,0 +1,66 @@
+                       LINUX OPERATING SYSTEM SPECIFICS
+
+To create a loadable module for Linux, the utility genelf is used. Genelf is
+invoked:
+
+genelf outfile=infile [/option]
+
+Genelf takes a "finalized" object file (a file with no unresolved references),
+and creates an output file in the Linux "ELF" format.
+
+GENELF OPTIONS
+
+Option    Alternate     Function
+====================================
+verbose   v             Issue messages about the program being created, 
+                        including a map of where items in the program
+						are located.
+
+SPECIFYING SYSTEM LINKAGES
+
+Linux implements system calls via an "int $80" instruction, and system calls
+are specified directly in the wrapper.
+
+LAYOUT OF FINAL PROGRAM
+
+$00000000 ----------------------
+          | Operating system   |
+		  |                    |
+$08048000 ----------------------
+          | Program            |
+		  ----------------------
+		  | Variable           |
+		  ----------------------
+		  | Heap               |
+		  |                    |
+		  |                    |
+		  ~                    ~
+		  ~                    ~
+		  |                    |
+		  | Stack              |
+$C0000000 ----------------------
+          | Kernel reserved    |
+		  | Space              |
+$ffffffff ----------------------
+
+The program space is specified in the ELF as ".text" space. The variable space
+is specified as ".bss" space. There is no ".data" segment, since Pascal does not
+have preintalized variables.
+
+Linux uses a "preallocate" model for memory. Whatever is not specifically
+allocated in the ELF format will generate faults when accessed.
+
+The variable areas contents are "officially undefined", but in fact are set to
+zero.
+
+STACK AND HEAP MANAGEMENT
+
+Linux uses the traditional model where the stack grows downwards, and the heap
+grows upwards, and memory is full if they meet each other.
+
+The stack is set by Linux, and Linux manages page faults to grow the stack.
+The heap is managed from the end of the variables area by brk() calls to the
+OS.
+
+The result is that both stack and heap are completely automatic, and there is
+no need to specifically set stack or heap size.

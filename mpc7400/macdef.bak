@@ -1,0 +1,205 @@
+{******************************************************************************
+*                                                                             *
+*                      80586 ASSEMBLY MODULE VS. 1.0                          *
+*                                                                             *
+*                     Copyright (C) 1994 S. A. Moore                          *
+*                          All rights reserved                                *
+*                                                                             *
+* Purpose:                                                                    *
+*                                                                             *
+* Provides 80586 specific operations for AS. Contains all code that is        *
+* dependent on the 80586.                                                     *
+*                                                                             *
+******************************************************************************}
+
+module macdef;
+
+uses asdef; { generic definitions }
+
+const
+
+cpualign  = 4;     { 32 bit double word for 80586 }
+cpubigend = false; { 80586 is little endian }
+cpuwrdsiz = 2;     { 80586 has 16 bit words }
+
+type  opcodet = (opnull,opcld,opcmc,opcpuid,opdeflef,opcdq,opendmac,
+                opdaa,opdas,opdecw,opfabs,opfadds,opcalllf,opcallmf,
+                opfiaddw,opleaved,opficomd,opfchs,opfcom,opfcoms,
+                opfidivd,opfcomd,opelseif,opfcompd,opfpatan,opalignp,
+                opfcomp,opfndisi,opficomp,opfdivrd,opfnclex,opfimuld,
+                opfidiv,oplooped,opfidivr,opfcompp,opfsubrd,opfeni,
+                opfcomps,opfidivw,opfistpd,opfdivrp,opfsavew,oploopne,
+                opfdivrs,opfsetpm,opfisubw,opjecxzm,opfsubrp,opffree,
+                opfimulw,opfnstcw,opfyl2xp1,opfistpq,oploopzd,
+                opficomw,opfild,opfildq,opfninit,opfistpw,opfist,
+                opmovsxb,opfistd,opflds,oploopnz,opfldl,opfldpi,
+                opfnstsw,opmovzxb,opfldz,opfldcw,opfmuld,opfimul,
+                oploopzw,opfprem,opfptan,opfrndint,opfsaved,opfscale,
+                opfsin,opfsincos,opfst,opmovsxw,opfsts,opfstps,
+                opfstcw,opfstenvd,opfsub,opfisub,opmovzxw,opfisubd,
+                opfsubrs,opfisubr,opfucom,opfucomp,opfucompp,opfwait,
+                opfxam,opfxch,ophlt,opidiv,opidivb,opidivw,opidivd,
+                opimul,opimulb,opimuld,opinc,opincb,opincw,opinsb,
+                opbendian,opinsw,opinsd,opinto,opinvd,opinvlpg,
+                opiret,opiretd,opjcxz,opjecxz,oplendian,opjge,
+                opjl,opjle,opjna,opjnae,opjnb,opficompd,opfldenvd,
+                opinclude,opjnbe,opjnc,opfnsaved,opfidivrd,opfdecstp,
+                opcmpxchg,opjnge,opjnle,opjno,opjnp,opfisubrd,
+                opjns,oploopned,opjpe,opjpo,opjas,opficompw,opfldenvw,
+                opfincstp,opjaes,opjbs,opfnsavew,opfidivrw,opfxtract,
+                opjbes,opjcs,opjgs,opjges,opjls,opfisubrw,opjles,
+                opfrstord,opjnas,oploopnzd,opjnbs,opjnbes,opjncs,
+                opjnes,opjnges,opjnls,opfstenvw,opjnles,opjnos,
+                opjps,opjpes,opjam,opjaem,opjbm,opjbem,opjcm,opfrstorw,
+                opjem,oploopnzw,opjgm,opjgem,opjlm,opjnbm,opjncm,
+                opjnem,opjngm,opjngem,opjnlm,opjnlem,opjnom,opjnzm,
+                opjpm,opjpem,opjpom,opjael,opjbl,opjbel,opjcl,
+                opjel,opja,opjb,opjc,opjzl,opje,opjgl,opjg,opjgel,
+                opjll,opjlel,opjnal,opbt,opin,opes,opjo,opjp,opm86,
+                opjnbl,opjs,opjnbel,opjncl,opjnel,opor,opjngl,
+                opjngel,opjz,opjnll,opss,opjnlel,opjnol,opjnpl,
+                opjnsl,opjnzl,opjpl,opjpel,opjpol,opjsl,opjmp,
+                opjmps,opjmpm,opjmpl,opjmpf,opjmpmf,opjmplf,oplar,
+                oplds,oples,oplfs,oplgs,oplss,oplea,opleave,opleavew,
+                oplgdtw,oplgdtd,oplidtw,oplidtd,oplldt,opfnstenvd,
+                oplock,oplodsb,oplodsw,oplodsd,oploop,oploopd,
+                opm186,opm286,opm386,opm486,opm586,oploope,oploopew,
+                oploopnew,oplsl,opltr,opmov,opmovb,opfnstenvw,
+                opmovd,opmovsb,opmovsd,opmulb,opmulw,opmuld,opneg,
+                opnegb,opcmpxchg8b,opnegw,opaaa,opnegd,opnop,opaad,
+                opnot,opadc,opadd,opnotb,opnotd,opdec,oporb,opord,
+                opaam,opjae,opjbe,opclc,opand,opout,opaas,opfld,
+                opjal,opcli,opbtc,opbtd,opbsf,opcbw,opjne,opcwd,
+                opjng,opcmp,oprcl,opjes,opdiv,opjnl,opjol,opjom,
+                opbsr,opbtr,opbts,opjsm,opint,opjos,opbtw,opmul,
+                oppop,opjss,opjzm,opjnz,opror,opoutsb,opoutsw,
+                oppopd,opjzs,oporw,opstr,oppopa,oppopad,oppopf,
+                oppopfd,oppush,oppushb,oppushw,oppushd,oppusha,
+                oppushad,oppushf,oppushfd,oprclb,opfld1,oprclw,
+                oprcld,oprcr,oprcrb,oprcrw,oprcrd,oprol,oprolb,
+                oprold,oprorb,oprord,oprep,oprepe,oprepz,oprepne,
+                oprepnz,opret,opretf,oprsm,opsahf,opsal,opsalb,
+                opsalw,opsald,opsar,opsarb,opsarw,opsard,opshl,
+                opshlb,opshlw,opshld,opshr,opshrb,opadcb,opaddb,
+                opadcd,opaddd,opdecb,opfadd,opdecd,opdefb,opshrw,
+                opshrd,opsbb,opandb,opsbbw,opandd,opfbld,opsbbb,
+                opfldd,oplahf,opcall,opbtcd,opincd,opadcw,opaddw,
+                opxadd,opcmpb,opcwde,opcmpd,opdivb,opjnam,opdivd,
+                opjlem,opfdiv,opandw,opfcos,opbtrd,opbtsd,opf2xm1,
+                oparpl,opbtcw,opfstd,opjngs,opfnop,opfmul,opjnpm,
+                opclts,opcmpw,opjnsm,opsbbd,opdivw,opjnps,opjpos,
+                opfstp,opjnss,opbtrw,opbtsw,opftst,opscasb,oplmsw,
+                oprolw,opjnzs,oppopw,opscasw,opnotw,opmovw,oprorw,
+                opscasd,opseta,opsetae,opsetb,opsetc,opxorw,opsete,
+                opsetg,opsetge,opsetl,opsetle,opsetna,opsetnae,
+                opsetnb,opsetnbe,opsetnc,opsetne,opsetng,opsetnge,
+                opsetnl,opsetnle,opsetno,opsetnp,opsetns,opsetnz,
+                opseto,opsetp,opsetpe,opsets,opsetz,opsgdtw,opsgdtd,
+                opsidtw,opsidtd,opshldw,opshldd,opshrdw,opshrdd,
+                opsldt,opsmsw,opfaddd,opstc,opfyl2x,opdefbe,opstd,
+                opfiadd,opsti,opstosb,opstosd,opsub,opsubb,opsubw,
+                opfaddp,opdefle,opdeflf,opcallf,opfildd,opsubd,
+                optest,opendif,optestb,opcalll,opcallm,opjnael,
+                opjnaem,opjnbem,opfdivd,opficom,opfdisi,opfneni,
+                opjnaes,opfclex,opsetbe,opfsubd,opcmpsb,opfildw,
+                opcmpsd,opbound,opfdivp,opfinit,opfdivr,opfdivs,
+                opbswap,openter,opfbstp,opfsubp,opfstpd,opfsubr,
+                opfsubs,opfmulp,optestw,opfistp,opfmuls,oprdmsr,
+                opfstpl,opcmpsw,opsetpo,opjcxzm,opfistw,opimulw,
+                opoutsd,opfsqrt,oploopw,optestd,opverr,oploopz,
+                opverw,opwait,opfstsw,opwbinvd,opfldl2e,opwrmsr,
+                opfldlg2,opmovsw,opmovsx,opxchg,opxlatb,opstosw,
+                opxor,opfldln2,opxorb,opmovzx,opxord,opcs,opds,
+                opfldl2t,opfs,opgs,opfprem1,oplarge,opsmall,opfloat,
+                opnfloat,opmacro,opequ,opsetequ,opglobal,opextern,
+                opalignv,opif,opelse,opassm,opdefps,opdefvs,opdefbef,
+                opfiaddd,opdeff,opdefsf,opdefw,opdefhw,opdefdw,
+                opdefqw);
+
+      restab = array [opcodet] of { reserved symbols }
+                  record
+                     reslab: lab;   { reserved symbol }
+                     reschn: opcodet { chain to next }
+                  end;
+      { registers in the 80586 }
+      regc = (rgnl,     { none }
+              rgal,     { al }
+              rgah,     { ah } 
+              rgbl,     { bl } 
+              rgbh,     { bh } 
+              rgcl,     { cl } 
+              rgch,     { ch } 
+              rgdl,     { dl } 
+              rgdh,     { dh } 
+              rgax,     { ax } 
+              rgbx,     { bx }
+              rgcx,     { cx } 
+              rgdx,     { dx } 
+              rgbp,     { bp } 
+              rgsi,     { si } 
+              rgdi,     { di } 
+              rgsp,     { sp } 
+              rgcs,     { cs } 
+              rgss,     { ss } 
+              rgds,     { ds } 
+              rges,     { es } 
+              rgfs,     { fs }
+              rggs,     { gs } 
+              rgeax,    { eax } 
+              rgebx,    { ebx } 
+              rgecx,    { ecx } 
+              rgedx,    { edx } 
+              rgebp,    { ebp } 
+              rgesi,    { esi } 
+              rgedi,    { edi } 
+              rgesp,    { esp }
+              rgcr0,    { cr0 } 
+              rgcr2,    { cr2 } 
+              rgcr3,    { cr3} 
+              rgcr4,    { cr4 } 
+              rgdr0,    { dr0 } 
+              rgdr1,    { dr1 } 
+              rgdr2,    { dr2 } 
+              rgdr3,    { dr3 } 
+              rgdr6,    { dr6 }
+              rgdr7,    { dr7 } 
+              rgtr4,    { tr4 }
+              rgtr5,    { tr5 }
+              rgtr6,    { tr6 }
+              rgtr7,    { tr7 }
+              rgst,     { st }
+              rgstr,    { st(r) }
+              rgimm,    { n } 
+              rgiad,    { [n] } 
+              rgir,     { [reg] }
+              rgird,    { disp[reg] }
+              rgirs,    { [reg*s] }
+              rgirsd,   { disp[reg*s] }
+              rgirr,    { [reg+reg] } 
+              rgirrd,   { disp[reg+reg] } 
+              rgirrs,   { [reg+reg*s] } 
+              rgirrsd); { disp[reg+reg*s] }
+      opsize = 0..10; { operation sizes }
+      { machine types }
+      mach = (mt86,   { 8086/8088 }
+              mt186,  { 80186/80188 }
+              mt286,  { 80286 }
+              mt386,  { 80386 }
+              mt486,  { 80486 }
+              mt586); { 80586 }
+      { parameter records. these keep track of all the information needed to
+        represent a parameter }
+      parptr = ^ parrec; { pointer to parameter record }
+      parrec = record { parameter record }
+
+                  m: regc;    { main register or mode }
+                  rb: regc;   { base register }
+                  ri: regc;   { index register }
+                  sc: symptr; { scale factor }
+                  vl: symptr; { displacement or immediate }
+                  as: opsize  { address mode size }
+
+               end;
+
+begin
+end.

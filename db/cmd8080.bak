@@ -1,0 +1,827 @@
+{*******************************************************************************
+*                                                                              *
+*                            I8080 COMMAND MODULE                              *
+*                                                                              *
+* Contains 8080 specific commands and configuration for DB.                    *
+*                                                                              *
+*******************************************************************************}
+
+program cmd8080(input, output);
+
+uses dbdef,
+     defi8080,
+     simi8080;
+
+function instlen(addr: integer): integer; forward;
+procedure listinst(addr: integer); forward;
+procedure inpprt(p: word; var n: byte); forward;
+procedure outprt(p: word; n: byte); forward;
+procedure syscall(cc: byte); forward;
+procedure goins(addr: integer); forward;
+procedure display; forward;
+
+var 
+
+   memdis:  integer; { settable memory display pointer }
+   brkadr:  integer; { address of simulated breakpoint routine }
+   brkins:  byte; { breakpoint instruction }
+   fstap:   boolean; { allow system tap calls }
+
+{*******************************************************************************
+
+Find length of instruction
+
+Finds the length of the instruction at the given address. For the 8080, a simple
+set of rules can be used to find the length.
+
+*******************************************************************************}
+
+function instlen(addr: integer): integer;
+
+var l: integer;
+    i: integer;
+
+begin
+
+   l := 1; { set basic instruction length }
+   i := getmem(addr); { get instruction byte }
+   if ((i and $c7) = $06) or ((i and $c7) = $c6) or ((i and $f7) = $d3) then
+      l := l + 1 { immediate byte }
+   else if ((i and $cf) = $01) or ((i and $e7) = $22) or 
+           ((i and $c7) = $c2) or (i = $c3) or
+           ((i and $c7) = $c4) or (i = $cd) or 
+           ((i = $ed) and (getmem((addr+1) and $ffff) = $ff)) then
+      l := l + 2; { immediate word }
+   instlen := l { return length }
+
+end;
+
+{*******************************************************************************
+
+List instruction
+
+Lists the instruction at the given address.
+
+*******************************************************************************}
+
+procedure listinst(addr: integer);
+
+var i: integer; { byte counter }
+
+{ print byte register according to code }
+
+procedure prtreg(r: integer);
+
+begin
+
+   case r and 7 of
+
+      $0: write('b');
+      $1: write('c');
+      $2: write('d');
+      $3: write('e');
+      $4: write('h');
+      $5: write('l');
+      $6: write('m');
+      $7: write('a')
+
+   end
+
+end;
+
+{ print word register according to code }
+
+procedure prtdreg(r: integer);
+
+begin
+
+   case r and 3 of
+
+      $0: write('b');
+      $1: write('d');
+      $2: write('h');
+      $3: write('sp')
+
+   end
+
+end;
+
+{ print word "af mode" register according to code }
+
+procedure prtdregaf(r: integer);
+
+begin
+
+   case r and 3 of
+
+      $0: write('b');
+      $1: write('d');
+      $2: write('h');
+      $3: write('af')
+
+   end
+
+end;
+
+{ print byte with leading "$" }
+
+procedure prtbyt(a: integer);
+
+begin
+
+   write('$');
+   prtnum(16, 2, getmem(a))
+
+end;
+
+{ print word with leading "$" }
+
+procedure prtwrd(a: integer);
+
+begin
+   
+   write('$');
+   prtnum(16, 4, getmem(a)+getmem(a+1)*256)
+
+end;
+
+begin
+
+   prtnum(16, 4, addr); { output list address }
+   write('  ');
+   for i := 1 to instlen(addr) do begin { print bytes of instruction }
+
+      prtnum(16, 2, getmem(addr+i-1));
+      write(' ')
+
+   end;
+   for i := 1 to 3-instlen(addr)+1 do write('   ');
+   write('  ');
+   case getmem(addr) of { instruction }
+
+      $37: write('stc');
+      $3f: write('cmc');
+      $04, $0c, $14, $1c, $24, $2c, $34, $3c, $05, $0d, $15, $1d, $25, $2d,
+      $35, $3d: begin 
+
+         if odd(getmem(addr)) then write('dcr     ')
+         else write('inr     ');
+         prtreg(getmem(addr) div 8)
+
+      end;
+      $2f: write('cma');
+      $27: write('daa');
+      $00: write('nop');
+      $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $4a, $4b, $4c, $4d,
+      $4e, $4f, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $5a, $5b,
+      $5c, $5d, $5e, $5f, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69,
+      $6a, $6b, $6c, $6d, $6e, $6f, $70, $71, $72, $73, $74, $75, $77, $78,
+      $79, $7a, $7b, $7c, $7d, $7e, $7f: begin
+
+         write('mov     ');
+         prtreg(getmem(addr) div 8);
+         write(',');
+         prtreg(getmem(addr))
+
+      end;
+      $02: write('stax    b');
+      $12: write('stax    d');
+      $0a: write('ldax    b');
+      $1a: write('ldax    d');
+      $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $8a, $8b, $8c, $8d,
+      $8e, $8f, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $9a, $9b, 
+      $9c, $9d, $9e, $9f, $a0, $a1, $a2, $a3, $a4, $a5, $a6, $a7, $a8, $a9, 
+      $aa, $ab, $ac, $ad, $ae, $af, $b0, $b1, $b2, $b3, $b4, $b5, $b6, $b7,
+      $b8, $b9, $ba, $bb, $bc, $bd, $be, $bf: begin
+
+         case getmem(addr) div 8 and 7 of
+
+            0: write('add     ');
+            1: write('adc     ');
+            2: write('sub     ');
+            3: write('sbb     ');
+            4: write('ana     ');
+            5: write('xra     ');
+            6: write('ora     ');
+            7: write('cmp     ')
+
+         end;
+         prtreg(getmem(addr))
+  
+      end;
+      $07: write('rlc');
+      $0f: write('rrc');
+      $17: write('ral');
+      $1f: write('rar');
+      $c5, $d5, $e5, $f5, $c1, $d1, $e1, $f1, $09, $19, $29, $39, $03, $13,
+      $23, $33, $0b, $1b, $2b, $3b: begin
+
+         case getmem(addr) and $cf of
+
+            $c5: write('push    ');
+            $c1: write('pop     ');
+            $09: write('dad     ');
+            $03: write('inx     ');
+            $0b: write('dcx     ')
+
+         end;
+         if (getmem(addr) and $cb) = $c1 then prtdregaf(getmem(addr) div 16)
+         else prtdreg(getmem(addr) div 16)
+   
+      end;
+      $eb: write('xchg');
+      $e3: write('xthl');
+      $f9: write('sphl');
+      $01, $11, $21, $31: begin
+
+         write('lxi     ');
+         prtdreg(getmem(addr) div 16);
+         write(',');
+         prtwrd(addr+1)
+   
+      end;
+      $06, $0e, $16, $1e, $26, $2e, $36, $3e: begin
+
+         write('mvi     ');
+         prtreg(getmem(addr) div 8);
+         write(',');
+         prtbyt(addr+1)
+
+      end;
+      $c6, $ce, $d6, $de, $e6, $ee, $f6, $fe: begin
+
+         case getmem(addr) of
+
+            $c6: write('adi     ');
+            $ce: write('aci     ');
+            $d6: write('sui     ');
+            $de: write('sbi     ');
+            $e6: write('ani     ');
+            $ee: write('xri     ');
+            $f6: write('ori     ');
+            $fe: write('cpi     ')
+
+         end;
+         prtbyt(addr+1)
+
+      end;
+      $22, $2a, $32, $3a: begin
+
+         case getmem(addr) div 8 and 3 of 
+
+            $2: write('sta     ');
+            $3: write('lda     ');
+            $0: write('shld    ');
+            $1: write('lhld    ')
+
+         end;
+         prtwrd(addr+1)
+
+      end;
+      $e9: write('pchl');
+      $c0, $c2, $c3, $c4, $c8, $c9, $ca, $cc, $cd, $d0, $d2, $d4, $d8, $da, 
+      $dc, $e0, $e2, $e4, $e8, $ea, $ec, $f0, $f2, $f4, $f8, $fa, $fc: begin
+
+         if odd(getmem(addr)) then case getmem(addr) and $c6 of
+
+            $c2: write('jmp     ');
+            $c4: write('call    ');
+            $c0: write('ret     ')
+
+         end else begin
+
+            case getmem(addr) and $c6 of
+   
+               $c2: write('j');
+               $c4: write('c');
+               $c0: write('r')
+   
+            end;
+            case getmem(addr) div 8 and 7 of
+   
+               $00: write('nz     ');
+               $01: write('z      ');
+               $02: write('nc     ');
+               $03: write('c      ');
+               $04: write('po     ');
+               $05: write('pe     ');
+               $06: write('p      ');
+               $07: write('m      ')
+   
+            end
+
+         end;
+         if (getmem(addr) and $c6) <> $c0 then prtwrd(addr+1)
+
+      end;
+      $c7, $cf, $d7, $df, $e7, $ef, $f7, $ff: begin
+
+         write('rst     ');
+         write(getmem(addr) div 8 and 7)
+
+      end;
+      $fb: write('ei');
+      $f3: write('di');
+      $db: begin write('in      '); prtbyt(addr+1) end;
+      $d3: begin write('out     '); prtbyt(addr+1) end;
+      $76: write('halt');
+      $08, $10, $18, $20, $28, $30, $38, $cb, $d9, $dd, $fd: write('???');
+      $ed: if fstap and (getmem((addr+1) and $ffff) = $ff) then
+              begin write('prtcal  '); 
+                 if getmem((addr+2) and $ffff) > ord(scwrite) then 
+                    write('???') else case getmem((addr+2) and $ffff) of
+
+                    0 { scterm }: write('term');
+                    1 { scopen }: write('open');
+                    2 { scclose }: write('close');
+                    3 { scread }: write('read');
+                    4 { scwrite }: write('write')
+
+                 end
+              end else write('???');
+
+   end;
+   writeln
+
+end;
+
+{*******************************************************************************
+
+Input value from simulated port
+
+Simulates a port read. At the current implementation, only one port is
+simulated, which is the console port at 0. Future extension will probally allow
+arbitrary files to be connected to ports, or perhaps grandiose plans such as the
+virtual port scheme.
+
+*******************************************************************************}
+
+procedure inpprt(    p: word;  { port to input from }
+                 var n: byte); { value to input }
+
+var c: char; { input holding }
+
+begin
+
+   if p > 0 then prterr(einvprt); { invalid port access }
+   read(c); { read a single character }
+   n := ord(c) { place }
+
+end;
+
+{*******************************************************************************
+
+Output value to simulated port
+
+Simulates a port write. At the current implementation, only one port is
+simulated, which is the console port at 0.
+
+*******************************************************************************}
+
+procedure outprt(p: word;  { port to output to }
+                 n: byte); { value to output }
+
+begin
+
+   if p > 0 then prterr(einvprt); { invalid port access }
+   write(chr(n)) { output single character }
+
+end;
+
+{*******************************************************************************
+
+Perform system call
+
+In 8080, the system tap is tripped by the sequence "ed ff xx", where "xx" is
+the system call code in byte form. This number is used because "ed ff" is an
+illegal instruction in 8080, 8085, Z80, Z64180, and Z280 processors. This means
+that a program using this system tap can be migrated upwards to any simulator
+without change.
+The Portable Call Set is used, with 8080 registers. The following calls and
+formats are implemented:
+
+        0 - Terminate program. A contains the termination error code,
+            with A = 0 = no error, and A <> 0 means error. The error code,
+            if <> 0, is printed in text on the console, and the program run
+            halted.
+            When a program gets an error, it may handle the error itself,
+            or pass the error back for printout and termination.
+
+        1 - Open file. A contains the length of the filename, HL points to
+            the first character of the filename, and B contains the file
+            mode flags as follows:
+
+               bit 0 - Open for read.
+               bit 1 - open for write. Both read and write set means open for
+                       read and write, which is not implemented at present. 
+                       No read or write is an error.
+
+            Returns an error code in A, where A <> 0 = error.
+            Returns the file ID of the open file in C, which is 0 if no file
+            was opened.
+
+        2 - Close file. C contains the file ID. Closes the file. Returns the
+            error code in A.
+
+        3 - Read. C contains the file ID, HL contains the block address, and
+            DE contains the block count. Returns the error code in A.
+
+        4 - Write. C contains the file ID, HL contains the block address, and
+            DE contains the block count. Returns the error code in A.
+
+On all system calls, the carry AND zero flags also reflect the error status of
+the call. If an error occured, carry is set and zero is reset. If not, carry is
+reset and zero is set.
+In addition to DOS provided filenames, we implement the following special
+assignments:
+
+        _command - Contains the command line.
+        _console - Talks to the debug console.
+        _input   - Receives input from the debug console.
+        _output  - Prints on the debug console.
+        _error   - Prints on the debug console.
+        _list    - Prints on the printer.
+
+*******************************************************************************}
+
+procedure syscall(cc: byte); { system call code }
+
+var fidn: 0..maxfid; { program fid }
+    fnam: filnam;    { file name buffer }
+    b:    byte;
+
+{ find free fid }
+
+function frefid: fid;
+
+var fi:   fidinx;    { index for program files table }
+    fidn: 0..maxfid; { program fid }
+
+begin
+
+   { search for first open file. We search down in the table so that
+     we will allways return the lowest number possible }
+   fidn := 0; { set fid invalid }
+   for fi := maxfid downto 1 do { search for open fid }
+      if fidtab[fi].sta = fmfree then fidn := fi; { found a free entry }
+   frefid := fidn { return found or null entry }
+
+end;
+
+{ load filename from memory }
+
+procedure lodfil;
+
+var t, l: integer; { temps }
+    ni:   filinx;  { index for filename }
+
+begin
+
+   l := getreg(rega); { get length of filename }
+   putreg(rega, 0); { set no error }
+   { load filename }
+   for ni := 1 to maxfil do fnam[ni] := ' '; { clear filename }
+   ni := 1; { set 1st filename character }
+   t := getreg(regh)*256+getreg(regl); { get address of filename }
+   while (l > 0) and (getmem(t) = ord(' ')) do begin { skip spaces }
+
+      t := t+1; { next character }
+      l := l-1
+
+   end;
+   { read non-space characters into filename }
+   while (l > 0) and (getmem(t) <> ord(' ')) do begin
+
+      if ni < maxfil then begin { place filename characters }
+
+         fnam[ni] := chr(getmem(t)); { place character }
+         ni := ni+1 { next character }
+
+      end;
+      t := t+1; { next character }
+      l := l-1
+
+   end;
+   { skip trailing spaces }
+   while (l > 0) and (getmem(t) = ord(' ')) do begin { skip spaces }
+
+      t := t+1; { next character }
+      l := l-1
+
+   end;
+   { if filename is null (after spaces), or too large, or had
+     embedded blanks, it's invalid }
+   if (ni = 1) or (ni = maxfil) or (l <> 0) then 
+      putreg(rega, ord(seivfn)) { invalid filename }
+
+end;
+
+{ check filenames equal }
+
+function filequ(var a: filnam; b: filnam): boolean;
+
+var i: filinx;  { index for filenames }
+    m: boolean; { match status }
+
+begin
+
+   m := true; { set default is match }
+   { check all characters match }
+   for i := 1 to maxfil do if a[i] <> b[i] then m := false; { reset match }
+   filequ := m { return match status }
+
+end;
+   
+begin
+
+   if cc > ord(scwrite) then { invalid system call }
+      putreg(rega, ord(secal)) { flag invalid call }
+   else case cc of { system call }
+
+      0 { scterm }: begin { terminate program }
+
+         runcpu := false; { stop execution }
+         if getreg(rega) <> 0 then begin { an error was passed }
+
+            write('*** Program error: ');
+            if getreg(rega) > ord(seeof) then { unknown error }
+               writeln('Unspecified')
+            else case getreg(rega) of { error code }
+
+               0 { senull  }: ;
+               1 {  secal  }: write('Invalid system call');
+               2 {  semod  }: write('Invalid file mode');
+               3 { sefull  }: write('Maximum files already open');
+               4 { seivfn  }: write('Invalid filename');
+               5 { seexist }: write('Non-existant file');
+               6 {  sefiln }: write('Invalid file number');
+               7 {   seeof }: write('End of file reached')
+
+            end;
+            writeln
+
+         end;
+         putreg(regpc, getreg(regpc)-3); { back up to start of instruction }
+         if getreg(regpc) < 0 then putreg(regpc, getreg(regpc)+maxmem+1)
+
+      end;
+
+      1 { scopen }: begin { open file }
+
+         putreg(regc, 0); { set file unopened by default }
+         if (getreg(regb) <> 1) and (getreg(regb) <> 2) then 
+            putreg(rega, ord(semod)) { flag invalid open mode }
+         else begin { open mode is read or write }
+
+            { search for first open file. We search down in the table so that
+              we will allways return the lowest number possible }
+            fidn := frefid; { find free fid }
+            if fidn = 0 then putreg(rega, ord(sefull)) { flag table full }
+            else begin { open the file }
+
+               lodfil; { load filename from memory }
+               if getreg(rega) = 0 then begin { filename loaded ok }
+
+                  { check for special files. For the command file, we must
+                    tag this for special handling, as there is no MSDOS
+                    equivalent. The other specials are just handled as
+                    symbolic names for existing MSDOS filenames }
+                  fidtab[fidn].sta := fmfil; { default to normal file }
+                  if filequ(fnam, '_command            ') then
+                     fidtab[fidn].sta := fmcmd { set command file }
+                  else if filequ(fnam, '_console            ') then
+                     fnam := 'CON                 ' { set file }
+                  else if filequ(fnam, '_input              ') then
+                     fnam := 'CON                 ' { set file }
+                  else if filequ(fnam, '_output             ') then
+                     fnam := 'CON                 ' { set file }
+                  else if filequ(fnam, '_error              ') then
+                     fnam := 'CON                 ' { set file }
+                  else if filequ(fnam, '_list               ') then
+                     fnam := 'PRN                 '; { set file }
+                  { open file for read }
+                  if fidtab[fidn].sta <> fmcmd then begin { not command file }
+
+                     if getreg(regb) = 1 then begin
+
+                        assign(fidtab[fidn].fil, fnam);
+                        reset(fidtab[fidn].fil)
+
+                     end else begin
+
+                        assign(fidtab[fidn].fil, fnam);
+                        rewrite(fidtab[fidn].fil)
+
+                     end;
+                     putreg(regc, fidn) { place opened file }
+
+                  end
+
+               end
+
+            end
+
+         end
+
+      end;
+
+      2 { scclose }: begin { close file }
+
+         { check file descriptor is non-zero and within limits }
+         if (getreg(regc) = 0) or (getreg(regc) > maxfid) then putreg(rega, ord(sefiln))
+         { check file at descriptor is open }
+         else if fidtab[getreg(regc)].sta = fmfree then putreg(rega, ord(sefiln))
+         else if fidtab[getreg(regc)].sta = fmfil then begin { close file }
+
+            close(fidtab[getreg(regc)].fil); { close the file }
+            fidtab[getreg(regc)].sta := fmfree; { free fid entry }
+            putreg(regc, 0); { set no longer a valid file }
+            putreg(rega,  0) { set no error }
+
+         end
+
+      end;
+
+      3 { scread }: begin { read from file }
+
+         { check file descriptor is non-zero and within limits }
+         if (getreg(regc) = 0) or (getreg(regc) > maxfid) then putreg(rega, ord(sefiln))
+         { check file at descriptor is open }
+         else if fidtab[getreg(regc)].sta = fmfree then putreg(rega, ord(sefiln))
+         else if fidtab[getreg(regc)].sta = fmfil then begin { read file }
+
+            repeat { read bytes }
+
+               { read a byte }
+               read(fidtab[getreg(regc)].fil, b);
+               putmem(getreg(regh)*256+getreg(regl), b);
+               putreg(regl, (getreg(regl)+1) and $ff); { increment destination }
+               if getreg(regl) = 0 then putreg(regh, (getreg(regh)+1) and $ff);
+               putreg(rege, getreg(rege)-1);
+               if getreg(rege) < 0 then begin 
+
+                  putreg(rege, getreg(rege)+$100);
+                  putreg(regd, getreg(regd)-1);
+                  if getreg(regd) < 0 then putreg(regd, getreg(regd)+$100)
+
+               end
+
+            until getreg(regd)+getreg(rege) = 0; { until count satisfied }
+            putreg(rega, 0) { set no error }
+
+         end
+
+      end;
+
+      4 { scwrite }: begin { write to file }
+
+         { check file descriptor is non-zero and within limits }
+         if (getreg(regc) = 0) or (getreg(regc) > maxfid) then putreg(rega, ord(sefiln))
+         { check file at descriptor is open }
+         else if fidtab[getreg(regc)].sta = fmfree then putreg(rega, ord(sefiln))
+         else if fidtab[getreg(regc)].sta = fmfil then begin { write file }
+
+            repeat { write bytes }
+
+               { write a byte }       
+               write(fidtab[getreg(regc)].fil, getmem(getreg(regh)*256+getreg(regl)));
+               putreg(regl, (getreg(regl)+1) and $ff); { increment destination }
+               if getreg(regl) = 0 then putreg(regh, (getreg(regh)+1) and $ff);
+               putreg(rege, getreg(rege)-1);
+               if getreg(rege) < 0 then begin 
+
+                  putreg(rege, getreg(rege)+$100);
+                  putreg(regd, getreg(regd)-1);
+                  if getreg(regd) < 0 then putreg(regd, getreg(regd)+$100)
+
+               end
+
+            until getreg(regd)+getreg(rege) = 0; { until count satisfied }
+            putreg(rega, 0) { set no error }
+
+         end
+
+      end
+
+   end;
+   { set flags for "good" termination }
+   if getreg(rega) = 0 then 
+      begin putreg(regfc, ord(false)); putreg(regfz, ord(true)) end
+   { set flags for "bad" termination }
+   else begin putreg(regfc, ord(true)); putreg(regfz, ord(false)) end
+
+end;
+
+{*******************************************************************************
+
+Execute continuously at current address
+
+Sets the breakpoints in the breakpoint list, then sets the run flag and
+steps instructions until the run flag is no longer true. This will happen
+when a breakpoint, halt, error or similar event occurs.
+
+*******************************************************************************}
+
+procedure goins(addr: integer); 
+
+var p: brkptr; { breakpoint list pointer }
+
+begin
+
+   setbrk(brklst); { place all permenant breakpoints }
+   setbrk(tmplst); { place all temporary breakpoints }
+   putreg(regpc, addr); { place execute address }
+   runcpu := true; { set run flag on }
+   while (getreg(regpc) <> brkadr) and runcpu do exeins; { execute forever }
+   if getreg(regpc) = brkadr then begin
+
+      { a breakpoint was hit, or something really stupid happened.
+        in any case, we do just what the cpu would do, and so we clean
+        it up the same way }
+      { restore address }
+      putreg(regpc, getmem(getreg(regsp))+getmem((getreg(regsp)+1) and $ffff)*256-1);
+      putreg(regsp, getreg(regsp)+2) { restore stack }
+
+   end;
+   resbrk(brklst); { remove all permenant breakpoints }
+   resbrk(tmplst); { remove all temporary breakpoints }
+   { purge the temporary breakpoints list }
+   while tmplst <> nil do begin { purge }
+
+      p := tmplst; { index top entry }
+      tmplst := tmplst^.next; { gap list }
+      putbrk(p) { free entry }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Display current CPU status
+
+The cpu status display outputs the registers, flags, what is at the pointer
+registers, and the top section of the stack. This is followed by the next
+instruction to execute.
+
+*******************************************************************************}
+
+procedure display;
+
+var i: integer; { byte count }
+    t: integer; { temp }
+p: integer;
+
+begin
+
+   writeln('A  B  C  D  E  H  L  SP   FLAGS IE [BC] [DE] [HL] [SP] ',
+           '--------- MEM ---------');
+   prtnum(16, 2, getreg(rega)); write(' ');
+   prtnum(16, 2, getreg(regb)); write(' ');
+   prtnum(16, 2, getreg(regc)); write(' ');
+   prtnum(16, 2, getreg(regd)); write(' ');
+   prtnum(16, 2, getreg(rege)); write(' ');
+   prtnum(16, 2, getreg(regh)); write(' ');
+   prtnum(16, 2, getreg(regl)); write(' ');
+   prtnum(16, 4, getreg(regsp)); write(' ');
+   if getreg(regfz) <> 0 then write('z') else write(' ');
+   if getreg(regfc) <> 0 then write('c') else write(' ');
+   if getreg(regfs) <> 0 then write('m') else write(' ');
+   if getreg(regfp) <> 0 then write('p') else write(' ');
+   if getreg(regfa) <> 0 then write('a') else write(' ');
+   write(' ');
+   if getreg(regie) <> 0 then write('e') else write('d'); write('  ');
+   t := getreg(regb)*256+getreg(regc); prtnum(16, 4, getmem(t)+getmem(t+1)*256); write(' ');
+   t := getreg(regd)*256+getreg(rege); prtnum(16, 4, getmem(t)+getmem(t+1)*256); write(' ');
+   t := getreg(regh)*256+getreg(regl); prtnum(16, 4, getmem(t)+getmem(t+1)*256); write(' ');
+   prtnum(16, 4, getmem(getreg(regsp))+getmem((getreg(regsp)+1) and $ffff)*256); write(' ');
+   for i := 1 to 8 do begin { print memory window }
+
+      prtnum(16, 2, getmem((memdis+i-1) and $ffff));
+      write(' ')
+
+   end;
+   writeln;
+   listinst(getreg(regpc))
+
+end;
+
+begin
+
+   writeln;
+   writeln('8080 debugger vs. 0.1 Copyright (C) 1994 S. A. Moore');
+   writeln;
+   writeln('Target:          Cross');
+   writeln('Mode:            Simulate');
+   writeln('Stepper:         Low');
+   writeln('Remote link:     Disabled');
+   writeln('Emulator:        Not found/disabled');
+   writeln('Memory:          64k');
+   writeln('Bank select:     None');
+
+   memdis := 0; { clear settable view address }
+   brkadr := $0038; { address of simulated breakpoint address }
+   brkins := $ff; { instruction to cause a breakpoint }
+   fstap := true; { allow system tap calls }
+
+end.

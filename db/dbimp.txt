@@ -1,0 +1,117 @@
+                              DB DEBUGGER INTERNALS                            *
+ 
+DB is a general debugging package at the assembly level. It consists of three
+basic components:
+
+1. Machine "access".
+2. Machine specific functions and commands.
+3. General executive and functions.
+
+The files making up DB are:
+ 
+dbdef - General definitions for db.
+main  - Main command loop.
+db    - Compiler/interpreter and support routines.
+defxxx - Machine specific definitions.
+cmdxxx - Machine specific commands and routines.
+simxxx - Machine specific access/simulatin/emulation.
+
+EXECUTIVE
+
+The executive is built as a two stage compiler/interpreter. DB runs its own
+"microcompiler" to give reasonable speed when executing scripts. This is 
+valuable in debug situations, because complex formulas such as compares can be
+generated, and run concurrent to the machine. The methodology for this was
+developed in dbz80 (or "zbug"), which was a Z80 specific in-place machine
+debugger. DB is developed from this, but is machine independent.
+
+Instead of acting as a pure interpreter, DB compiles its commands to
+intermediate code that is structured in a series of "lines". Each source line is
+compiled directly to a line in intermediate code, and the source and
+intermediate line stay as a pair in memory. In this way, the source line is
+always available for any intermediate that is executed, and this helps to create
+the illusion that DB is a pure interpreter.
+
+TARGET ATTACHEMENT
+
+The simulator module defines the basic access routines for the CPU/target. It
+has routines to read and write memory, I/O addresses, and execute instructions
+in the target. There are many ways in which this module could be implemented for
+different targets:
+
+Simulation - The module could simply simulate the target CPU, including all
+flags and memory.
+
+Emulation - Access could be via an emulator (mostly obsolete).
+
+JTAG - Indirect control via JTAG debugger command set.
+
+Remote connection - Commands to execute specified functions are sent via a comm
+link to the connected Target. This is similar to the JTAG method, but uses a
+different communication method and command set.
+
+Partition - Access is via another partition in the current OS, which is
+typically a virtual memory capable machine.
+
+Local - The current CPU is accessed by context swapping. The program is
+coresident.
+
+The system must work with all of these modes, as they are all relevant.
+
+The cmdxxx module is fairly short. It has functions to list instructions,
+assemble instructions, access flags, registers and other special data in the
+machine and format them, print the registers out, etc.
+
+PERIPHERAL SIMULATION
+
+All of the exceptional conditions (that can be caught) end up in special handlers
+in simxxx. These include invalid instructions, halt instructions, I/O
+instructions, etc. Further, sim contains a call that clients can use to define
+handlers for these situations: 
+
+Reserve(resource, address, length, routine);
+
+A typical call is to reserve part of the I/O space:
+
+Reserve(rsio, $50, $10, myio);
+
+This would reserve 10 hex locations in the I/O space, starting with address 50
+hex, and send them to the handler "myio". It has the format:
+
+event(type, var insaddr, accaddr, var data, len);
+
+Type contains what exception was generated. This helps when multiple
+exceptions are to be handled by one routine.
+
+Insaddr gives the instruction address that caused the exception. If the 
+exception type is invalid instruction, insaddr will be used as the PC when the
+exception handler returns.
+
+Accaddr gives the memory or I/O address that was accessed.
+
+Data either gives the data to be written, or returns the data as read. If the
+mode is write, the returned contents will be discarded.
+
+Len gives the access length in bytes, which is typically 1, 2, 4 or 8.
+
+The simxxx module can handle this at any level appropriate. On a small I/O
+address machine, it can have a complete table of handlers, one for input and one
+for output. On other machines it might just chain the reservations together in a
+list, and search them.
+
+Simxxx defaults all of these reservations to a null handler, that simply skips
+the instruction and continues, perhaps reading 0’s for data. Each module that
+implements one or more devices is inserted in the link order above simxxx, and
+it makes any number of reservations to take over a resource.
+
+THE "TAP".
+
+One of the standard resource modules implements the tap. This is a handler,
+usually for an invalid instruction, that takes the contents of the registers and
+implements a simple I/O access protocol. This is fairly high level, ie., it can
+access files by name, as well as giving standard input and output channels.
+
+The tap system provides an easy way to get I/O to a simulated (or emulated)
+system.
+
+ 

@@ -1,0 +1,315 @@
+                                                                               *
+                           DB MACHINE LANGUAGE DEBUGGER FOR IP
+                                      USERS MANUAL
+
+OVERVIEW
+
+Db is a multiple machine assembly language debug system. It provides 
+capabilities to load and debug a target program under several different target
+run conditions, including:
+
+- As another partition (task or process) under the host computer.
+- Running as a simulation of a different type of CPU than the host.
+- Remotely via a serial connection, JTAG, or other communications channel.
+- Coresident in the same memory as the target.
+
+Db is implemented via a "microcompiler" or "line oriented compiler". The reason
+for this is that debugging often involves stepping through code in search of
+complex conditions to be checked for. Having a debugger with the capability to
+generate short programs in compiled code makes this feasable, whereas a typical
+interpreter runs to slow to perform this work.
+
+Db can execute single line immediate commands, as well as create and run
+complex scripts.
+
+Db came from the Z80 assembly language program dbz80, which was a Z80 specific
+target debugger. It uses many of the same conventions as the old dbz80, and
+serves as it's replacement.
+
+STARTING UP
+
+The basic command line for db is:
+
+db <program> [<location>] [<program> [<location>]]...
+
+Where <program> is the target program to load. Db will expect the following 
+files to exist:
+
+program.obj - The object code (binary image) for the file.
+program.sym - The symbols file.
+
+The object file is simply a direct binary image of the target program. This is
+the normal file output by the IP assembler, code generator and linker, but note
+that it must be fully resolved and located at the destination address. See
+the LN documentation for further details on linking a program.
+
+The <location> of the program to load is optional, and can be any valid address
+in the target program memory. If it is not specified, it will default to 0.
+Db will load any number of programs. It will not produce an error if they
+overlap, but it will produce an error if they overrun the end of memory.
+
+It is important to understand that db does not automatically locate code, even
+if the symbols file is specified. If the wrong address is specified to load the
+target code, no error is given.
+
+Specifying the symbols file will allow Db to list and accept symbolic 
+references. If multiple symbols decks are found, they must not duplicate each
+other, even if they are not globals. Db will merge all such symbols into a
+single database.
+
+When Db comes up, it will clear all registers in the target machine, and
+print target statistics, as:
+
+8080 debugger vs. 0.2.00 Copyright (C) 1994 S. A. Moore
+
+Target:          Cross
+Mode:            Simulate
+Stepper:         Low
+Remote link:     Disabled
+Emulator:        Not found/disabled
+Memory:          64k
+Bank select:     None
+Program name:    test.obj
+Program status:  Loaded
+Program length:  74
+Program symbols: Disabled
+
+> 
+
+The signon line indicates the target machine type, in this case an I8080. Db
+will issue a prompt for input, ">". 
+
+Each command line for Db is compiled, then executed. This means that syntax 
+errors are indicated when no actions have been performed.
+
+COMMANDS
+
+Each command has two forms, the short and long. Short commands are convienient
+to type interactively. The longer commands can be better for use in scripts,
+since they are more descriptive than the short version.
+
+SHORT LONG          PARAMETERS             COMMAND
+================================================================================
+s     stepdisplay                          Single step with display
+ss    singlestep                           Single step
+cp    comp          saddr,eaddr,caddr      compare  
+se    search        saddr,eaddr,value      search  
+sn    searchnot     saddr,eaddr,value      search not  
+ret   return  		                   
+ptr   printer                              Enable printer  
+nptr  noprinter                            Disable printer  
+ht    halttrap                             Halt trap  
+nht   nohalttrap                           no halt trap  
+io                  paddr[,value]          read/write port  
+m     move          saddr,eaddr,daddr      move memory  
+f     fill          saddr,eaddr,value      fill memory  
+r     registers                            display registers  
+d     dump          saddr[,eaddr]          dump memory  
+e     enter         addr,value[,value]...  enter memory  
+l     list          saddr[,eaddr]          list assembly language  
+g     go            [addr]                 go  
+c     clear         saddr,eaddr            clear memory  
+b     break         [baddr[,baddr]...]     breakpoints  
+p     print         [value[,value]...]     print expression
+u     until         cond                   until  
+nbu   nobreakuntil  cond                   no break until  
+st    stop                                 stop  
+a     assign        var,value              assign  
+quit                                       quit debugger  
+ei                                         enable interrupts  
+di                                         disable interrupts  
+h     help          [command]              help commands  
+
+These are the commands that are common to all CPU types. See the CPU section for
+your specific target for more commands.
+
+PERIPHERAL SIMULATION
+
+Db has several methods available to simulate hardware devices in the target 
+system. This is mainly relivant to simulation, although it is possible for any
+debug condition to have such simulation capabilities.
+
+There are two "easy" I/O simulation capabililties for Db that can be selected.
+
+SIMULATED SYSTEM CALLS
+
+The system call simulator gives the target the ability to perform a simlified
+set of system calls from the target parition. This allows the target to open,
+read, write and close files in the host system, including the terminal and
+printer I/O channels. It also gives the target a means to terminate.
+
+The following calls consitute the system call set.
+
+function open(name, read/write, fileid): error;
+function close(fileid): error;
+function read(fileid, addr, len): error;
+function write(fileid, addr, len): error;
+procedure terminate(error);
+
+The exact method these calls are performed is CPU specific. See the CPU section
+for your CPU.
+
+function open(name, read, write, fileid): error;
+
+The file with the given ASCII name is opened. There are several special 
+filenames that indicate system files:
+
+_command - Contains the command line.
+_input   - Receives input from the debug console.
+_output  - Prints on the debug console.
+_error   - Prints on the debug console.
+_list    - Prints on the printer.
+
+These are the same as IP reserved filenames.
+
+If the filename is not one of the above, it is assigned to a disk file. If the
+file does not exist, it is created, and has length zero. If it does exist, it
+is opened, and set at element 1.
+
+The read and write flags indicate if the file is opened for read, for write, or
+for both read and write.
+
+If the file is sucessfully opened, a nonzero file identifier number will be 
+placed in fileid.
+
+If an error occurs, the open function will return a nonzero error code. This can
+be handled by the target, or it can return the error code to the terminate
+procedure.
+
+function close(fileid): error;
+
+The file by the file identifier number is closed.
+
+function read(fileid, addr, len): error;
+
+Reads len bytes to the address addr, from the file identifer fileid. If the read
+is not sucessful, a nonzero error will be returned.
+
+function write(fileid, addr, len): error;
+
+Writes len bytes from the address addr, from the file identifer fileid. If the
+write is not sucessful, a nonzero error will be returned.
+
+procedure terminate(error);
+
+Terminates the program. If the error given is nonzero, it will be displayed as
+a target termination error.
+
+SIMPLE PORT I/O
+
+The simple port simulator simulates a single I/O port in the target. This can be
+a single memory or I/O address.
+
+Whenever the port is read, a character from the debug console will be returned.
+Whenever the port is written, a character will be written to the debug console.
+
+There is no protocol with the simple I/O port. If a character is not ready from
+the debug console, the target is held in wait until one is. If the last written
+character is not yet send, the target is held in wait until it is.
+
+See the CPU specific section for details on the exact port type and size.
+
+GENERAL PERIPHERAL SIMULATION
+
+Db also provides a general interface to simulate any peripheral or attached
+hardware device. It functions via callbacks. The hardware simulation module
+"reserves" a particular hardware resource, and any accesses to that resource
+will cause the simulation module to be called. Typical resources include:
+
+- Memory locations
+- I/O locations
+- Priveledged instructions
+- Illegal instructions
+- Trap conditions
+
+Etc.
+
+The simulator interface consists of the following calls:
+
+function getreg(reg: regtyp): integer;
+
+Get the current value of a register. The reg is a code for the register,
+defined in the CPU specific section. Note that flags are in a register, as are
+special CPU features.
+
+procedure putreg(reg: regtyp; data: integer);
+
+Put the value of a register.
+
+function getmem(addr: integer; len: integer): integer;
+
+Get a value from memory. The length len is typically one of 1, 2, 4, 8, etc.,
+which is the length in bytes. There may be a specific operation for a particular
+length. For example, a memory mapped peripheral may only accept a particular
+lengh of access. Getmem attempts to map any request into what the CPU can 
+perform. For example, on a byte processor, 2, 4 or 8 byte lengths would be
+translated into byte accesses. In this case, the format of the multibyte
+access would be performed in the native endian mode for the CPU.
+
+procedure putmem(addr: integer; data: integer; len: integer);
+
+Put a value to memory.
+
+procedure reserve(r: rsvtyp; base: integer; len: integer;
+                  procedure event(e: evttyp; var insaddr: integer;
+                                  accaddr: integer; var data: integer;
+                                  len: integer)); forward;
+
+Reserve resource. The resource type rsvtyp indicates what resource is to be
+reserved, which is CPU specific. The base gives the base address of the 
+reservation, if applicable to that resource. The length len gives the number of
+bytes to be reserved.
+
+Reserve is passed a procedure, event, that is called when the resource is
+triggered. The procedure MUST be a top level (non-nested) procedure. It is of
+the form:
+
+procedure event(e: evttyp; var insaddr: integer; accaddr: integer; 
+                var data: integer; len: integer);
+
+The event type evttyp is CPU specific, and indicates what resource was 
+triggered. Because you can reserve each resource specifically, this is normally
+not used, because you know what was triggered. However, it is possible for
+multiple reservations to go to the same event handler.
+
+The instruction address insaddr gives the address of the instruction that 
+activated the event. If the event was an illegal or priveleged instruction,
+it will also be used to set what the next program address is for the target. For
+example, if the offending instruction is simply to be skipped, and the target
+continues, the insaddr is set to the next instruction.
+
+The access address accaddr gives the address that was accessed to trip the
+event, if applicable.
+
+The data gives either the data that was written, or is used to set the data that
+will be read.
+
+The length len gives the length of the access.
+
+Typically, a hardware simulation module makes one or more reservations to
+capture addresses that the simulated hardware would use in it's initialzation
+section. Then, it emulates the hardware via the events sent it.
+
+The simulation event interface is general purpose, and both the simple ports
+system and system call system above are implemented as simulation modules.
+
+The simple port simulator module is given as an example.
+
+Simulation modules must be compiled and linked into a special "stack" of the
+debugger.
+
+8080 SPECIFIC COMMANDS
+
+SHORT LONG          PARAMETERS             COMMAND
+================================================================================
+fpe                                        flag parity even
+fpo                                        flag parity odd
+fp                                         flag positive
+fm                                         flag minus
+fz                                         flag zero
+fnz                                        flag not zero
+fa                                         flag auxiliary carry
+fna                                        flag no auxiliary carry
+fc                                         flag carry
+fnc                                        flag no carry
+

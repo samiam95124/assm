@@ -1,0 +1,18 @@
+@echo off
+rem @echo off
+rem
+rem Compile a program for use with the serial level library
+rem
+parse %1=%1 %2 %3 %4 %5 %6 %7 %8 %9 #u=.,\pascomp\lib\
+ce %1=%1
+ln runfile=c:\pascomp\lib\serlib %1 c:\pascomp\lib\cap
+rem
+rem Uh oh, something happened to the windows DLLs in Windows 95
+rem to fuck up genpe. Read from our saved copy for now.
+rem
+rem genpe %1=runfile c:\windows\system\kernel32 c:\windows\system\user32 /v
+genpe %1=runfile c:\pascomp\parse\kernel32 c:\pascomp\parse\user32 /v
+del runfile.*
+del %1.int
+del %1.obj
+del %1.sym

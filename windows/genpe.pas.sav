@@ -1,0 +1,49 @@
+program genpe(output);
+
+type string = packed array of char;
+     pstring = ^string;
+
+const maxlab = 100;
+
+type 
+
+   modptr = ^modnam; { pointer to entry }
+   modnam = record { module name entry }
+   
+      dup:   boolean; { is a duplicate }
+   
+   end;
+   labl = packed array [1..100] of char;
+
+procedure adddll;
+
+var mp: modptr;  { module data pointer }
+
+{ find module with mod_sym format string }
+
+function fndsmod(view s: string): modptr;
+
+var mp: modptr;  { module data pointer }
+    i:  integer; { string index }
+    n:  labl;    { name portion string }
+
+begin
+
+new(mp);
+;writeln('Found1: ', mp <> nil:0);
+   fndsmod := mp { return result }
+
+end;
+   
+begin
+
+   mp := fndsmod('hi there'); { find module entry if exists }
+;writeln('Found2: ', mp <> nil:0);
+
+end;
+
+begin 
+
+   adddll;
+
+end.

@@ -1,0 +1,134 @@
+{*******************************************************************************
+*                                                                              *
+*                               DB MAIN MODULE                                 *
+*                                                                              *
+* Runs the main loop for DB.                                                   *
+*                                                                              *
+*******************************************************************************}
+
+program main(input, output);
+
+uses stddef,   { standard defines }
+     strlib,   { string library }
+     extlib,   { extention library }
+     dbdef,    { db defines }
+     defi8080, { CPU specific defines }
+     simi8080, { simulator defines }
+     cmdi8080, { CPU specific command defines }
+     db;       { main db module }
+
+procedure abort; forward;
+procedure prterr(e: errcod); forward;
+
+private
+
+label loop, { loop command statements }
+      quit; { quit program }
+
+var
+
+   objfil:  bytfil; { object file }
+   tarnam:  filnam; { filename of target program }
+   prgadr:  integer; { load file address }
+   proglen: integer; { length of loaded program }
+   b:       byte;
+
+{*******************************************************************************
+
+Abort program
+
+Exits DB.
+
+*******************************************************************************}
+
+procedure abort;
+
+begin
+
+   goto quit
+
+end;
+
+{*******************************************************************************
+
+Print error
+
+Prints an error according to the given error code, then aborts the current run
+to input the next command line.
+
+*******************************************************************************}
+
+procedure prterr(e: errcod);
+
+begin
+
+   write('*** ');
+   case e of { error code }
+
+      elabtl:   write('Label too long');
+      ecmdend:  write('End of command expected');
+      ecmdexp:  write('Command expected');
+      elabexp:  write('Label expected');
+      ecmdnf:   write('Command not found');
+      ecmdnimp: write('Command not implemented');
+      ecodovf:  write('Code buffer overflow');
+      enfmt:    write('Invalid numeric format');
+      edbr:     write('Digit beyond radix specified');
+      ecmaexp:  write('"," expected');
+      evarnf:   write('Variable not found');
+      einvprt:  write('I/O port accessed does not exist');
+      einvins:  write('Invalid instruction executed');
+      ehltins:  write('Halt instruction executed');
+      eunmapio: write('Unmapped I/O address was accessed');
+      esys:     write('System error: notify S. A. Moore');
+      else      write('System error: notify S. A. Moore')
+
+   end;
+   writeln;
+   goto loop { resume next line }
+
+end;
+
+{*******************************************************************************
+
+Initialze DB
+
+*******************************************************************************}
+
+begin
+
+   { load target program }
+   tarnam := 'test.obj            ';
+   assign(objfil, tarnam); { open target .obj file }
+   reset(objfil);
+   { read in object file }
+   prgadr := 0; { load at zero }
+   while not eof(objfil) do begin
+
+      read(objfil, b); { read file byte }
+      putmem(prgadr, b, 1);
+      prgadr := prgadr+1 { next address }
+
+   end;
+   proglen := prgadr; { save last address }
+   write  ('Program name:    '); 
+   prtfil(tarnam);
+   writeln;
+   writeln('Program status:  Loaded');
+   writeln('Program length:  ', proglen:1);
+   writeln('Program symbols: Disabled');
+   writeln;
+   
+   loop: ; { loop next line }
+   
+      { get command lines from console }
+      write('> ');
+      getlin(input); { get a command line }
+      parlin; { parse command line }
+      exclin; { execute command line }
+
+   goto loop; { forever }
+
+   quit: ; { quit program }
+
+end.

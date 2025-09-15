@@ -1,0 +1,56 @@
+rem
+rem Create genpe portable executable file generator
+rem
+
+rem
+rem Produce encoded version
+rem
+rem copy xltmod_on.pas xltmod.pas
+rem parse genpe=genpe/nrf
+rem ec genpe=genpe/noc/nrc/nac/nclcl/scxt/discm
+
+rem
+rem Produce plaintext version. This is for debugging purposes only.
+rem
+copy xltmod_off.pas xltmod.pas
+parse genpe=genpe/nrf
+ec genpe=genpe/noc/nrc/nac/nclcl
+
+rem
+rem Windows link
+rem 
+
+rem
+rem Link encoded version
+rem
+rem ln runfile=c:\ip\windows\i80386\lib\blotter c:\ip\windows\i80386\lib\serlibx c:\ip\windows\i80386\lib\strlibx c:\ip\windows\i80386\lib\extlibx c:\ip\windows\i80386\lib\parlibx c:\ip\windows\i80386\lib\reglockx c:\ip\windows\i80386\lib\timelockx genpe c:\ip\windows\i80386\lib\cap/nu
+
+rem
+rem Link plaintext verion. This is for debugging purposes only.
+rem
+ln runfile=c:\ip\windows\i80386\lib\blotter c:\ip\windows\i80386\lib\serlib c:\ip\windows\i80386\lib\strlib c:\ip\windows\i80386\lib\extlib c:\ip\windows\i80386\lib\parlib c:\ip\windows\i80386\lib\reglock c:\ip\windows\i80386\lib\timelock genpe c:\ip\windows\i80386\lib\cap/nu
+
+rem
+rem Run this genpe when you want to self test the generated genpe
+rem
+rem genpe genper=runfile/v
+
+rem
+rem Run this genpe when you want allways get a good genpe build
+rem
+c:\ip\windows\i80386\bin\genpe genper=runfile/v
+
+del genpe.exe
+ren genper.exe genpe.exe
+rem del runfile.*
+
+@echo off
+rem
+rem Linux link
+rem 
+
+rem ln runfile=c:\ip\linux\i80386\lib\serlib c:\ip\linux\i80386\lib\strlib c:\ip\linux\i80386\lib\extlib genpe c:\ip\linux\i80386\lib\cap #ps=$8048074 #vs=$8054678 #ll #lv #lm > genpe.lst
+rem genelf genper=runfile/v
+rem del genpe
+rem ren genper genpe
+rem del runfile.*

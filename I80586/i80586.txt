@@ -1,0 +1,544 @@
+*** Warning: this document is now in the IP Pascal language 
+             manual. Edit changes there, not here.
+
+                INSTRUCTION NOTES ON 80586 PROCESSOR ASSEMBLER
+
+WHAT THIS DOCUMENT CONTAINS
+
+The "official reference" for the 80586 assembler language is:
+
+   Pentium Processor User's Manual
+   Volume 3: Architecture and Programming Manual
+
+   Intel Corp. 1993
+   Intel Order Number: 241430-001
+   ISBN 1-55512-195-0
+
+This document details differences between the instruction formats of that
+reference and that of AS. Where mentioned here, this document superceeds
+information in the above referenced document. The assumption is made here
+that the methods and language of the above document apply equally well to
+the other processors in the series, 8088, 8086, 80186, 80188, 80286, 80386
+and 80486. This assumption could be incorrect. We are not responsible for 
+errors in the above document. In fact, there are several such errors that
+we know about. We are not responsible for hardware errors in the CPUs 
+themselves, of which, again, there are several. Note that the nomenclature 
+"80586" is not accepted by Intel Corp., and is meant to imply "generic"
+compatibility with a family of computer chips.
+
+THE LANGUAGE OF AS80586
+
+AS80586 differs from "traditional" assemblers for the 80x86 family in that:
+
+   1. It does not support multiple, segmented address spaces.
+
+   2. Does not support extensive "typing" of values.
+
+While typical 80x86 family assemblers greatly ease the creation of segmented
+mode programs (or perhaps make them possible), this model is highly
+incompatible with the methods used on other processors, and AS et. all is
+a "processor general" assembler.
+As such, AS cannot be used to produce object files for use in segmentation
+based operating systems.
+
+CPU DEFAULT SIZE MODEL
+
+The 80586 is a superset of the 8086, 8088, 80186, 80188, 80286, 80386 and 
+80486 processor instruction sets. Beginning with the 80386 instruction set, a
+mode bit was added to select whether a "large model" or "small model" is in 
+effect for instructions. This mode bit exists in the runtime cpu, but 
+instructions must be arranged specifically for either model. Two assembler 
+directives select what model instructions are to be generated for:
+
+   small - Generate small model instructions by default.
+
+   large - Generate large model instructions by default.
+
+These instructions do NOT affect what kind of instructions can be assembled.
+Specifically, instructions that use double word registers or other operands
+can be used in the small model, and instructions that use word registers or
+operands can be used in the large model. The assembler will automatically
+generate the needed processor prefix to allow such "cross mode instructions" 
+to operate.
+The model size is also set by the CPU type select (see "pseudo operators"
+below), so that, for example, an 8086 machine automatically gets a small model
+system. Therefore, you should allways set the model type AFTER selecting the
+machine type.
+
+CPU OPERAND SIZES:
+
+The popular assemblers for the 80x86 series processors feature "typed"
+assembly, where symbols possess a type that includes the length of the unit
+operated on. This is used to solve ambiguities in the instruction set.
+AS is not typed (as most existing assemblers), and requires specific,
+unambigous specification of operand sizes. For example:
+
+   inc [x]
+
+Where x is a memory location, would have been resoved either by the "type" of
+x under 80x86 assemblers, or a "type specifier" would be added:
+
+   inc byte ptr [x]
+
+Under AS, this is solved by allowing a special ending to instructions that
+make the length of data to be operated on unambigous:
+
+   [op]b - Indicates byte sizing.
+   [op]w - Indicates word sizing.
+   [op]d - Indicates double word sizing.
+   [op]q - Indicates quad word sizing.
+   [op]s - Indicates short float sizing (32 bit floating point).
+   [op]d - Indicates double float sizing (64 bit floating point).
+   [op]l - Indicates long float sizing (80 bit floating point).
+   [op]s - Indicates short jump sizing (8 bit displacement)
+   [op]m - Indicates medium jump/call sizing (16 bit displacement)
+   [op]l - Indicates long jump/call sizing (32 bit displacement)
+
+So, the AS way to specify the increment is:
+
+   incb [x]
+
+The specification of size with instruction ending is industry standard outside
+the 80x86 family. It has the advantage that the exact meaning of the
+instruction is made clear, without needing to know the "types" of operands.
+In fact, many instructions already make use of the convention. For example, 
+consider the instructions:
+
+   cmpsb    - Compare string operands byte.
+   cmpsw    - Compare string operands word.
+   cmpsd    - Compare string operands double word.
+
+The big difference with AS is that this notation is extended consistently
+whenever operand size specification is required.
+NO size endings are provided for instructions that do not require them. For
+example, the cmpxchg instruction ALLWAYS requires that at least one operand
+be a register, and this sets the size of the operation, so no size ending
+is required.
+In practice, the need to exactly specify the instruction size occurs rarely, 
+when only memory operands are used, and no registers or other clues
+exist to tell what size operand is being worked on. 
+Note that special endings are only available where two or more different
+interpretations of the instruction exist. For instance, the "bswap" instruction
+does not have a special ending, because only a double word (32 bit) register
+instruction is possible.
+Note that the instruction ending used depends on the types of operands expected.
+For example:
+
+   addd x, y - Perform double word add (32 bit).
+   faddd f   - Perform double real add (64 bit). 
+
+The "d" ending stands for either double word integer (32 bits) or double real
+(64 bits). It is unambiguous because the instruction already indicates what
+type, integer or real, is being operated on.
+Also, some instructions have what might appear to be size endings:
+
+   cld
+
+Is "clear direction bit", not "clear double word".
+The size endings are fairly regular, but there are exceptions:
+
+   iret
+   popa
+   popf
+   pusha
+   pushf
+
+and
+   
+   iretd
+   popad
+   popfd
+   pushad
+   pushfd
+        
+These instructions are odd because there exist two size specific instructions.
+In this case, the former instructions are not "perform whatever size 
+operation is appropriate", as is usual for the instruction set, but "perform 
+word operation". We have left the original meanings of these instructions
+intact for compatibility. The instruction list at the end of this document 
+should allways be consulted to determine the effect of an operation.
+There are some operations where the size SHOULD NOT be specified. For example,
+the operation:
+
+   fadd  st,st(i) ! correct
+   faddd st,st(i) ! incorrect
+
+Specifying the size of an operation that only involves one of the floating
+point stack registers is not valid because the instruction does not determine
+what size/type operand is in use. These operations allways occur in the
+CPU's internal extended format.
+The shld and shrd instructions are specified specially:
+
+   shldw - Shift left with word registers
+   shldd - Shift left with double word registers
+   shrdw - Shift right with word registers
+   shrdd - shift right with word registers
+
+Here, the specific word/dword status of the instruction must be specified,
+even though it is not nessary to the resolution of the instruction (because
+these instructions allways have a register operand).
+The reason is that the instructions:
+
+   shl  - Shift left
+   shlw - Shift left word
+   shld - Shift left double word
+   shr  - Shift right
+   shrw - Shift right word
+   shrd - Shift right double word
+
+Must exist. This is because the shl and shr instructions DO require a size
+ending, since they may accept only a memory reference operand.
+
+DIFFERENCE BETWEEN SMALL MODE AND MACHINE TYPE
+
+Small mode is NOT equivalent to executing mt86/mt186/mt286. For example:
+
+   mov     al,[location]
+
+is an 8086 instruction. But if "location" is a relocatable address, AS will
+automatically promote the address mode of the operation if the machine type
+is 386 or higher. In other words, AS will generate the instruction that is
+most likely to work at any given address, by using any and all capabilities
+of the machine type selected.
+If you specifically wish to generate a section of code that will only use
+a certain processor level's operations, then you should specifically set the
+machine type to that processor. The machine type can be changed any number
+of times within a file.
+
+CONSISTENT LARGE/SMALL SEGMENT TYPE
+
+As stated, AS does not control the 16/32 bit mode of a section of code. This
+is controlled by the size bit in the control data for the segment at runtime.
+You must be carefull to make sure that code generated for large model is only
+loaded to a large model segement, and code generated for a small model is
+only loaded to a small model segment.
+Specifically, be carefull while changing machine types in the same file:
+
+   m86
+   mov     al,[data]
+   m386
+   mov     [data],al
+
+would create a file with mixed segment attributes (AS ISSUES NO WARNINGS FOR
+THIS !). The reason is that m86 automatically sets the model to small, then
+m386 automatically sets the model to large. To make the above code stay in
+small mode, the following would be used:
+
+   m86
+   mov     al,[data]
+   m386
+   small
+   mov     [data],al
+
+Here we specifically override the automatic model setting of the m386 
+instruction.
+Since AS/LN is not a segmented assembly system, there is no automatic setting
+or checking of the model bit in the segment where code is located. It is left
+entirely up to the programmer to specify and load code correctly.
+
+JUMP/CALL INSTRUCTIONS
+
+Jump instructions can be "generic" or sized. If no size is specified for a
+jump, the jump type is automatically choosen to be the shortest possible
+instruction sequence that will reach the given jump target. This is not
+allways possible. The target may be forward referenced, or may exist in
+another file. In this case, the largest jump possible for the machine type
+in effect is choosen. This garantees that the jump will allways work at
+link time.
+If it is known that a given jump may be of a certain size, the size finding
+algorithim can be overridden by directly specifing the jump size:
+
+   jmps - May reach -128 to +128 of the next instruction
+   jmpm - May reach -32768 to +32767 of the next instruction
+   jmpl - May reach -2147483648 to +2147483647 of the next instruction
+
+   callm - May reach -32768 to +32767 of the next instruction
+   calll - May reach -2147483648 to +2147483647 of the next instruction
+
+STRING OPERATORS
+
+The notation:
+
+   cmps x,y
+   movs x,y
+   lods x.y
+   stos x.y
+
+Was allowed in masm with x and y indicating the size of the operation. X and
+Y were meaningless parameters whose appearance was only to give the operation
+a size by the type of the operands. This has two problems. Since AS has no 
+"type" of operands, their inclusion would still leave the operation ambigous.
+This notation is not implemented. Instead, these type specific operators
+should be used:
+
+   cmpsb - Compare byte
+   cmpsw - Compare word
+   cmpsd - Compare double
+   movsb - Move byte
+   movsw - Move word
+   movsd - Move double
+   lodsb - Compare byte
+   lodsw - Compare word
+   lodsd - Compare double
+   stosb - Compare byte
+   stosw - Compare word
+   stosd - Compare double
+   scasb - Compare string byte
+   scasw - Compare string word
+   scasd - Compare string double
+
+Note that cmps, movs, lods and stos (without the size specification ending)
+are not legal operators under AS.
+
+MEMORY LOCATION SPECIFICATION
+
+Under many 80x86 assemblers, the use of "[]" is optional:
+
+   add ax,sum
+
+   add ax,[sum]
+
+Are equivalent, because "sum" has a memory operand "type". AS is a typeless
+assembler, so the second form is required.
+
+OPERAND SPECIFICATION
+
+Standard 80x86 mode assemblers use an operand specification that is inheirently
+ambiguous. We have selected a subset of the operand formats that is not. It
+is the format used in the CPU manufacturer's documentation. In practice, the
+format not only makes it very clear what is being done but also regularizes
+the appearance of source files.
+AS requires that index operands appear in a specific format:
+
+   mov ax,disp[xx+yy*s]
+
+Which is a subset of the operand formats available for typical 80x86 
+assemblers (but corresponds to the cpu designer's documentation).
+So the following operands are possible:
+
+   imm               - Immediate operand.
+   [disp]            - Immediate indirect operand.
+   reg               - Register.
+   [reg]             - Indirect register.
+   [breg+ireg]       - Indirect base with index register.
+   [ireg*s]          - Indirect register with scaling.
+   [breg+ireg*s]     - Indirect base with index register, and scaling.
+   disp[reg]         - Indirect register with displacement.
+   disp[ireg*s]      - Indirect register with scaling and displacement.
+   disp[breg+ireg]   - Indirect base with index register, with displacement.
+   disp[breg+ireg*s] - Indirect base with index register, with scaling and 
+                       displacement.
+
+All operands of instructions MUST appear in one of the forms given above, and
+in the order shown.
+
+SEGMENTATION INSTRUCTIONS
+
+Since AS does not have an analog to the segmented address concept, the
+instructions that have segmented address parameters are specified with
+distinct segment/offset fields.
+Segmentation is not supported. These instructions are provided because they
+may be used in other contexts.
+Several special instructions apply only to the use of segments and segmented
+addresses:
+
+        callf   <seg>,<off> - Call segmented address routine.
+        callmf  <seg>,<off> - Call segmented address routine (16 bit offset).
+        calllf  <seg>,<off> - Call segmented address routine (32 bit offset).
+        jmpf    <seg>,<off> - Jump segmented address.
+        jmpmf   <seg>,<off> - Jump segmented address (16 bit offset).
+        jmplf   <seg>,<off> - Jump segmented address (32 bit offset).
+
+        lgs     <reg>,<mem> - Load segmented address to GS segment.
+        lss     <reg>,<mem> - Load segmented address to SS segment.
+        lfs     <reg>,<mem> - Load segmented address to FS segment.
+        lds     <reg>,<mem> - Load segmented address to DS segment.
+        les     <reg>,<mem> - Load segmented address to ES segment.
+
+        gs      - Override the next instruction for GS segment use.
+        ss      - Override the next instruction for SS segment use.
+        fs      - Override the next instruction for FS segment use.
+        ds      - Override the next instruction for DS segment use.
+        es      - Override the next instruction for ES segment use.
+
+Note that the "f" or "far" modifier is implied in all instructions but
+callf and jmpf.
+
+OTHER EXCEPTIONS
+
+The instruction:
+
+   xlat    m8
+
+is not valid under AS. Use instead:
+
+   xlatb
+
+The "prefix" methodology that the first form was intended to provide is done
+by a separate prefix instruction under AS.
+The instructions:
+
+   lgdt mem
+   lidt mem
+   sgdt mem
+   sidt mem
+
+Are invalid. Use:
+
+   lgdtw mem
+   lgdtd mem
+   lidtw mem
+   lidtd mem
+   sgdtw mem
+   sgdtd mem
+   sidtw mem
+   sidtd mem
+
+Instead. The reason is that since only a memory reference operand is allowed,
+the untyped form of the instruction is inherently ambiguous.
+Some instructions use size endings that do not in fact match the size of
+the operation:
+
+   fldenvw mem - Load 14 byte FPU environment
+   fldenvd mem - Load 28 byte FPU environment
+
+Here the "word" or "double word" ending refers to the 16 bit/32 bit operand
+size mode, which is used to select between the two instruction types.
+For the instructions:
+
+   movsxb  r16/r32,r/m8
+   movsxw  r32,r/m8
+   movzxb  r16/r32,r/m8
+   movzxw  r32,r/m8
+
+The byte or word status does NOT refer to the operand size of the left hand
+operand, but the right. The size of the left is determined strictly by the
+register.
+
+PREFIX INSTRUCTIONS
+
+80x86 assemblers allow you to "prefix" instructions with others, for example:
+
+   repz ldsb
+
+AS considers these to be wholly separate instructions, so this must be
+written:
+
+   repz
+   ldsb
+
+Since AS can "gang" instructions on a line, you can also use:
+
+   repz; ldsb
+
+To more nearly approximate other assemblers.
+It is up to the programmer to apply prefix instructions such that the
+following instruction has meaning as prefixed.
+The operand size prefix (opsiz) and address size prefix (adrsiz) have no
+instructions, and are not available for direct programmer use. The
+assembler generates these prefixes automatically as the instruction
+dictates.
+Note that the segmentation overrides are also considered prefix instructions.
+
+FLOATING POINT OPERATIONS
+
+The floating point instructions may or may not be executed by a "coprocessor",
+or separate unit that works in tandem with the main CPU. This fact is 
+immaterial to AS80586. However, the floating point instructions can be
+disabled separately to simulate the environment where the floating point
+coprocessor is not enabled.
+
+   float  - Enables floating point assembly
+
+   nfloat - Disables floating point assembly
+
+Note that floating point is allways set ON by any machine type selection, so
+you should first set the machine type, then set the desired floating point
+mode.
+AS80586 was built on the assumption that the CPU and coprocessor are "matched",
+that is a 8086 CPU is mated to an 8087 coprocessor, an 80286 to an 80287, etc.
+On most implementations this is true, but there are some cases where it is not.
+For example, use of a 8087 coprocessor with a 80286 CPU occurred because the
+8087 cost less and ran faster than the 80287. For similar reasons, the 80486sx
+is often mated with a 80387. In most or all of such implementations, the
+coprocessor is "carried up" to a higher level CPU, and you must simply refrain
+from coding instructions that don't exist on the downrev coprocessor. In the
+worst case, for example accessing an 8087 specific instruction on a 286 CPU,
+you may have to switch the machine type before the instruction, then switch
+back.
+Again, the matched mode behavior of AS80586 is appropriate for the vast
+majority of installations.
+
+PSEUDO OPERATIONS
+
+The following are pseudo ops oriented specifically for the I80586:
+
+   large   - Indicates that code will be executed using the I80586
+             32 bit instruction stream mode (the default).
+
+   small   - Indicates that code will be executed using the I80586
+             16 bit instruction stream mode.
+
+   float   - Enables the assembly of floating point operations (the
+             default).
+
+   nfloat  - Disables the assembly of floating point operations.
+
+   m86     - Restricts assembly to I8086 instructions and modes only,
+             with small model and floating point enabled.
+
+   m186    - Restricts assembly to I80186 instructions and modes only,
+             with small model and floating point enabled.
+
+   m286    - Restricts assembly to I80286 instructions and modes only,
+             with small model and floating point enabled.
+
+   m386    - Restricts assembly to I80386 instructions and modes only,
+             with large model and floating point enabled.
+
+   m486    - Restricts assembly to I80486 instructions and modes only,
+             with large model and floating point enabled.
+
+   m586    - Restricts assembly to I80586 instructions and modes only,
+             with large model and floating point enabled (the default).
+
+   defw    - Define 80586 specific format word (16 bits, little endian)
+
+   defhw   - Define 80586 specific format half word (same as byte)
+
+   defdw   - Define 80586 specific double word (32 bits, little endian)
+
+   defqw   - Define 80586 specific quad word (64 bits, little endian)
+
+COMPATIBILTY
+
+AS80586 can assemble for any of the I8088, I8086, I80188, I80186, I80286, 
+80386, I80486, and I80586 processors, which are completely downward and
+upward compatible with the exception of the following operations:
+
+   fdisi  ! specific to the 8087 coprocessor
+   fndisi !   ""                       ""
+   feni   !   ""                       ""
+   fneni  !   ""                       ""
+   fsetpm ! specific to the 80287 coprocessor
+
+These operations may only be assembled under the exact machine type they are
+specific to.
+AS defaults to being able to assemble any instruction or mode up to I80586.
+To program for a lower level processor, you may simply refrain from the
+use of higher level modes. Alternately, specifing a specific processor
+target (before the statements appear) allows AS to specifically enforce
+compliance with the target processor.
+The default mode of any AS assembler is to allow the most capable instruction
+set. Therefore, if a successor to the AS80586 assembler comes out, it would
+automatically allow all 80686 instructions, etc.
+It is, then, a good idea to specifically choose which processor level is to
+be coded for, and declare that at the top of the file.
+
+ENDIAN MODE
+
+The 80586 is a little endian processor, and bendian mode is the default.
+
+INSTRUCTION SET
+
+The following is the short form instruction set as processed by AS.

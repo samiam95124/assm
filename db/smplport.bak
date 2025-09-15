@@ -1,0 +1,82 @@
+{*******************************************************************************
+*                                                                              *
+*                          SIMPLE PORT PLUGIN FOR DB                           *
+*                                                                              *
+* Uses the DB target events system to implement a simple I/O port for the      *
+* I8080. Any writes to port 0 go to the console, and any reads come from the   *
+* console.                                                                     *
+*                                                                              *
+*******************************************************************************}
+
+module smplport(input, output);
+
+uses stddef,   { standard defines }
+     strlib,   { string library }
+     extlib,   { extention library }
+     dbdef,    { db defines }
+     defi8080, { cpu specific defines }
+     simi8080, { simulator defines }
+     db,       { db module }
+     main;     { main module }
+
+private
+
+{*******************************************************************************
+
+Input value from simulated port
+
+Simulates a port read. At the current implementation, only one port is
+simulated, which is the console port at 0. Future extension will probally allow
+arbitrary files to be connected to ports, or perhaps grandiose plans such as the
+virtual port scheme.
+
+*******************************************************************************}
+
+procedure inpprt(e: evttyp; var insaddr: integer; accaddr: integer; 
+                 var data: integer; len: integer);
+
+var c: char; { character to read }
+
+begin
+
+   refer(e, insaddr, accaddr, len); { set parameters unused }
+
+   read(c); { read a single character }
+c := 'g';
+   data := ord(c) { place }
+
+end;
+
+{*******************************************************************************
+
+Output value to simulated port
+
+Simulates a port write. At the current implementation, only one port is
+simulated, which is the console port at 0.
+
+*******************************************************************************}
+
+procedure outprt(e: evttyp; var insaddr: integer; accaddr: integer; 
+                 var data: integer; len: integer);
+
+begin
+
+   refer(e, insaddr, accaddr, len); { set parameters unused }
+
+   write(chr(data)) { output single character }
+
+end;
+
+{*******************************************************************************
+
+Initialize ports module
+
+*******************************************************************************}
+
+begin
+
+   reserve(rsioread, 0, 1, inpprt); { reserve port 0 for input }
+   reserve(rsiowrite, 0, 1, outprt); { reserve port 0 for output }
+
+end.
+

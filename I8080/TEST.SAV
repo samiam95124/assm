@@ -1,0 +1,12 @@
+        mvi     c,4
+junk:   macro   one, two, three; mvi c,8
+        lxi     h,$1234
+
+        defb    '__'
+        defb    '____'
+        defb    '\'; endmac'
+where:  endmac
+
+        nop
+        junk
+        lda     9

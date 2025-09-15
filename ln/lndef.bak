@@ -1,0 +1,234 @@
+{******************************************************************************
+*                                                                             *
+*                       UNIVERSAL LINKER VS 1.0                               *
+*                                                                             *
+*                   Copyright (C) 1996 Scott A. Moore                         *
+*                         All rights reserved                                 *
+*                                                                             *
+* Performs a multiple file link using .obj and .sym files in our universal    *
+* linker format.                                                              *
+* LN takes any number of .obj/.sym file pairs, merges the symbols decks, then *
+* copies the input .obj files to the output .obj file while editting all the  *
+* specified linkage fields. To do this, it can perform any required           *
+* mathematical operation, and align and insert bits in any required format.   *
+* The length of value handled is only limited by the integer size of the      *
+* compiler for LN.                                                            *
+*                                                                             *
+******************************************************************************}
+
+module lndef;
+
+uses
+
+   stddef; { standard defines }
+
+const
+
+   maxlab  = 256;   { number of characters in a label }
+   maxcmp  = 10;    { number of characters in a constant compare label.
+                      Should NEVER be greater than maxlab }
+   maxext  = 3;     { number of characters in an extention }
+   maxout  = 80;    { normal default for length of listing line }
+   maxpag  = 60;    { normal default for length of listing page }
+   maxsav  = 10000; { size for disk caching }
+   maxfil  = 100;   { maximum size of filename }
+   maxlin  = 1000;  { maximum size of input line }
+
+type 
+
+   filinx  = 1..maxfil; { index for filename }
+   filnam  = packed array [filinx] of char; { filename }
+   lininx  = 1..maxlin; { index for line }
+   linbuf  = packed array [lininx] of char; { input line }
+   labinx  = 1..maxlab;    { index for standard label }
+   labl    = packed array [labinx] of char; { a standard label }
+   cmp     = packed array [1..maxcmp] of char; { a constant compare label }
+   extinx  = 1..maxext; { index for file extentions }
+   extbuf  = packed array [extinx] of char; { extention }
+   savinx  = 1..maxsav; { index for caching buffers }
+   savbuf  = packed array [savinx] of byte; { disk cache }
+   { symbol file objects }
+   objtyp  = (obend,   { end of file }
+              obsym,   { symbol }
+              obcst,   { constant }
+              obrld,   { relocation }
+              obcrld,  { constant relocation }
+              obblk,   { block begin }
+              obblke,  { block end }
+              oblin,   { line tracking difference set }
+              obsrc,   { line tracking source name }
+              obnull); { null } 
+   { operation required on a symbol }
+   symop = (onop, { no operation }
+            oadd, { add }
+            osub, { subtract }
+            omult, { multiply }
+            odiv,  { divide }
+            omod,  { modulo }
+            oshl,  { shift left }
+            oshr,  { shift right }
+            oand,  { and }
+            oor,   { or }
+            oxor,  { exclusive or }
+            onot,  { not }
+            oneg); { negate }
+   blkptr = ^blkrec; { pointer to block entry (declared ahead) }
+   { format of entries in the symbols table }
+   symptr = ^symbol;    { symbol pointer }
+   symbol = record      { program symbols }
+
+      opr:  symop;   { operation }
+      lab:  pstring; { symbol label }
+      def:  boolean; { symbol defined flag }
+      add:  boolean; { symbol address flag }
+      gbl:  boolean; { symbol global }
+      ext:  boolean; { symbol external }
+      vrs:  boolean; { symbol in variable space }
+      val:  integer; { integer value }
+      lft:  symptr;  { 1st operand }
+      rgt:  symptr;  { 2nd operand }
+      err:  boolean; { entry has already received duplicate/security violation
+                       report }
+      par:  blkptr;  { parent block, or nil for none }
+      next: symptr   { next symbol chain }
+
+   end;
+   { insertion mode }
+   imode = (imnorm,  { normal }
+            imsgof,  { signed offset }
+            imnsof,  { non-standard signed offset }
+            imiseg); { Intel x86 segmented "huge" pointer }
+   rldptr = ^reloc; { relocation dictionary structures }
+   reloc = record { linkage marker }
+
+      big:    boolean; { big endian insert }
+      im:     imode;   { insertion type }
+      cof:    integer; { constant offset }
+      str:    integer; { starting bit of offset }
+      len:    integer; { number of bits to insert }   
+      add:    integer; { where to insert }
+      inssym: symptr;  { what to insert }
+      val:    integer; { value (if no symbol) }
+      adf:    boolean; { value address flag }
+      vrs:    boolean; { value in variable space flag }
+      def:    boolean; { value is defined }
+      next:   rldptr   { next entry }
+  
+   end;
+   filept = ^filety; { structures for handling filename nesting }
+   filety = record { source/object file entry }
+
+      nam:  filnam;  { file name }
+      plen: integer; { program length of module }
+      vlen: integer; { variable length of module }
+      next: filept   { next entry linkage }
+
+   end;
+   lenptr = ^lenrec; { pointer for file length record }
+   lenrec = record { file length record entry }
+
+      len:  integer; { length of code in file }
+      next: lenptr   { next entry }
+
+   end;
+   { The block entries track regions of code to be elided in the final link. 
+     They may nest. }
+   bicptr = ^blkinc; { pointer to block included symbol }
+   blkinc = record { block symbol/block inclusion pointer }
+
+      { We economise on list space by treating included blocks as the holders
+        for their included lists. }
+      sym:  symptr;  { included loose symbol }
+      blk:  blkptr;  { included block }
+      next: bicptr   { next entry in this list }
+
+   end;
+   blkrec = record { block entry }
+
+      startp: integer; { start of block program space }
+      endp:   integer; { end of block program space }
+      startv: integer; { start of block variable space }
+      endv:   integer; { end of block variable space }
+      inclst: bicptr;  { list of all items included in this block }
+      outp:   boolean; { block is output to symbol file }
+      seq:    integer; { sequence number of block }
+      lvl:    integer; { level of block }
+      oref:   integer; { outside to inside references }
+      next:   blkptr   { next block in list or stack }
+
+   end;
+   { Line tracking records. Tracking records usually all have a source file
+     assocated with them, but it is the same string on many records. }
+   trkptr = ^trkrec; { pointer to tracking record }
+   trkrec = record
+
+      line: integer; { line number }
+      prg:  integer; { program counter }
+      vrs:  integer; { variable space counter }
+      src:  pstring; { source file associated }
+      next: trkptr   { next entry in list }
+
+   end;
+   { codes for errors }
+   errcod = (einvfil,   { Invalid file specification }
+             enovf,     { Input numeric overflow }
+             ecmdsyn,   { Command line syntax invalid }
+             elabovf,   { Label too long }
+             eequexp,   { '=' expected }
+             eoptnf,    { Option not found }
+             einvnum,   { Invalid number format }
+             enofs,     { No output file specified }
+             efilnf,    { file not found }
+             edbr,      { Digit beyond radix specified }
+             esymfmt1,  { Invalid symbol file format }
+             esymfmt2,
+             esymfmt3,
+             esymfmt4,
+             esymfmt5,
+             esymfmt6,
+             esymfmt7,
+             esymfmt8,
+             esymfmt9,
+             esymfmt10,
+             esymfmt11,
+             esymfmt12,
+             esymfmt13,
+             esymfmt14,
+             esymfmt15,
+             esymfmt16,
+             esymfmt17,
+             esymfmt18,
+             esymfmt19,
+             esymfmt20,
+             esymfmt21,
+             esymfmt22,
+             esymfmt23,
+             esymfmt24,
+             esymfmt25,
+             esymfmt26,
+             esymfmt27,
+             esymfmt28,
+             esymfmt29,
+             esymfmt30,
+             esymfmt31,
+             esymfmt32,
+             esymfmt33,
+             esymfmt34,
+             esymfmt35,
+             esymfmt36,
+             esymfmt37,
+             edupsym,   { duplicate symbol definition }
+             efldovf,   { value exceeds output field }
+             efltfmt,   { floating point format not implemented }
+             esymlen,   { symbol exceeds linker length capability }
+             engore,    { symbol must be global or external in security mode }
+             erldovf,   { rld table too large }
+             eobjfmt,   { Invalid object file format }
+             ecmdovf,   { command line overflow }
+             esysflt1,  { system fault }
+             esysflt2,
+             esysflt3,
+             esysflt4);
+
+begin
+end.

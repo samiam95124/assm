@@ -1,0 +1,20 @@
+module utl;
+
+uses
+
+   common;
+
+function ascii2chr(b: byte): char;
+
+var c: char; { character holder }
+
+begin
+
+   c := chrtrn[b]; { translate }
+
+   ascii2chr := c { return result }
+
+end;
+
+begin
+end.

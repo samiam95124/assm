@@ -1,0 +1,301 @@
+{*******************************************************************************
+*                                                                              *
+*                         UNIVERSAL ASSEMBLER VS. 2.0                          *
+*                                                                              *
+* Purpose:                                                                     *
+*                                                                              *
+* Translates an assembly language file into an object file. provides a         *
+* partially complete object file, and a symbols file (containing symbols and   *
+* the information to complete object).                                         *
+*                                                                              *
+* Description:                                                                 *
+*                                                                              *
+* The program can be divided into three parts:                                 *
+*                                                                              *  
+*    1. Main (executive) module.                                               *
+*    2. Machine dependent opcode processor.                                    *
+*    3. General utilities module.                                              * 
+*                                                                              *
+* The assembler works on a one pass plan, accumulating unprocessed expressions *
+* and even transmiting undefined expressions out in the symbols file.          *
+* Undefined output is so marked in the listing. A binary object plan is used   *
+* (as a common format, in fact, to at least four programs), consisting of the  *
+* object and symbol modules. This allows the forward directed planning, then   *
+* recreation sequence to occur. also, programs (like the loader and debugger)  *
+* need only access a single file. The ability to process files without respect *
+* to the points of definition allow increased flexibility, and in fact remove  *
+* many restrictions common to assemblers (pass definition limitations,         *
+* limitations on the use of relocatable labels in expressions).                *
+*                                                                              *
+* In general, this assembler attempts to assemble a moderate file size at      *
+* better than average speed. To this end, hash based management and only one   *
+* pass are the main aids.                                                      *
+*                                                                              *
+* Implementation:                                                              *
+*                                                                              *
+* This program is written entirely in IP Pascal. Few dependancies exist, as    *
+* the arrangement of the program is directed at it's target processor.         *
+* Using a compatable compiler, a cross - assembler should be possible with no  *
+* change.                                                                      *
+*                                                                              *
+* History:                                                                     *
+*                                                                              *
+* 1981 -                                                                       *
+*                                                                              *
+* Perhaps the oldest major Pascal program I have generated, the assembler was  *
+* written in about 1981 as a companion to the Z80 Pascal compiler. It was      *
+* improved over successive years, with the addition of a macro facility.       *
+*                                                                              *
+* 1987 -                                                                       *
+*                                                                              *
+* To facilitate creation of a Z280 assembler, AS was modularized to separate   *
+* processor specific functions from generic functions. Three processor         *
+* modules now exist: Z80, Z280 and 8080.                                       *
+*                                                                              *
+* 1994 -                                                                       *
+*                                                                              *
+* Now on the IBMPC/486 platform, the LN linker format is revamped to allow     *
+* N-length labels, "varigers" for all output values and addresses, and a       *
+* general purpose IT system that allows for all endian and word length modes.  *
+* The "word" type is eliminated, and the assembler genericised to work  with   *
+* any word length up to the integer length, and any endian mode, all this in   *
+* preparation for creation of 80x86 assembler module(s) and beyond.            *
+*                                                                              *
+*******************************************************************************}
+
+module asdef;
+
+uses stddef;
+
+const
+
+   maxlab  = 250;  { number of characters in a label }
+   maxfil  = 100;  { number oif characters in a file name }
+   maxlin  = 1000; { number of characters in a line(string) }
+   maxsym  = 200;  { number of symbol 'header' entries avalible }
+   maxbyte = 255;  { highest value in an unsiged byte }
+   { there is not really a practical maximum parameter number, but setting it
+     to the number of characters in a line at least garantees that it cannot be
+     exceeded }
+   maxpar  = 99; { maximum number of command parameters }
+
+type 
+
+   inpinx  = 0..maxlin;    { index for input line(string) }
+   labinx  = 1..maxlab;    { index for standard label }
+   blabinx = 1..maxfil;    { index for file names }
+   syminx  = 0..maxsym;    { index for symbols table }
+   lab     = packed array [labinx] of char;  { a standard label }
+   blab    = packed array [blabinx] of char; { a file name }
+   linbuf  = packed array [1..maxlin] of char; { input line buffer }
+   { macro constructor }
+   macptr = ^maccon;
+   maccon = record
+
+      next: macptr;   { next entry }
+      sp:   pstring;  { string to place }
+      par:  0..255    { codes for: 0: no-op,
+                                   1 - 252: parameters,
+                                   253: macro counter,
+                                   254: parameter count,
+                                   255: execute line }
+
+   end;
+   { operation required on a symbol }
+   symop = (onop, oadd, osub, omult, odiv, omod, oshl,
+            oshr, oand, oor, oxor, onot, oneg,
+            olt, ole, oeq, one, ogt, oge, olft,
+            orgt, ocat, olen);
+   styp = (stint, ststr, stflt, stmac); { data type for symbol }
+   blkptr = ^blkrec; { pointer to block entry, forwarded }
+   { format of entries in the symbols table }
+   symptr = ^symbol;    { symbol pointer }
+   symbol = record      { program symbols }
+
+      opr: symop;   { operation }
+      lab: pstring; { program label }
+      def: boolean; { symbol defined flag }
+      add: boolean; { symbol address flag }
+      gbl: boolean; { symbol global }
+      ext: boolean; { symbol external }
+      vrs: boolean; { symbol in variable space }
+      stv: boolean; { symbol is a 'set' variable }
+      typ: styp;    { type of data contained }
+      val: integer; { integer value }
+      str: pstring; { string value }
+      flt: ^real;   { float value }
+      mac: macptr;  { macro list }
+      inv: integer; { invocation count }
+      chn,          { next symbol chain }
+      lft,          { 1st operand }
+      rgt: symptr;  { 2nd operand }
+      par: blkptr;  { parent block }
+
+   end;
+   { The block entries track regions of code to be elided in the final link. 
+     They may nest. }
+   bicptr = ^blkinc; { pointer to block included symbol }
+   blkinc = record { block symbol/block inclusion pointer }
+
+      { We economise on list space by treating included blocks as the holders
+        for their included lists. }
+      sym:  symptr;  { included loose symbol }
+      blk:  blkptr;  { included block }
+      next: bicptr   { next entry in this list }
+
+   end;
+   blkrec = record { block entry }
+
+      startp: integer; { start of block program space }
+      endp:   integer; { end of block program space }
+      startv: integer; { start of block variable space }
+      endv:   integer; { end of block variable space }
+      inclst: bicptr;  { list of all items included in this block }
+      outp:   boolean; { block has been output to symbols file }
+      next:   blkptr   { next block in list or stack }
+
+   end;
+   { command nesting system }
+   cmdptr = ^cmdlvl; { command level pointer }
+   cmdlvl = record { command level entry }
+   
+      nxt: cmdptr;  { next level }
+      sp:  pstring; { string that holds command }
+      inp: inpinx;  { index to current position }
+      mac: macptr   { macro constructor for level }
+            
+   end;
+   { insertion mode }
+   imode = (imnorm,   { normal }
+            imsgof,   { signed offset }
+            imnsof,   { non-standard signed offset }
+            imiseg,   { Intel x86 segmented "huge" pointer }
+            imssof,   { SPARC aligned signed offset (32 bit) }
+            imsbsof); { SPARC "broken field" signed offset }
+   rldptr = ^reloc; { relocation dictionary structures }
+   reloc = record { linkage marker }
+
+      big:    boolean; { big endian insert }
+      im:     imode;   { insertion mode }
+      cof:    integer; { constant offset }
+      str:    integer; { starting bit of offset }
+      len:    integer; { number of bits to insert }   
+      add:    integer; { where to insert }
+      inssym: symptr;  { what to insert }
+      rldchn: rldptr   { next entry }
+  
+   end;
+   fnmptr = ^fnmrec; { structures for handling filename nesting }
+   fnmrec = record { source/object file entry }
+
+      filnam: blab;  { file name }
+      nxtfil: fnmptr { next entry linkage }
+
+   end;
+   srcptr = ^srcrec; { structures for handling source nesting }
+   srcrec = record
+
+      srcfil: text;    { file }
+      srcnam: blab;    { name of the file }
+      lincnt: integer; { line count within file }
+      llncnt: integer; { last line count (for line file) }
+      nxtsrc: srcptr   { next entry linkage }
+
+   end;
+   ifptr = ^ifrec; { structures for handling 'if' conditionals }
+   ifrec = record
+
+      ifsts: boolean; { status (t/f) of last 'if' }
+      ifsup: boolean; { status of suppress }
+      ifold: boolean; { status of 'or'ed suppress stacked }
+      iftyp: (cif, celse, celseif); { type of origninator }
+      nxtif: ifptr { next entry linkage }
+
+   end;
+   { linker object definitions }
+   lnkobj = (lnend,   { end of file }
+             lnsym,   { symbol entry }
+             lnanon,  { anonymous operator entry }
+             lnpat,   { patch entry }
+             lnrel,   { relocation entry }
+             lnblk,   { block begin }
+             lnblke;  { block end }
+             lnlin;   { line tracking source line difference number set }
+             lnsrc);  { line tracking source file name }
+   { codes for errors }
+   errcod = (elabexp,  { Label expected }
+             eopcexp,  { Opcode expected }
+             elabtl,   { Label too long }
+             eiltl,    { Source line too long }
+             eexpr,    { Expression error }
+             efact,    { Factor error }
+             erpexp,   { ')' expected }
+             ecmaexp,  { ',' expected }
+             eregexp,  { Register expected }
+             eregt,    { Register is wrong type }
+             emodt,    { Register/mode is wrong type }
+             epmba,    { Parameter must be absolute }
+             elpexp,   { Parameter is out of range }
+             entl,     { '(' expected }
+             edbr,     { Numeric too long }
+             eparam,   { Digit beyond radix }
+             eterm,    { Parameter error }
+             epoor,    { Invalid line termination }
+             eopcnf,   { Opcode not found }
+             eimpl,    { Feature not implemented }
+             eiovf,    { Input overflow }
+             eifil,    { Invalid/missing file specification }
+             eopt,     { Invalid option }
+             efnfn,    { File not found }
+             enfmt,    { Invalid numeric format }
+             eduplab,  { Duplicate label }
+             emlab,    { Missing label }
+             epvatt,   { Previous attribute on label }
+             emquo,    { Quote expected }
+             eifact,   { If(s) active at program end }
+             eifcex,   { Too many nested 'if's }
+             etmei,    { Original 'if' not found }
+             estrtl,   { String too long }
+             enstrna,  { Null string not valid }
+             ereljp,   { Relative location out of range }
+             etyp,     { Type incorrect }
+             echrrng,  { Character value out of range }
+             eivcpos,  { Character position out of range }
+             edfext,   { Attempt to define external }
+             egbludf,  { global undefined in program }
+             eextnal,  { File extention not allowed on object }
+             epart,    { Parameter type incorrect }
+             eparexp,  { Parameter expected }
+             erarexp,  { '>' expected }
+             encend,   { Target processor not endian configurable }
+             eutmac,   { Macro definition not terminated within file }
+             emismac,  { No macro definition active to terminate }
+             emsatt,   { Macro symbol has external or global type }
+             esymmac,  { Symbol is a macro }
+             emacovf,  { Macro invocation count overflow }
+             embschr,  { '+' expected }
+             eplsexp,  { String must be single character }
+             erbkexp,  { ']' expected }
+             edisps,   { Displacement size out of range }
+             eopsiz,   { Size of operand must be indicated }
+             eopsizm,  { Size of operands does not match }
+             emach,    { Instruction/mode not available on current machine }
+             eopsizi,  { Operand size incorrect for instruction }
+             eparnum,  { Too many parameters on macro }
+             edupmod,  { Duplicate radix selected }
+             edupfld,  { Field already specified }
+             ebadfld,  { Invalid print field syntax }
+             einvrad,  { Radix incorrect for type }
+             einvfrc,  { Fraction not used with floating point }
+             einvfld,  { Invalid field value }
+             enolab,   { Label not allowed on this directive }
+             enoblk,   { No block is active to terminate }
+             eblkact,  { Missing block end(s) at file end }
+             edivzer,  { divide by zero }
+             efldovf,  { value to large for field }
+             easflt,   { Assembler fault }
+             easflt1,  { Assembler fault #1 }
+             easflt2); { Assembler fault #2 }
+
+begin
+end.

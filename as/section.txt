@@ -1,0 +1,47 @@
+                                 USE OF SECTIONS IN AS
+
+OVERVIEW
+
+Sections are a second order structuring method for assembly code, the first 
+being files. A section can mark an arbitrary unit of code, including nested
+code, and mark it for deletion if not used. This allows the creation of
+library code.
+
+DETAILS
+
+Sections introduce two new pseudo-operations to as:
+
+        sect
+        ...
+        endsec
+
+All code, variables and labels inside a section are considered to be a part of
+that section, including other sections. Sections can nest, but for each section
+begin, there must be a matching section end. This means that sections cannot
+overlap each other.
+
+Sections have no name. If a label is placed on a section, it will simply be
+defined as a program label just before the section, and will not be included
+within it.
+
+Sections have no effect until the linker option is used to elide unused 
+sections. When that occurs, a cross reference dictionary is consulted, and all
+sections that are not refered to by other sections are removed from both the
+object and symbols deck.
+
+The removal process continues until all unreferenced sections are removed. If
+section A references section B, and A is unreferenced, and B is only referenced
+by A, then section A will be removed, then section B will be removed.
+
+If two sections mutually reference, or form a loop of references, this 
+effectively defeats the algorithim. If A references B, which references C, which
+in turn references A, then all of them will be considered referenced, even if as
+a group, they are all unreferenced.
+
+If sections must cross reference, the problem with circular references can be
+avoided by enclosing all of the code in another section.
+
+Although sections are usually removed in the final link used to prepare a final
+load deck, there is no limit to the number of link levels section removal can be
+performed on.
+

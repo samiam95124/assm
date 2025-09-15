@@ -1,0 +1,802 @@
+{*******************************************************************************
+*                                                                              *
+*                     MACHINE SPECIFIC OPCODE PROCESS MODULE                   *
+*                                                                              *
+*                       Copyright (C) 2007 S. A. Moore                         *
+*                            All rights reserved                               *
+*                                                                              *
+* PURPOSE:                                                                     *
+*                                                                              *
+* Implements all of the opcodes for the machine being implemented. All of the  *
+* opcodes, even the directives, are implemented here. The processor            *
+* independent directives are sent back to the main assembler module, but some  *
+* processor specific directives are handled here.                              *
+*                                                                              *
+*******************************************************************************}
+
+module opcode;
+
+uses asdef,  { generic definitions }
+     common, { global variables }
+     utl,    { generic utilities }
+     direct, { generic assembler directives }
+     asmain, { error handling }
+     macdef, { processor specific definitions }
+     macutl; { processor specific utilities }
+
+procedure mprcopc; forward; { process opcode }
+
+private
+
+{******************************************************************************
+
+Math operations
+
+Processes the add, addc, anl, orl, subb, xch and xrl opcodes.
+
+******************************************************************************}
+
+procedure math(i: opcodet);
+
+var l, r:   regc;    { parameters }
+    ls, rs: symptr;  { symbols }
+    inv:    boolean; { bit invertion operator }
+    mc:     byte;    { mode code }
+
+begin
+
+   parcod(l, ls); { parse parameter }
+   if l = rga then begin { a,x forms }
+  
+      prcnxt(',', ecmaexp); { skip ',' }
+      parcod(r, rs); { parse parameter }
+      case i of { opcode }
+
+         opadd:  outbyt($20+mode(r)); { add a,x }
+         opaddc: outbyt($30+mode(r)); { addc a,x }
+         opanl:  outbyt($50+mode(r)); { anl a,x }
+         oporl:  outbyt($40+mode(r)); { anl a,x }
+         opsubb: outbyt($90+mode(r)); { anl a,x }
+         opxch:  outbyt($c0+mode(r)); { anl a,x }
+         opxrl:  outbyt($60+mode(r)); { anl a,x }
+
+      end;
+      if r in [rgimm, rgdir] then 
+         gensym(rs, 0, false, imnorm, 0, 0, 8) { output immediate }
+
+   end else if l = rgdir then begin { direct,x forms }
+
+      if not (i in [opanl, oporl, opxrl]) then prterr(emodt); { register/mode }
+      prcnxt(',', ecmaexp); { skip ',' }
+      parcod(r, rs); { parse parameter }
+      if r = rga then mc := $02 { direct,a }
+      else if r = rgimm then mc := $03 { direct,#imm }
+      else prterr(emodt); { register/mode }
+      case i of { opcode }
+
+         opanl:  outbyt($50+mc); { anl a,x }
+         oporl:  outbyt($40+mc); { anl a,x }
+         opxrl:  outbyt($60+mc); { anl a,x }
+
+      end;
+      gensym(ls, 0, false, imnorm, 0, 0, 8); { output direct address }
+      if r = rgimm then 
+         gensym(rs, 0, false, imnorm, 0, 0, 8) { output immediate }
+
+   end else if l = rgc then begin { c,x forms }
+
+      if not (i in [opanl, oporl]) then prterr(emodt); { register/mode }
+      prcnxt(',', ecmaexp); { skip ',' }
+      skpspc; { skip spaces }
+      inv := false; { set no invert }
+      if chkchr = '/' then begin getchr; inv := true end;
+      parcod(r, rs); { parse parameter }
+      if r <> rgdir then prterr(emodt); { register/mode }
+      if i = opanl then begin
+
+         if inv then outbyt($b0) { anl c,/bit }
+         else outbyt($82) { anl c,x }
+
+      end else begin
+
+         if inv then outbyt($a0) { orl c,/bit }
+         else outbyt($72) { orl c,bit }
+
+      end;
+      gensym(rs, 0, false, imnorm, 0, 0, 8) { output direct address }
+      
+
+   end else prterr(emodt) { register/mode incorrect }         
+
+end;
+
+{******************************************************************************
+
+Process cjne instruction
+
+Processes the cjne opcodes.
+
+******************************************************************************}
+
+procedure cjne;
+
+var l: regc;    { parameter }
+    s: symptr;  { symbol }
+
+begin
+
+   parcod(l, s); { parse parameter }
+   if l = rga then begin { a,x,rel }
+
+      prcnxt(',', ecmaexp); { skip ',' }
+      parcod(l, s); { parse parameter }
+      if l = rgdir then outbyt($b5) { a,direct,rel }
+      else if l = rgimm then outbyt($b4) { a,#imm,rel }
+      else prterr(emodt); { register/mode }
+      gensym(s, 0, false, imnorm, 0, 0, 8); { output direct address/immediate }
+      prcnxt(',', ecmaexp); { skip ',' }
+      parcod(l, s); { parse parameter }
+      gensym(s, 0, false, imsgof, 0, 0, 8) { output relative address }
+
+   end else if l in [rgr0..rgr7, rgr0i, rgr1i] then begin { rn/@ri,#imm,rel }
+
+      outbyt($b0+mode(l)); { rn/@ri,#imm,rel }
+      prcnxt(',', ecmaexp); { skip ',' }
+      parcod(l, s); { parse parameter }
+      if l <> rgimm then prterr(emodt); { register/mode }
+      gensym(s, 0, false, imnorm, 0, 0, 8); { output immediate }
+      prcnxt(',', ecmaexp); { skip ',' }
+      parcod(l, s); { parse parameter }
+      gensym(s, 0, false, imsgof, 0, 0, 8) { output relative address }
+      
+   end else prterr(emodt) { register/mode }
+
+end;         
+
+{******************************************************************************
+
+Process bit instructions
+
+Processes the clr/cpl/setb opcodes.
+
+******************************************************************************}
+
+procedure bit(i: opcodet);
+
+var l: regc;    { parameter }
+    s: symptr;  { symbol }
+
+begin
+
+   parcod(l, s); { parse parameter }
+   if l = rga then { op a }
+      case i of { operation }
+
+         opclr:  outbyt($e4);  { clr a }
+         opcpl:  outbyt($f4);  { cpl a }
+         opsetb: prterr(emodt) { register/mode }
+
+      end
+   else if l = rgc then { op c }
+      case i of { operation }
+
+         opclr:  outbyt($c3); { clr c }
+         opcpl:  outbyt($b3); { cpl c }
+         opsetb: outbyt($d3)  { setb c }
+
+      end
+   else if l = rgdir then begin { op dir }
+
+      case i of { operation }
+
+         opclr:  outbyt($c2); { clr c }
+         opcpl:  outbyt($b2); { cpl c }
+         opsetb: outbyt($d2)  { setb c }
+
+      end;
+      gensym(s, 0, false, imnorm, 0, 0, 8) { output direct address/immediate }
+
+   end else prterr(emodt) { register/mode }
+
+end;
+
+{******************************************************************************
+
+Process accumulator instructions
+
+Processes the da/rl/rlc/rr/rrc/swap instructions.
+
+******************************************************************************}
+
+procedure opa(i: opcodet);
+
+var l: regc;    { parameter }
+    s: symptr;  { symbol }
+
+begin
+
+   parcod(l, s); { parse parameter }
+   if l <> rga then prterr(emodt); { register/mode }
+   case i of { opcode }
+
+      opda:   outbyt($d4); { da a }
+      oprl:   outbyt($23); { rl a }
+      oprlc:  outbyt($33); { rlc a }
+      oprr:   outbyt($03); { rr a }
+      oprrc:  outbyt($13); { rrc a }
+      opswap: outbyt($c4)  { swap a }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Process increment/decrement instructions
+
+Processes the inc/dec instructions.
+
+******************************************************************************}
+
+procedure idec(i: opcodet);
+
+var l: regc;    { parameter }
+    s: symptr;  { symbol }
+
+begin
+
+   parcod(l, s); { parse parameter }
+   if l = rga then { op a }
+      case i of { operation }
+
+         opinc: outbyt($04); { inc a }
+         opdec: outbyt($14); { dec a }
+
+      end
+   else if l in [rgr0..rgr7, rgdir, rgr0i, rgr1i] then begin { inc/dec mode }
+
+      case i of { operation }
+
+         opinc: outbyt($00+mode(l)); { inc m }
+         opdec: outbyt($10+mode(l)); { dec m }
+
+      end;
+      if l = rgdir then
+         gensym(s, 0, false, imnorm, 0, 0, 8) { output direct address/immed }
+
+   end else if l = rgdptr then begin { op dptr }
+
+      if i <> opinc then prterr(emodt); { register/mode }
+      outbyt($a3) { inc dptr }
+
+   end else prterr(emodt) { register/mode }
+
+end;   
+
+{******************************************************************************
+
+Process div and mul instructions
+
+Processes the div and mul instructions.
+
+******************************************************************************}
+
+procedure divm(i: opcodet);
+
+var l: regc;    { parameter }
+    s: symptr;  { symbol }
+
+begin
+
+   parcod(l, s); { parse parameter }
+   if l <> rgab then prterr(emodt); { register/mode }
+   if i = opdiv then outbyt($84) { div ab }
+   else outbyt($a4) { mul ab }
+
+end;
+
+{******************************************************************************
+
+Process djnz instruction
+
+Processes the djnz instruction.
+
+******************************************************************************}
+
+procedure djnz;
+
+var l: regc;    { parameter }
+    s: symptr;  { symbol }
+
+begin
+
+   parcod(l, s); { parse parameter }
+   if not (l in [rgr0..rgr7, rgdir]) then prterr(emodt); { register/mode }
+   if l = rgdir then begin { djnz direct,rel }
+
+      outbyt($d5); { djnz direct,rel }
+      gensym(s, 0, false, imnorm, 0, 0, 8) { output direct address }
+
+   end else outbyt($d0+mode(l)); { djnz rn,rel }
+   prcnxt(',', ecmaexp); { skip ',' }
+   parcod(l, s); { parse parameter }
+   if l <> rgdir then prterr(emodt); { register/mode }
+   gensym(s, 0, false, imsgof, 0, 0, 8) { output relative address }
+   
+end;
+
+{******************************************************************************
+
+Process bit jump instructions
+
+Processes the jb, jbc and jnb instructions.
+
+******************************************************************************}
+
+procedure jpb(i: opcodet);
+
+var l: regc;    { parameter }
+    s: symptr;  { symbol }
+
+begin
+
+   case i of { opcode }
+
+      opjb:  outbyt($20); { jb  bit,rel }
+      opjbc: outbyt($10); { jbc bit,rel }
+      opjnb: outbyt($30)  { jnb bit,rel }
+
+   end;
+   parcod(l, s); { parse parameter }
+   if l <> rgdir then prterr(emodt); { register/mode }
+   gensym(s, 0, false, imnorm, 0, 0, 8); { output direct address }
+   prcnxt(',', ecmaexp); { skip ',' }
+   parcod(l, s); { parse parameter }
+   if l <> rgdir then prterr(emodt); { register/mode }
+   gensym(s, 0, false, imsgof, 0, 0, 8) { output relative address }
+   
+end;
+
+{******************************************************************************
+
+Process jump relative instructions
+
+Processes the jc, jnc, jz, jnz and sjmp instructions.
+
+******************************************************************************}
+
+procedure jpr(i: opcodet);
+
+var l: regc;    { parameter }
+    s: symptr;  { symbol }
+
+begin
+
+   case i of { opcode }
+
+      opjc:   outbyt($40); { jb  bit,rel }
+      opjnc:  outbyt($50); { jbc bit,rel }
+      opjz:   outbyt($60); { jnb bit,rel }
+      opjnz:  outbyt($70); { jnb bit,rel }
+      opsjmp: outbyt($80); { jnb bit,rel }
+
+   end;
+   parcod(l, s); { parse parameter }
+   if l <> rgdir then prterr(emodt); { register/mode }
+   gensym(s, 0, false, imsgof, 0, 0, 8) { output relative address }
+   
+end;
+
+{******************************************************************************
+
+Process jmp instruction
+
+Processes the jmp instruction.
+
+******************************************************************************}
+
+procedure jmp;
+
+var l: regc;    { parameter }
+    s: symptr;  { symbol }
+
+begin
+
+   parcod(l, s); { parse parameter }
+   if l <> rgadptri then prterr(emodt); { register/mode }
+   outbyt($73) { jmp @a+dptr }
+
+end;
+
+{******************************************************************************
+
+Process long call/jump instructions
+
+Processes the lcall/ljmp instructions.
+
+******************************************************************************}
+
+procedure cjmp(i: opcodet);
+
+var l: regc;    { parameter }
+    s: symptr;  { symbol }
+
+begin
+
+   parcod(l, s); { parse parameter }
+   if l <> rgdir then prterr(emodt); { register/mode }
+   if i = oplcall then outbyt($12) { lcall addr }
+   else outbyt($02); { ljmp addr }
+   gensym(s, 0, true, imnorm, 0, 0, 16) { output direct address }
+   
+end;
+
+{******************************************************************************
+
+Process mov instruction
+
+Processes the mov instruction.
+
+******************************************************************************}
+
+procedure mov;
+
+var l, r:   regc;    { parameters }
+    ls, rs: symptr;  { symbols }
+
+begin
+
+   parcod(l, ls); { parse parameter }
+   if l = rga then begin { mov a,x }
+
+      prcnxt(',', ecmaexp); { skip ',' }
+      parcod(r, rs); { parse parameter }
+      if r = rgimm then outbyt($70+mode(r)) { mov a,#imm }
+      else outbyt($e0+mode(r)); { mov a,x }
+      if r in [rgimm, rgdir] then 
+         gensym(rs, 0, false, imnorm, 0, 0, 8) { output immediate/direct }
+
+   end else if l in [rgr0..rgr7, rgr0i, rgr1i] then begin { mov rn/@ri,x }      
+
+      prcnxt(',', ecmaexp); { skip ',' }
+      parcod(r, rs); { parse parameter }
+      case r of { mode }
+
+         rgr0, rgr1, rgr2, rgr3, rgr4, rgr5, rgr6, rgr7, rgc, 
+         rgab, rgr0i, rgr1i, rgdptr, rgdptri, rgadptri, 
+         rgpc, rgapci: prterr(emodt); { register/mode }
+         rga:   outbyt($f0+mode(l)); { move rn,a }
+         rgdir: outbyt($a0+mode(l)); { move rn,dir }
+         rgimm: outbyt($70+mode(l))  { move rn,#imm }
+
+      end;
+      if r in [rgdir, rgimm] then 
+         gensym(rs, 0, false, imnorm, 0, 0, 8) { output immediate/direct }
+
+   end else if l = rgdir then begin { mov dir,x }
+
+      prcnxt(',', ecmaexp); { skip ',' }
+      parcod(r, rs); { parse parameter }
+      case r of { mode }
+
+         rgab, rgdptr, rgdptri, rgadptri, 
+         rgpc, rgapci: prterr(emodt); { register/mode }
+         rga:   outbyt($f5); { move dir,a }
+         rgr0, rgr1, rgr2, rgr3, rgr4, rgr5, rgr6, 
+         rgr7:  outbyt($80+mode(r)); { move dir,rn }
+         rgdir: begin 
+
+            { this one is special because it reverses the address order }
+            outbyt($85); { move dir,dir }
+            if r in [rgdir, rgimm] then { output immediate/direct }
+               gensym(rs, 0, false, imnorm, 0, 0, 8);
+            gensym(ls, 0, false, imnorm, 0, 0, 8) { output direct }
+
+         end;
+         rgr0i, rgr1i: outbyt($80+mode(r)); { move dir,@ri }
+         rgimm: outbyt($75); { move rn,#imm }
+         rgc:   outbyt($92) { move dir,c }
+
+      end;
+      if r <> rgdir then begin { normal addressing }
+
+         gensym(ls, 0, false, imnorm, 0, 0, 8); { output direct }
+         if r in [rgdir, rgimm] then 
+            gensym(rs, 0, false, imnorm, 0, 0, 8) { output immediate/direct }
+
+      end
+
+   end else if l = rgc then begin { mov c,bit }
+
+      prcnxt(',', ecmaexp); { skip ',' }
+      parcod(r, rs); { parse parameter }
+      if r <> rgdir then prterr(emodt); { register/mode }
+      outbyt($a2); { mov c,dir }
+      gensym(rs, 0, false, imnorm, 0, 0, 8) { output direct }
+
+   end else if l = rgdptr then begin { mov dptr,#imm }
+
+      prcnxt(',', ecmaexp); { skip ',' }
+      parcod(r, rs); { parse parameter }
+      if r <> rgimm then prterr(emodt); { register/mode }
+      outbyt($90); { mov dptr,#imm }
+      gensym(rs, 0, true, imnorm, 0, 0, 16) { output immediate }
+
+   end else prterr(emodt) { register/mode }
+
+end;
+
+{******************************************************************************
+
+Process push/pop instructions
+
+Processes the push/pop instructions.
+
+******************************************************************************}
+
+procedure ppop(i: opcodet);
+
+var l: regc;    { parameter }
+    s: symptr;  { symbol }
+
+begin
+
+   parcod(l, s); { parse parameter }
+   if l <> rgdir then prterr(emodt); { register/mode }
+   if i = oppush then outbyt($c0) { push dir }
+   else outbyt($d0); { pop dir }
+   gensym(s, 0, false, imnorm, 0, 0, 8) { output direct address }
+   
+end;
+
+{******************************************************************************
+
+Process movc instruction
+
+Processes the movc instruction.
+
+******************************************************************************}
+
+procedure movc;
+
+var l: regc;    { parameter }
+    s: symptr;  { symbol }
+
+begin
+
+   parcod(l, s); { parse parameter }
+   if l <> rga then prterr(emodt); { register/mode }
+   prcnxt(',', ecmaexp); { skip ',' }
+   parcod(l, s); { parse parameter }
+   if l = rgadptri then outbyt($93) { movc a,@a+dptr }
+   else if l = rgapci then outbyt($83) { movc a,@a+pc }
+   else prterr(emodt) { register/mode }
+   
+end;
+
+{******************************************************************************
+
+Process movx instruction
+
+Processes the movx instruction.
+
+******************************************************************************}
+
+procedure movx;
+
+var l, r: regc;   { parameters }
+    s:    symptr; { symbol }
+
+begin
+
+   parcod(l, s); { parse parameter }
+   if l = rga then begin { movx a,x }
+
+      prcnxt(',', ecmaexp); { skip ',' }
+      parcod(l, s); { parse parameter }
+      if l = rgr0i then outbyt($e2) { movx a,@r0 }
+      else if l = rgr1i then outbyt($e3) { movx a,@r1 }
+      else if l = rgdptri then outbyt($e0) { movx a,@dptr }
+      else prterr(emodt) { register/mode }
+
+   end else if l in [rgr0i, rgr1i, rgdptri] then begin { movx @x,a }
+
+      prcnxt(',', ecmaexp); { skip ',' }
+      parcod(r, s); { parse parameter }
+      if r <> rga then prterr(emodt); { register/mode }
+      if l = rgr0i then outbyt($f2) { movx @r0,a }
+      else if l = rgr1i then outbyt($f3) { movx @r1,a }
+      else outbyt($f0) { movx @dptr,a }
+      
+   end else prterr(emodt) { register/mode }
+   
+end;
+
+{******************************************************************************
+
+Process absolute call/jump instructions
+
+Processes the acall/ajmp instructions.
+
+******************************************************************************}
+
+procedure acjmp(i: opcodet);
+
+var l:             regc;   { parameter }
+    s:             symptr; { symbol }
+    opcode:        byte;   { opcode save }
+    sym, opr, top: symptr; { symbol pointers }
+
+begin
+
+   parcod(l, s); { parse parameter }
+   if l <> rgdir then prterr(emodt); { register/mode }
+   if i = opacall then opcode := $11 { acall addr }
+   else opcode := $01; { ajmp addr }
+   if not s^.def or s^.symadd or s^.symvar then begin
+
+      { construct formula for instruction }
+      getsym(sym); { get operand entry }
+      sym^.def := true; { set defined }
+      sym^.val := 3; { set shift count }
+      getsym(opr); { get 'shr' operator entry }
+      opr^.opr := oshr; { set 'shr' }
+      opr^.lft := s; { set address }
+      opr^.rgt := sym; { set shift count }
+      top := opr; { index new top of expression }
+      getsym(sym); { get operand entry }
+      sym^.def := true; { set defined }
+      sym^.val := $e0; { set mask value }
+      getsym(opr); { get 'and' operator entry }
+      opr^.opr := oand; { set 'and' }
+      opr^.lft := top; { set shifted address }
+      opr^.rgt := sym; { set mask }
+      top := opr; { index new top of expression }
+      getsym(sym); { get opcode entry }
+      sym^.def := true; { set defined }
+      sym^.val := opcode; { set value opcode }
+      getsym(opr); { get combine entry }
+      opr^.opr := oor; { combine with 'or' }
+      opr^.lft := top; { set masked, shifted field }
+      opr^.rgt := sym; { set opcode }
+      gensym(opr, 0, false, imnorm, 0, 0, 8); { output 1st opcode byte }
+      getsym(sym); { get operand entry }
+      sym^.def := true; { set defined }
+      sym^.val := $ff; { set mask value }
+      getsym(opr); { get 'and' operator entry }
+      opr^.opr := oand; { set 'and' }
+      opr^.lft := s; { set address }
+      opr^.rgt := sym; { set mask }
+      gensym(opr, 0, false, imnorm, 0, 0, 8) { output 2nd opcode byte }
+
+   end else begin { generate absolute opcode }
+
+      outbyt(opcode+((s^.val div 8) and $e0)); { output opcode }
+      outbyt(s^.val and $ff); { output opcode }
+      if s^.lab = nil then putsym(s) { free, dispose }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Process xchd instruction
+
+Processes the xchd instruction.
+
+******************************************************************************}
+
+procedure xchd;
+
+var l:        regc;   { parameter }
+    s:        symptr; { symbol }
+
+begin
+
+   parcod(l, s); { parse parameter }
+   if l <> rga then prterr(emodt); { register/mode }
+   prcnxt(',', ecmaexp); { skip ',' }
+   parcod(l, s); { parse parameter }
+   if not (l in [rgr0i, rgr1i]) then prterr(emodt); { register/mode }
+   outbyt($d0+mode(l)) { xchd a,@ri }
+
+end;
+
+{******************************************************************************
+
+Process opcode
+
+Expects the opcode in labbuf. A search is done for the opcode, and a handler is 
+executed for the opcode.
+Note that the entire process may be carried out here (for simple instructions), 
+and that multiple opcodes are sometimes assigned to a single handler. In the 
+multiple opcode case, the actuall 'code' for the instruction is passed to the 
+handler.
+for all opcodes except 'equ', 'glbl', 'extl', 'macro' and 'dv' a default line 
+label declaration is performed.
+
+******************************************************************************}
+
+procedure mprcopc;
+
+var i: opcodet; { code to execute }
+
+begin
+
+   i := fndres(labbuf); { get reserved code }
+   if i = opnull then prterr(eopcnf); { none found }
+   { check perform label equation }
+   if (i <> opequ) and (i <> opglobal) and (i <> opextern) and
+      (i <> opmacro) and (i <> opdefvs) then prclab;
+   skpspc; { skip spaces }
+   case i of { opcode }
+
+      opacall, 
+      opajmp:    acjmp(i); { acall/ajmp x }
+      opadd, opaddc, opanl, oporl, opsubb, opxch, 
+      opxrl:     math(i); { add/addc/anl/orl/subb/xch/xrl x, y }
+      opcjne:    cjne; { cjne x, y, z }
+      opclr, opcpl, 
+      opsetb:    bit(i); { clr/cpl/setb x }
+      opda, oprl, oprlc, oprr, oprrc, 
+      opswap:    opa(i); { da/rl/rlc/rr/rrc/swap a }
+      opdec, 
+      opinc:     idec(i); { dec/inc x }
+      opdiv, 
+      opmul:     divm(i); { div/mul ab }
+      opdjnz:    djnz; { djnz x }
+      opjb, opjbc, 
+      opjnb:     jpb(i); { jb/jbc/jnb bit, rel }
+      opjc, opjnc, opjz, opjnz, 
+      opsjmp:    jpr(i); { jc/jnc/jz/jnz/sjmp rel }
+      opjmp:     jmp; { jmp @a+dptr }
+      oplcall, 
+      opljmp:    cjmp(i); { lcall/ljmp addr }
+      opmov:     mov; { mov d, s }
+      opmovc:    movc; { movc a,x }
+      opmovx:    movx; { movx a,x }
+      opnop:     outbyt($00); { nop }
+      oppop,     oppush: ppop(i); { push/pop daddr }
+      opret:     outbyt($22); { ret }
+      opreti:    outbyt($32); { reti }
+      opxchd:    xchd; { xchd a,@ri }
+      
+      { assembler pseudo operations }
+
+      opmacro:   macro;   { lab: macro x }
+      opendmac:  endmac;  { endmac }
+      opinclude: include; { include file }
+      opequ:     equlab;  { lab: equ n }
+      opglobal:  gbllab;  { lab: global }
+      opextern:  extlab;  { lab: extern }
+      opalignp:  alignp;  { align program }
+      opalignv:  alignv;  { align variable }
+      opif:      iftr;    { if n }
+      opelse:    elsec;   { else }
+      opelseif:  elseif;  { elseif }
+      opendif:   endif;   { endif }
+      opassm:    assm;    { assm string }
+      opbendian: prterr(encend); { 8051 is not endian configurable }
+      oplendian: prterr(encend); { 8051 is not endian configurable }
+      opdefb:    defvall(true, false, 1); { defb b/str[,b/str]... }
+      opdefps:   defps;   { defps n }
+      opdefvs:   defvs;   { defvs n }
+      opdefbe:   defval(true, false); { defbe l, n }
+      opdefle:   defval(false, false); { defle l, n }
+      opdefbef:  defval(true, true); { defbef l, n }
+      opdeflef:  defval(false, true); { deflef l, n }
+      opdeff:    defvall(cpubigend, true, 8); { deff n }
+      opdefsf:   defvall(cpubigend, true, 4); { defsf n }
+      opdeflf:   defvall(cpubigend, true, 10); { deflf n }
+      opdefhw:   defvall(cpubigend, false, cpuwrdsiz div 2); { defhw n }
+      opdefw:    defvall(cpubigend, false, cpuwrdsiz); { defw w[,w]... }
+      opdefdw:   defvall(cpubigend, false, cpuwrdsiz*2); { defdw n }
+      opdefqw:   defvall(cpubigend, false, cpuwrdsiz*4); { defqw n }
+
+   end
+
+end;
+
+begin
+end.

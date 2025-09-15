@@ -1,0 +1,245 @@
+
+Symbol file printer vs. 1.0.01 Copyright (C) 1994 S. A. Moore
+
+    1: Source file: test.asm
+    2: line track: line: 0 pgm: 00000000 var: 00000000
+    3: line track: line: 14 pgm: 00000005 var: 00000000
+    4: line track: line: 18 pgm: 0000000A var: 00000000
+    5: line track: line: 19 pgm: 0000000F var: 00000000
+    6: line track: line: 20 pgm: 00000014 var: 00000000
+    7: line track: line: 21 pgm: 00000019 var: 00000000
+    8: line track: line: 22 pgm: 0000001E var: 00000000
+    9: line track: line: 23 pgm: 00000023 var: 00000000
+   10: line track: line: 24 pgm: 00000028 var: 00000000
+   11: line track: line: 25 pgm: 0000002D var: 00000000
+   12: line track: line: 26 pgm: 00000032 var: 00000000
+   13: line track: line: 27 pgm: 00000037 var: 00000000
+   14: line track: line: 28 pgm: 0000003C var: 00000000
+   15: line track: line: 29 pgm: 00000041 var: 00000000
+   16: line track: line: 30 pgm: 00000046 var: 00000000
+   17: line track: line: 31 pgm: 0000004B var: 00000000
+   18: line track: line: 32 pgm: 00000050 var: 00000000
+   19: line track: line: 33 pgm: 00000055 var: 00000000
+   20: line track: line: 34 pgm: 0000005A var: 00000000
+   21: line track: line: 35 pgm: 0000005F var: 00000000
+   22: line track: line: 36 pgm: 00000064 var: 00000000
+   23: line track: line: 37 pgm: 00000069 var: 00000000
+   24: line track: line: 38 pgm: 0000006E var: 00000000
+   25: line track: line: 39 pgm: 00000073 var: 00000000
+   26: line track: line: 40 pgm: 00000078 var: 00000000
+   27: line track: line: 41 pgm: 0000007D var: 00000000
+   28: line track: line: 42 pgm: 00000082 var: 00000000
+   29: line track: line: 43 pgm: 00000087 var: 00000000
+   30: line track: line: 44 pgm: 0000008C var: 00000000
+   31: line track: line: 45 pgm: 00000091 var: 00000000
+   32: line track: line: 46 pgm: 00000096 var: 00000000
+   33: line track: line: 47 pgm: 0000009B var: 00000000
+   34: line track: line: 48 pgm: 000000A0 var: 00000000
+   35: line track: line: 49 pgm: 000000A5 var: 00000000
+   36: line track: line: 50 pgm: 000000AA var: 00000000
+   37: line track: line: 51 pgm: 000000AF var: 00000000
+   38: line track: line: 52 pgm: 000000B4 var: 00000000
+   39: line track: line: 53 pgm: 000000B9 var: 00000000
+   40: line track: line: 54 pgm: 000000BE var: 00000000
+   41: line track: line: 55 pgm: 000000C3 var: 00000000
+   42: line track: line: 56 pgm: 000000C8 var: 00000000
+   43: line track: line: 60 pgm: 000000CD var: 00000000
+   44: line track: line: 61 pgm: 000000D2 var: 00000000
+   45: line track: line: 62 pgm: 000000D7 var: 00000000
+   46: line track: line: 63 pgm: 000000DC var: 00000000
+   47: line track: line: 64 pgm: 000000E1 var: 00000000
+   48: line track: line: 65 pgm: 000000E6 var: 00000000
+   49: line track: line: 66 pgm: 000000EB var: 00000000
+   50: line track: line: 67 pgm: 000000F0 var: 00000000
+   51: line track: line: 68 pgm: 000000F5 var: 00000000
+   52: line track: line: 69 pgm: 000000FA var: 00000000
+   53: line track: line: 70 pgm: 000000FF var: 00000000
+   54: line track: line: 74 pgm: 00000104 var: 00000000
+   55: line track: line: 75 pgm: 00000109 var: 00000000
+   56: line track: line: 76 pgm: 0000010E var: 00000000
+   57: line track: line: 77 pgm: 00000113 var: 00000000
+   58: line track: line: 78 pgm: 00000118 var: 00000000
+   59: line track: line: 79 pgm: 0000011D var: 00000000
+   60: line track: line: 80 pgm: 00000122 var: 00000000
+   61: line track: line: 84 pgm: 00000127 var: 00000000
+   62: Sym:  op[nop] ps_wrtint flags[] 
+   63: Pat:  it[off 0:32] addr[00000015]
+   64: Sym:  op[nop] maclib.mods64 flags[pgm def] value[00000118]
+   65: Sym:  op[nop] ps_restxt flags[] 
+   66: Pat:  it[off 0:32] addr[00000092]
+   67: Sym:  op[nop] maclib.modu64 flags[pgm def] value[00000113]
+   68: Sym:  op[nop] maclib.divs64 flags[pgm def] value[0000010E]
+   69: Sym:  op[nop] maclib.divu64 flags[pgm def] value[00000109]
+   70: Sym:  op[nop] paslib.rdfil flags[pgm def] value[00000046]
+   71: Sym:  op[nop] paslib.rdchr flags[pgm def] value[00000050]
+   72: Sym:  op[nop] paslib.rdeol flags[pgm def] value[0000005A]
+   73: Sym:  op[nop] paslib.close flags[pgm def] value[000000B4]
+   74: Sym:  op[nop] ps_wrtstr flags[] 
+   75: Pat:  it[off 0:32] addr[00000033]
+   76: Sym:  op[nop] paslib.abort flags[pgm def] value[00000005]
+   77: Sym:  op[nop] ps_rwttxt flags[] 
+   78: Pat:  it[off 0:32] addr[0000009C]
+   79: Sym:  op[nop] paslib.rdint flags[pgm def] value[0000004B]
+   80: Sym:  op[nop] paslib.error flags[pgm def] value[0000000A]
+   81: Sym:  op[nop] paslib.wrtreal flags[pgm def] value[00000028]
+   82: Sym:  op[nop] ps_rdfil flags[] 
+   83: Pat:  it[off 0:32] addr[00000047]
+   84: Sym:  op[nop] maclib_mods64 flags[] 
+   85: Pat:  it[off 0:32] addr[00000119]
+   86: Sym:  op[nop] ps_rdchr flags[] 
+   87: Pat:  it[off 0:32] addr[00000051]
+   88: Sym:  op[nop] maclib_modu64 flags[] 
+   89: Pat:  it[off 0:32] addr[00000114]
+   90: Sym:  op[nop] maclib_divs64 flags[] 
+   91: Pat:  it[off 0:32] addr[0000010F]
+   92: Sym:  op[nop] ps_rdeol flags[] 
+   93: Pat:  it[off 0:32] addr[0000005B]
+   94: Sym:  op[nop] ps_close flags[] 
+   95: Pat:  it[off 0:32] addr[000000B5]
+   96: Sym:  op[nop] maclib_divu64 flags[] 
+   97: Pat:  it[off 0:32] addr[0000010A]
+   98: Sym:  op[nop] ps_abort flags[] 
+   99: Pat:  it[off 0:32] addr[00000006]
+  100: Sym:  op[nop] syslib.newlock flags[pgm def] value[000000EB]
+  101: Sym:  op[nop] ps_rdint flags[] 
+  102: Pat:  it[off 0:32] addr[0000004C]
+  103: Sym:  op[nop] syslib.newthread flags[pgm def] value[000000E1]
+  104: Sym:  op[nop] libthunk_end flags[pgm def] value[00000127]
+  105: Pat:  it[off 0:32] addr[00000001]
+  106: Sym:  op[nop] ps_error flags[] 
+  107: Pat:  it[off 0:32] addr[0000000B]
+  108: Sym:  op[nop] paslib.wrtstrf flags[pgm def] value[00000037]
+  109: Sym:  op[nop] ss_newlock flags[] 
+  110: Pat:  it[off 0:32] addr[000000EC]
+  111: Sym:  op[nop] ss_newthread flags[] 
+  112: Pat:  it[off 0:32] addr[000000E2]
+  113: Sym:  op[nop] sc_ip_threadinit flags[] 
+  114: Pat:  it[off 0:32] addr[00000123]
+  115: Sym:  op[nop] ps_wrtreal flags[] 
+  116: Pat:  it[off 0:32] addr[00000029]
+  117: Sym:  op[nop] paslib.lbafil flags[pgm def] value[00000087]
+  118: Sym:  op[nop] paslib.eoffil flags[pgm def] value[00000069]
+  119: Sym:  op[nop] paslib.chkeol flags[pgm def] value[00000064]
+  120: Sym:  op[nop] paslib.filloc flags[pgm def] value[00000073]
+  121: Sym:  op[nop] paslib.rdreal flags[pgm def] value[00000055]
+  122: Sym:  op[nop] paslib.fillen flags[pgm def] value[0000006E]
+  123: Sym:  op[nop] paslib.getfil flags[pgm def] value[00000078]
+  124: Sym:  op[nop] paslib.appfil flags[pgm def] value[000000AF]
+  125: Sym:  op[nop] _pend flags[gbl pgm def] value[00000127]
+  126: Sym:  op[nop] ps_wrtstrf flags[] 
+  127: Pat:  it[off 0:32] addr[00000038]
+  128: Sym:  op[nop] syslib.change flags[pgm def] value[000000CD]
+  129: Sym:  op[nop] maclib.fpuerr flags[pgm def] value[0000011D]
+  130: Sym:  op[nop] _vend flags[var gbl def] value[00000000]
+  131: Sym:  op[nop] paslib.update flags[pgm def] value[000000A5]
+  132: Sym:  op[nop] paslib.resfil flags[pgm def] value[00000096]
+  133: Sym:  op[nop] paslib.assign flags[pgm def] value[000000B9]
+  134: Sym:  op[nop] syslib.lock flags[pgm def] value[000000F5]
+  135: Sym:  op[nop] maclib.mults64 flags[pgm def] value[00000104]
+  136: Sym:  op[nop] paslib.posfil flags[pgm def] value[000000BE]
+  137: Sym:  op[nop] syslib.delete flags[pgm def] value[000000C8]
+  138: Sym:  op[nop] maclib.multu64 flags[pgm def] value[000000FF]
+  139: Sym:  op[nop] paslib.lbatxt flags[pgm def] value[0000008C]
+  140: Sym:  op[nop] paslib.wrtblf flags[pgm def] value[00000023]
+  141: Sym:  op[nop] paslib.assert flags[pgm def] value[000000C3]
+  142: Sym:  op[nop] ss_change flags[] 
+  143: Pat:  it[off 0:32] addr[000000CE]
+  144: Sym:  op[nop] ps_lbafil flags[] 
+  145: Pat:  it[off 0:32] addr[00000088]
+  146: Sym:  op[nop] paslib.putfil flags[pgm def] value[00000082]
+  147: Sym:  op[nop] paslib.wrtfil flags[pgm def] value[0000000F]
+  148: Sym:  op[nop] paslib.pagtxt flags[pgm def] value[00000041]
+  149: Sym:  op[nop] paslib.rwtfil flags[pgm def] value[000000A0]
+  150: Sym:  op[nop] paslib.wrtchr flags[pgm def] value[00000019]
+  151: Sym:  op[nop] paslib.wrtbol flags[pgm def] value[0000001E]
+  152: Sym:  op[nop] paslib.eoftxt flags[pgm def] value[0000005F]
+  153: Sym:  op[nop] paslib.wrteol flags[pgm def] value[0000003C]
+  154: Sym:  op[nop] ss_lock flags[] 
+  155: Pat:  it[off 0:32] addr[000000F6]
+  156: Sym:  op[nop] ps_eoffil flags[] 
+  157: Pat:  it[off 0:32] addr[0000006A]
+  158: Sym:  op[nop] _pstr flags[gbl pgm def] value[00000000]
+  159: Sym:  op[nop] ps_chkeol flags[] 
+  160: Pat:  it[off 0:32] addr[00000065]
+  161: Sym:  op[nop] ss_delete flags[] 
+  162: Pat:  it[off 0:32] addr[000000C9]
+  163: Sym:  op[nop] syslib.getspace flags[pgm def] value[000000D7]
+  164: Sym:  op[nop] paslib.gettxt flags[pgm def] value[0000007D]
+  165: Sym:  op[nop] paslib.wrtrlf flags[pgm def] value[0000002D]
+  166: Sym:  op[nop] paslib.apptxt flags[pgm def] value[000000AA]
+  167: Sym:  op[nop] ps_filloc flags[] 
+  168: Pat:  it[off 0:32] addr[00000074]
+  169: Sym:  op[nop] ps_rdreal flags[] 
+  170: Pat:  it[off 0:32] addr[00000056]
+  171: Sym:  op[nop] ps_fillen flags[] 
+  172: Pat:  it[off 0:32] addr[0000006F]
+  173: Sym:  op[nop] ps_getfil flags[] 
+  174: Pat:  it[off 0:32] addr[00000079]
+  175: Sym:  op[nop] _vstr flags[var gbl def] value[00000000]
+  176: Sym:  op[nop] ps_appfil flags[] 
+  177: Pat:  it[off 0:32] addr[000000B0]
+  178: Sym:  op[nop] syslib.unlock flags[pgm def] value[000000FA]
+  179: Sym:  op[nop] paslib.wrtint flags[pgm def] value[00000014]
+  180: Sym:  op[nop] paslib.restxt flags[pgm def] value[00000091]
+  181: Sym:  op[nop] ps_update flags[] 
+  182: Pat:  it[off 0:32] addr[000000A6]
+  183: Sym:  op[nop] syslib.displock flags[pgm def] value[000000F0]
+  184: Sym:  op[nop] ps_resfil flags[] 
+  185: Pat:  it[off 0:32] addr[00000097]
+  186: Sym:  op[nop] ps_assign flags[] 
+  187: Pat:  it[off 0:32] addr[000000BA]
+  188: Sym:  op[nop] syslib.killthread flags[pgm def] value[000000E6]
+  189: Sym:  op[nop] ss_getspace flags[] 
+  190: Pat:  it[off 0:32] addr[000000D8]
+  191: Sym:  op[nop] maclib_fpuerr flags[] 
+  192: Pat:  it[off 0:32] addr[0000011E]
+  193: Sym:  op[nop] paslib.wrtstr flags[pgm def] value[00000032]
+  194: Sym:  op[nop] ps_posfil flags[] 
+  195: Pat:  it[off 0:32] addr[000000BF]
+  196: Sym:  op[nop] ps_lbatxt flags[] 
+  197: Pat:  it[off 0:32] addr[0000008D]
+  198: Sym:  op[nop] syslib.putspace flags[pgm def] value[000000DC]
+  199: Sym:  op[nop] ss_unlock flags[] 
+  200: Pat:  it[off 0:32] addr[000000FB]
+  201: Sym:  op[nop] ps_wrtblf flags[] 
+  202: Pat:  it[off 0:32] addr[00000024]
+  203: Sym:  op[nop] ps_assert flags[] 
+  204: Pat:  it[off 0:32] addr[000000C4]
+  205: Sym:  op[nop] syslib.exists flags[pgm def] value[000000D2]
+  206: Sym:  op[nop] ps_putfil flags[] 
+  207: Pat:  it[off 0:32] addr[00000083]
+  208: Sym:  op[nop] paslib.rwttxt flags[pgm def] value[0000009B]
+  209: Sym:  op[nop] ss_displock flags[] 
+  210: Pat:  it[off 0:32] addr[000000F1]
+  211: Sym:  op[nop] maclib_mults64 flags[] 
+  212: Pat:  it[off 0:32] addr[00000105]
+  213: Sym:  op[nop] maclib_multu64 flags[] 
+  214: Pat:  it[off 0:32] addr[00000100]
+  215: Sym:  op[nop] ss_killthread flags[] 
+  216: Pat:  it[off 0:32] addr[000000E7]
+  217: Sym:  op[nop] ps_wrtfil flags[] 
+  218: Pat:  it[off 0:32] addr[00000010]
+  219: Sym:  op[nop] ps_pagtxt flags[] 
+  220: Pat:  it[off 0:32] addr[00000042]
+  221: Sym:  op[nop] ps_rwtfil flags[] 
+  222: Pat:  it[off 0:32] addr[000000A1]
+  223: Sym:  op[nop] ps_wrtchr flags[] 
+  224: Pat:  it[off 0:32] addr[0000001A]
+  225: Sym:  op[nop] ps_wrtbol flags[] 
+  226: Pat:  it[off 0:32] addr[0000001F]
+  227: Sym:  op[nop] ps_eoftxt flags[] 
+  228: Pat:  it[off 0:32] addr[00000060]
+  229: Sym:  op[nop] ps_wrteol flags[] 
+  230: Pat:  it[off 0:32] addr[0000003D]
+  231: Sym:  op[nop] ps_gettxt flags[] 
+  232: Pat:  it[off 0:32] addr[0000007E]
+  233: Sym:  op[nop] ss_putspace flags[] 
+  234: Pat:  it[off 0:32] addr[000000DD]
+  235: Sym:  op[nop] ps_wrtrlf flags[] 
+  236: Pat:  it[off 0:32] addr[0000002E]
+  237: Sym:  op[nop] ps_apptxt flags[] 
+  238: Pat:  it[off 0:32] addr[000000AB]
+  239: Sym:  op[nop] wrapper.ip_threadinit flags[pgm def] value[00000122]
+  240: Sym:  op[nop] ss_exists flags[] 
+  241: Pat:  it[off 0:32] addr[000000D3]
+  242: End

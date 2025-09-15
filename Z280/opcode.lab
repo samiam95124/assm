@@ -1,0 +1,162 @@
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+!                                                                             !
+! Z280 ASSEMBER OPERATION LABELS                                              !
+!                                                                             !
+! Defines the operator labels used in the z80 assembler, both machine codes   !
+! and pseudo operators.                                                       !
+! Use the following command to convert this file:                             !
+!                                                                             !
+!    hashtab                                                                  !
+!                                                                             !
+! The resulting file, opz280.res, will contain an opcode type definition,     !
+! to be merged into mdz80.pas, and a resym table initalizer, to be placed     !
+! in utz280.pas.                                                              !
+! You also need to take the last value of opcode, and place this in the       !
+! hash call at fndres in utz280.pas.                                          !
+!                                                                             !
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+! Z280 Machine codes
+
+ccf    
+call   
+dec    
+ini    
+sbc    
+di     
+ei     
+and    
+ldd    
+lddr   
+cpdr   
+cpd    
+ldi    
+neg    
+ind    
+cpi    
+rlca   
+cpl    
+rlc    
+rrca   
+halt   
+sra    
+ldir   
+rrd    
+indr   
+cpir   
+ret    
+set    
+nop    
+inir   
+pop    
+reti   
+srl    
+djnz   
+inc    
+sla    
+otdr   
+retn   
+outd   
+out    
+otir   
+push   
+outi   
+rld    
+scf    
+rla    
+rra    
+rrc    
+bit    
+sub    
+res    
+ld     
+exx    
+cp     
+xor    
+im     
+in     
+rst    
+jp     
+jr     
+ex     
+rl     
+or     
+rr     
+daa    
+adc    
+add    
+iniw
+lda
+ldctl
+ldud
+ldup
+mepu
+mult
+multu
+multuw
+multw
+retil
+otdrw
+outdw
+indrw
+decw
+inirw
+divuw
+otirw
+epuf
+incw
+indw
+jaf
+epum
+divu
+divw
+jar
+exts
+div
+outiw
+ldw
+outw
+cpw
+inw
+retb
+pcache
+sc
+subw
+tset
+tsti
+extl
+epui
+addw
+
+! Assembler pseudo-ops
+
+macro   ! define macro
+endmac  ! terminate macro
+include ! include file
+equ     ! equate symbol
+global  ! set symbol global
+extern  ! set symbol external
+alignp  ! align program counter
+alignv  ! align variable counter
+if      ! if conditional assembly
+else    ! else conditional assembly
+elseif  ! elseif conditional assembly
+endif   ! end conditional assembly
+assm    ! assemble string
+bendian ! set big endian
+lendian ! set little endian
+defb    ! define byte
+defps   ! define program space
+defvs   ! define variable space
+defbe   ! define big endian
+defle   ! define little endian
+defbef  ! define big endian floating point
+deflef  ! define little endian floating point
+deff    ! define ansi 64 bit floating point
+defsf   ! define ansi 32 bit floating point
+deflf   ! define ansi 80 bit floating point
+defw    ! define z80 specific format word (16 bits, little endian)
+defhw   ! define z80 specific format half word (same as byte)
+defdw   ! define z80 specific double word (32 bits, little endian)
+defqw   ! define z80 specific quad word (64 bits, little endian)
+

@@ -1,0 +1,40 @@
+                             ASSEMBLER OVERALL ISSUES
+
+1. Overflow policy and operation should be checked.
+
+2. The "if deleted code" technique, where "if"s no longer require a constant
+argument, looks doable and should be implemented (if's are passed in the
+link format, and the linker uses them to remove code sections in the output).
+
+3. What will the libary implementation be ? The most likely way to do this
+seems to be to allow a linker flag that concatenates the objects, but leaves
+the symbols decks unmerged and concatenated in the same file. We would add a
+"library" mark to the linker format, that would indicate that a symbols deck
+begins and that that deck is a libary deck. When a non-library link happens
+that includes decks with library marks in it, the library deck is loaded
+as a separate unit, then we search for any undefineds in the normal deck
+in the library deck. If any are found, the library deck is merged as normal,
+and the object section will be included. Otherwise, the object section that
+comprises the library section is skipped.
+It might help this mode of operation if we change the way LN works from
+merging with the incoming deck on the fly to merging only after the incoming
+deck is read. That way, libraries become a simple special case (the original
+"merge on the fly" technique was done to save memory, no longer a big problem).
+
+difficulties: do you require that all libraries be last in the link sequence
+so that all normal modules have their needs evident ? What if an "activated"
+library now requires a module that has already been deleted (backtrack)?
+These issues imply that library decks must be kept until all decks have been
+read, and then resolved.
+
+4. Is there an answer for multiple module symbol definitions (being able to
+define and reference the same symbol in multiple modules) ?
+
+5. Is there a clean integration for segments (which now default to one per 
+file) ? Perhaps in combination with a solution for (5) ? My guess is that this
+would work reasonably only if segments are not normally allowed to be
+rearraged at will (ie., "fixed" segments can only be placed in the same order
+as they appear in the .obj files). The following segment types could appear:
+
+   cseg - Execute only, read only.
+   cwseg - Execute only, read/write.

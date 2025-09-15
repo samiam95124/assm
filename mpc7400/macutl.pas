@@ -1,0 +1,784 @@
+module macutl(output);
+
+uses asdef,  { generic definitions }
+     common, { global variables }
+     utl,    { generic utilities }
+     macdef; { processor specific definitions }
+
+var float:    boolean; { floating point instructions enabled flag }
+    cmachine: mach;    { current machine type }
+    vect:     boolean; { vector instructions enabled }
+    bigend:   boolean; { MPC7400 has switchable big/little endian mode }
+
+function fndres(view s: string): opcodet; forward; { find reserved word }
+procedure mexpr(var sym: symptr); forward; { parse expression }
+procedure msexpr(var sym: symptr); forward; { parse simple expression }
+procedure mterm(var sym: symptr); forward; { parse term }
+procedure mfactor(var sym: symptr); forward; { parse factor }
+function absolute(s: symptr): boolean; forward; { check symbol absolute }
+procedure setsiz(s: boolean); forward;
+procedure setadr(s: boolean); forward;
+
+private
+
+var ressym : restab; { reserved symbols table }
+
+{******************************************************************************
+
+Initalize reserved word table
+
+The reserved word table is an array of records, with each record containing a 
+label, and a entry chain. The label is the actual reserved word itself. The 
+chain is an index into the reserved word table itself. Each position (index) in 
+the reserved word table corresponds to a 'hash' value for a given label. The 
+hash value is a random function derived for the label that gives some level 
+(typ > 90%) of 'uniqueness' for a given label (see the 'hash' routine for 
+details of the process). Each 'prime' label occupys the entry cooresponding to 
+it's hash value (a prime entry means that it is the first label for the hash 
+value to be placed). Duplicate entrys are placed in locations that have no 
+prime label. The chain fields then point to these labels succesively from the 
+prime entry, terminated with 0. A lookup is performed by succesively examining 
+each label in a chain, starting with the prime label, until a match is found 
+or the end of a chain is reached.
+This routine sets up the labels and chain fields making up the table. The table 
+should already be cleared.
+
+*******************************************************************************}
+
+procedure resini;
+
+begin
+
+   labcpy(ressym[opdefqw    ].reslab, 'defqw     ');
+
+   labcpy(ressym[opaddme    ].reslab, 'addme     ';
+   labcpy(ressym[opvcmpgtuwr].reslab, 'vcmpgtuwr ';
+   labcpy(ressym[opaddmer   ].reslab, 'addmer    ';
+   labcpy(ressym[opandcr    ].reslab, 'andcr     '; ressym[opandcr    ].reschn := opcrand;
+   labcpy(ressym[opaddco    ].reslab, 'addco     '; ressym[opaddco    ].reschn := opaddme;
+   labcpy(ressym[opfmadd    ].reslab, 'fmadd     ';
+   labcpy(ressym[opaddeo    ].reslab, 'addeo     ';
+   labcpy(ressym[opaddcr    ].reslab, 'addcr     ';
+   labcpy(ressym[opbcla     ].reslab, 'bcla      '; ressym[opbcla     ].reschn := opdcbi;
+   labcpy(ressym[opadder    ].reslab, 'adder     '; ressym[opadder    ].reschn := opdefle;
+   labcpy(ressym[opfaddr    ].reslab, 'faddr     '; ressym[opfaddr    ].reschn := opdeflf;
+   labcpy(ressym[opfadds    ].reslab, 'fadds     ';
+   labcpy(ressym[opbcctr    ].reslab, 'bcctr     '; ressym[opbcctr    ].reschn := opfabsr;
+   labcpy(ressym[opbcctrl   ].reslab, 'bcctrl    ';
+   labcpy(ressym[opaddis    ].reslab, 'addis     ';
+   labcpy(ressym[opendif    ].reslab, 'endif     ';
+   labcpy(ressym[opcrand    ].reslab, 'crand     '; ressym[opcrand    ].reschn := opdefsf;
+   labcpy(ressym[opaddze    ].reslab, 'addze     '; ressym[opaddze    ].reschn := opandcr;
+   labcpy(ressym[opdcbi     ].reslab, 'dcbi      ';
+   labcpy(ressym[opaddor    ].reslab, 'addor     '; ressym[opaddor    ].reschn := opfnabs;
+   labcpy(ressym[opeieio    ].reslab, 'eieio     ';
+   labcpy(ressym[optlbia    ].reslab, 'tlbia     '; ressym[optlbia    ].reschn := opvandc;
+   labcpy(ressym[opdcbz     ].reslab, 'dcbz      ';
+   labcpy(ressym[opandir    ].reslab, 'andir     '; ressym[opandir    ].reschn := opbcctr;
+   labcpy(ressym[opbclrl    ].reslab, 'bclrl     ';
+   labcpy(ressym[opdcbst    ].reslab, 'dcbst     '; ressym[opdcbst    ].reschn := optlbie;
+   labcpy(ressym[opextsb    ].reslab, 'extsb     '; ressym[opextsb    ].reschn := opfmulr;
+   labcpy(ressym[opfnegr    ].reslab, 'fnegr     '; ressym[opfnegr    ].reschn := opmacro;
+   labcpy(ressym[opnandr    ].reslab, 'nandr     '; ressym[opnandr    ].reschn := opsubfc;
+   labcpy(ressym[opextsh    ].reslab, 'extsh     '; ressym[opextsh    ].reschn := opmcrxr;
+   labcpy(ressym[opcmpli    ].reslab, 'cmpli     '; ressym[opcmpli    ].reschn := opfcmpo;
+   labcpy(ressym[opfloat    ].reslab, 'float     ';
+   labcpy(ressym[opdefqw    ].reslab, 'defqw     ';
+   labcpy(ressym[opdefvs    ].reslab, 'defvs     ';
+   labcpy(ressym[opcrorc    ].reslab, 'crorc     ';
+   labcpy(ressym[opextshr   ].reslab, 'extshr    '; ressym[opextshr   ].reschn := opstfdux;
+   labcpy(ressym[opfcmpu    ].reslab, 'fcmpu     '; ressym[opfcmpu    ].reschn := opfdivr;
+   labcpy(ressym[opfdivs    ].reslab, 'fdivs     '; ressym[opfdivs    ].reschn := opfselr;
+   labcpy(ressym[opfctiw    ].reslab, 'fctiw     '; ressym[opfctiw    ].reschn := opfmsub;
+   labcpy(ressym[opmffsr    ].reslab, 'mffsr     '; ressym[opmffsr    ].reschn := opvsrab;
+   labcpy(ressym[opsubfo    ].reslab, 'subfo     ';
+   labcpy(ressym[opeciwx    ].reslab, 'eciwx     '; ressym[opeciwx    ].reschn := oplhbrx;
+   labcpy(ressym[opcreqv    ].reslab, 'creqv     '; ressym[opcreqv    ].reschn := oplvebx;
+   labcpy(ressym[opfresr    ].reslab, 'fresr     '; ressym[opfresr    ].reschn := opfsubr;
+   labcpy(ressym[opfsubs    ].reslab, 'fsubs     '; ressym[opfsubs    ].reschn := oplfdux;
+   labcpy(ressym[opcrnor    ].reslab, 'crnor     '; ressym[opcrnor    ].reschn := opvrfim;
+   labcpy(ressym[opmfmsr    ].reslab, 'mfmsr     '; ressym[opmfmsr    ].reschn := opvrfin;
+   labcpy(ressym[opecowx    ].reslab, 'ecowx     '; ressym[opecowx    ].reschn := opextsb;
+   labcpy(ressym[opfmuls    ].reslab, 'fmuls     '; ressym[opfmuls    ].reschn := oplvehx;
+   labcpy(ressym[opmfspr    ].reslab, 'mfspr     ';
+   labcpy(ressym[opdivwo    ].reslab, 'divwo     '; ressym[opdivwo    ].reschn := opstfdx;
+   labcpy(ressym[opvcfsx    ].reslab, 'vcfsx     '; ressym[opvcfsx    ].reschn := opvperm;
+   labcpy(ressym[opfabsr    ].reslab, 'fabsr     '; ressym[opfabsr    ].reschn := opdefhw;
+   labcpy(ressym[opdivwr    ].reslab, 'divwr     '; ressym[opdivwr    ].reschn := opextsh;
+   labcpy(ressym[opfrspr    ].reslab, 'frspr     '; ressym[opfrspr    ].reschn := opmulhw;
+   labcpy(ressym[opcrxor    ].reslab, 'crxor     '; ressym[opcrxor    ].reschn := oplwarx;
+   labcpy(ressym[opdivwu    ].reslab, 'divwu     '; ressym[opdivwu    ].reschn := oplwbrx;
+   labcpy(ressym[opfsqrt    ].reslab, 'fsqrt     '; ressym[opfsqrt    ].reschn := oprlwnm;
+   labcpy(ressym[opmullw    ].reslab, 'mullw     '; ressym[opmullw    ].reschn := opvrfiz;
+   labcpy(ressym[opdstst    ].reslab, 'dstst     '; ressym[opdstst    ].reschn := oplfsux;
+   labcpy(ressym[opmtmsr    ].reslab, 'mtmsr     '; ressym[opmtmsr    ].reschn := opvsraw;
+   labcpy(ressym[opfadd     ].reslab, 'fadd      '; ressym[opfadd     ].reschn := opvmsumshs;
+   labcpy(ressym[oplbzux    ].reslab, 'lbzux     '; ressym[oplbzux    ].reschn := opstfsu;
+   labcpy(ressym[oplvewx    ].reslab, 'lvewx     '; ressym[oplvewx    ].reschn := opmtspr;
+   labcpy(ressym[opfcmpo    ].reslab, 'fcmpo     '; ressym[opfcmpo    ].reschn := opsubfe;
+   labcpy(ressym[opstfsx    ].reslab, 'stfsx     ';
+   labcpy(ressym[opvpkpx    ].reslab, 'vpkpx     ';
+   labcpy(ressym[opstswi    ].reslab, 'stswi     ';
+   labcpy(ressym[oplhzux    ].reslab, 'lhzux     ';
+   labcpy(ressym[opsthux    ].reslab, 'sthux     ';
+   labcpy(ressym[opfdiv     ].reslab, 'fdiv      '; ressym[opfdiv     ].reschn := opmftb;
+   labcpy(ressym[opfdivr    ].reslab, 'fdivr     '; ressym[opfdivr    ].reschn := opmcrfs;
+   labcpy(ressym[opfmadds   ].reslab, 'fmadds    ';
+   labcpy(ressym[opfmsub    ].reslab, 'fmsub     ';
+   labcpy(ressym[opstvxl    ].reslab, 'stvxl     ';
+   labcpy(ressym[opfmsubr   ].reslab, 'fmsubr    '; ressym[opfmsubr   ].reschn := opmfsrin;
+   labcpy(ressym[opfmulr    ].reslab, 'fmulr     '; ressym[opfmulr    ].reschn := opisync;
+   labcpy(ressym[opfnabs    ].reslab, 'fnabs     '; ressym[opfnabs    ].reschn := opdefdw;
+   labcpy(ressym[opfnmadd   ].reslab, 'fnmadd    ';
+   labcpy(ressym[opfnmaddr  ].reslab, 'fnmaddr   ';
+   labcpy(ressym[opfselr    ].reslab, 'fselr     '; ressym[opfselr    ].reschn := opmtcrf;
+   labcpy(ressym[opfsqrtr   ].reslab, 'fsqrtr    '; ressym[opfsqrtr   ].reschn := opmulhwu;
+   labcpy(ressym[opstswx    ].reslab, 'stswx     ';
+   labcpy(ressym[oplwzux    ].reslab, 'lwzux     ';
+   labcpy(ressym[opstwux    ].reslab, 'stwux     ';
+   labcpy(ressym[opmtfsb0   ].reslab, 'mtfsb0    ';
+   labcpy(ressym[opmtfsb1   ].reslab, 'mtfsb1    ';
+   labcpy(ressym[opfsub     ].reslab, 'fsub      '; ressym[opfsub     ].reschn := opsubf;
+   labcpy(ressym[opfsubr    ].reslab, 'fsubr     '; ressym[opfsubr    ].reschn := oplhaux;
+   labcpy(ressym[opisync    ].reslab, 'isync     '; ressym[opisync    ].reschn := opsrawi;
+   labcpy(ressym[oplfdux    ].reslab, 'lfdux     '; ressym[oplfdux    ].reschn := opmulli;
+   labcpy(ressym[oplfs      ].reslab, 'lfs       ';
+   labcpy(ressym[oplfsu     ].reslab, 'lfsu      '; ressym[oplfsu     ].reschn := opvsel;
+   labcpy(ressym[oplfsux    ].reslab, 'lfsux     ';
+   labcpy(ressym[oplfsx     ].reslab, 'lfsx      '; ressym[oplfsx     ].reschn := oporis;
+   labcpy(ressym[oplhau     ].reslab, 'lhau      ';
+   labcpy(ressym[oplhaux    ].reslab, 'lhaux     '; ressym[oplhaux    ].reschn := opsubfr;
+   labcpy(ressym[oplhbrx    ].reslab, 'lhbrx     '; ressym[oplhbrx    ].reschn := opmtfsf;
+   labcpy(ressym[opb        ].reslab, 'b         ';
+   labcpy(ressym[oplswi     ].reslab, 'lswi      ';
+   labcpy(ressym[oplvebx    ].reslab, 'lvebx     ';
+   labcpy(ressym[opdefbef   ].reslab, 'defbef    ';
+   labcpy(ressym[oplvehx    ].reslab, 'lvehx     '; ressym[oplvehx    ].reschn := opvrfip;
+   labcpy(ressym[oplvxl     ].reslab, 'lvxl      '; ressym[oplvxl     ].reschn := opmtsr;
+   labcpy(ressym[oplwarx    ].reslab, 'lwarx     ';
+   labcpy(ressym[oplwbrx    ].reslab, 'lwbrx     '; ressym[oplwbrx    ].reschn := opsrawr;
+   labcpy(ressym[opmcrfs    ].reslab, 'mcrfs     '; ressym[opmcrfs    ].reschn := opnegor;
+   labcpy(ressym[opmcrxr    ].reslab, 'mcrxr     '; ressym[opmcrxr    ].reschn := opvcfux;
+   labcpy(ressym[opmfcr     ].reslab, 'mfcr      ';
+   labcpy(ressym[opmffs     ].reslab, 'mffs      '; ressym[opmffs     ].reschn := opnegr;
+   labcpy(ressym[opmfsrin   ].reslab, 'mfsrin    '; ressym[opmfsrin   ].reschn := opsubfze;
+   labcpy(ressym[opdeflef   ].reslab, 'deflef    ';
+   labcpy(ressym[opaddicr   ].reslab, 'addicr    ';
+   labcpy(ressym[opendmac   ].reslab, 'endmac    ';
+   labcpy(ressym[opmftb     ].reslab, 'mftb      '; ressym[opmftb     ].reschn := opnego;
+   labcpy(ressym[opaddmeo   ].reslab, 'addmeo    '; ressym[opaddmeo   ].reschn := opfnmadd;
+   labcpy(ressym[opcrandc   ].reslab, 'crandc    ';
+   labcpy(ressym[opmtcrf    ].reslab, 'mtcrf     ';
+   labcpy(ressym[opaddcor   ].reslab, 'addcor    '; ressym[opaddcor   ].reschn := opaddmer;
+   labcpy(ressym[opfmaddr   ].reslab, 'fmaddr    ';
+   labcpy(ressym[opaddeor   ].reslab, 'addeor    '; ressym[opaddeor   ].reschn := opfmadds;
+   labcpy(ressym[opmtfsf    ].reslab, 'mtfsf     '; ressym[opmtfsf    ].reschn := opnvect;
+   labcpy(ressym[opglobal   ].reslab, 'global    ';
+   labcpy(ressym[opmtspr    ].reslab, 'mtspr     '; ressym[opmtspr    ].reschn := opstbux;
+   labcpy(ressym[opmtsr     ].reslab, 'mtsr      ';
+   labcpy(ressym[opfaddsr   ].reslab, 'faddsr    ';
+   labcpy(ressym[opvaddfp   ].reslab, 'vaddfp    ';
+   labcpy(ressym[opcrnand   ].reslab, 'crnand    ';
+   labcpy(ressym[opaddzeo   ].reslab, 'addzeo    ';
+   labcpy(ressym[opelseif   ].reslab, 'elseif    ';
+   labcpy(ressym[opmulhw    ].reslab, 'mulhw     ';
+   labcpy(ressym[opaddzer   ].reslab, 'addzer    '; ressym[opaddzer   ].reschn := opbcctrl;
+   labcpy(ressym[opalignp   ].reslab, 'alignp    ';
+   labcpy(ressym[opfnabsr   ].reslab, 'fnabsr    '; ressym[opfnabsr   ].reschn := opsubfic;
+   labcpy(ressym[opmulhwr   ].reslab, 'mulhwr    '; ressym[opmulhwr   ].reschn := opvmrglw;
+   labcpy(ressym[opmulhwu   ].reslab, 'mulhwu    '; ressym[opmulhwu   ].reschn := oprlwnmr;
+   labcpy(ressym[opmulhwur  ].reslab, 'mulhwur   '; ressym[opmulhwur  ].reschn := opvpkshus;
+   labcpy(ressym[opmulli    ].reslab, 'mulli     '; ressym[opmulli    ].reschn := opvrefp;
+   labcpy(ressym[opandisr   ].reslab, 'andisr    '; ressym[opandisr   ].reschn := opalignv;
+   labcpy(ressym[opsubfco   ].reslab, 'subfco    '; ressym[opsubfco   ].reschn := opsubfme;
+   labcpy(ressym[opdssall   ].reslab, 'dssall    ';
+   labcpy(ressym[opdcbtst   ].reslab, 'dcbtst    '; ressym[opdcbtst   ].reschn := opsubfeo;
+   labcpy(ressym[opsubfcr   ].reslab, 'subfcr    ';
+   labcpy(ressym[opvmrghb   ].reslab, 'vmrghb    ';
+   labcpy(ressym[opsubfer   ].reslab, 'subfer    ';
+   labcpy(ressym[opmullwr   ].reslab, 'mullwr    ';
+   labcpy(ressym[opmtfsfi   ].reslab, 'mtfsfi    '; ressym[opmtfsfi   ].reschn := opvavgsb;
+   labcpy(ressym[opvmrglb   ].reslab, 'vmrglb    ';
+   labcpy(ressym[opfnmsub   ].reslab, 'fnmsub    '; ressym[opfnmsub   ].reschn := opvavgub;
+   labcpy(ressym[opvmrghh   ].reslab, 'vmrghh    ';
+   labcpy(ressym[opnegr     ].reslab, 'negr      ';
+   labcpy(ressym[opfdivsr   ].reslab, 'fdivsr    ';
+   labcpy(ressym[opfctiwr   ].reslab, 'fctiwr    '; ressym[opfctiwr   ].reschn := opfmsubr;
+   labcpy(ressym[opfmsubs   ].reslab, 'fmsubs    '; ressym[opfmsubs   ].reschn := opvminfp;
+   labcpy(ressym[opmfvscr   ].reslab, 'mfvscr    '; ressym[opmfvscr   ].reschn := opsubfor;
+   labcpy(ressym[opmtfsfr   ].reslab, 'mtfsfr    '; ressym[opmtfsfr   ].reschn := opvmaxfp;
+   labcpy(ressym[opvmaxub   ].reslab, 'vmaxub    ';
+   labcpy(ressym[oprlwimi   ].reslab, 'rlwimi    ';
+   labcpy(ressym[opfsubsr   ].reslab, 'fsubsr    '; ressym[opfsubsr   ].reschn := opvminsh;
+   labcpy(ressym[opvsubfp   ].reslab, 'vsubfp    '; ressym[opvsubfp   ].reschn := opextern;
+   labcpy(ressym[opfctiwz   ].reslab, 'fctiwz    '; ressym[opfctiwz   ].reschn := opvmaxsh;
+   labcpy(ressym[opextsbr   ].reslab, 'extsbr    '; ressym[opextsbr   ].reschn := opsrawir;
+   labcpy(ressym[opfmulsr   ].reslab, 'fmulsr    '; ressym[opfmulsr   ].reschn := oprlwinm;
+   labcpy(ressym[opnego     ].reslab, 'nego      '; ressym[opnego     ].reschn := opvand;
+   labcpy(ressym[opdivwor   ].reslab, 'divwor    '; ressym[opdivwor   ].reschn := opsthbrx;
+   labcpy(ressym[opstvebx   ].reslab, 'stvebx    ';
+   labcpy(ressym[opmtsrin   ].reslab, 'mtsrin    ';
+   labcpy(ressym[opdivwuo   ].reslab, 'divwuo    '; ressym[opdivwuo   ].reschn := opextshr;
+   labcpy(ressym[opmtvscr   ].reslab, 'mtvscr    '; ressym[opmtvscr   ].reschn := opmulhwr;
+   labcpy(ressym[opmullwo   ].reslab, 'mullwo    '; ressym[opmullwo   ].reschn := opvavguw;
+   labcpy(ressym[opdivwur   ].reslab, 'divwur    '; ressym[opdivwur   ].reschn := opvsplth;
+   labcpy(ressym[opcntlzw   ].reslab, 'cntlzw    '; ressym[opcntlzw   ].reschn := opfsqrtr;
+   labcpy(ressym[opfsqrts   ].reslab, 'fsqrts    '; ressym[opfsqrts   ].reschn := opmullwr;
+   labcpy(ressym[opvminsw   ].reslab, 'vminsw    ';
+   labcpy(ressym[opstfiwx   ].reslab, 'stfiwx    ';
+   labcpy(ressym[opdststt   ].reslab, 'dststt    '; ressym[opdststt   ].reschn := opvmaxsw;
+   labcpy(ressym[opnegor    ].reslab, 'negor     ';
+   labcpy(ressym[opvmaxuw   ].reslab, 'vmaxuw    ';
+   labcpy(ressym[opnorr     ].reslab, 'norr      '; ressym[opnorr     ].reschn := opstbx;
+   labcpy(ressym[opstwbrx   ].reslab, 'stwbrx    ';
+   labcpy(ressym[opstwcxr   ].reslab, 'stwcxr    '; ressym[opstwcxr   ].reschn := opvctsxs;
+   labcpy(ressym[oporcr     ].reslab, 'orcr      '; ressym[oporcr     ].reschn := opvrlb;
+   labcpy(ressym[opstfsux   ].reslab, 'stfsux    '; ressym[opstfsux   ].reschn := opvctuxs;
+   labcpy(ressym[opori      ].reslab, 'ori       ';
+   labcpy(ressym[oporis     ].reslab, 'oris      '; ressym[oporis     ].reschn := opsraw;
+   labcpy(ressym[opvspltw   ].reslab, 'vspltw    ';
+   labcpy(ressym[opstvewx   ].reslab, 'stvewx    ';
+   labcpy(ressym[oprlwinm   ].reslab, 'rlwinm    '; ressym[oprlwinm   ].reschn := opvmaxuh;
+   labcpy(ressym[oprlwnm    ].reslab, 'rlwnm     ';
+   labcpy(ressym[oprlwnmr   ].reslab, 'rlwnmr    '; ressym[oprlwnmr   ].reschn := opstvehx;
+   labcpy(ressym[opsraw     ].reslab, 'sraw      '; ressym[opsraw     ].reschn := opsync;
+   labcpy(ressym[opsrawr    ].reslab, 'srawr     ';
+   labcpy(ressym[opsrawi    ].reslab, 'srawi     '; ressym[opsrawi    ].reschn := opstfdu;
+   labcpy(ressym[opsrawir   ].reslab, 'srawir    ';
+   labcpy(ressym[opsrwr     ].reslab, 'srwr      ';
+   labcpy(ressym[opba       ].reslab, 'ba        ';
+   labcpy(ressym[opstbu     ].reslab, 'stbu      ';
+   labcpy(ressym[opbc       ].reslab, 'bc        ';
+   labcpy(ressym[opstbux    ].reslab, 'stbux     ';
+   labcpy(ressym[opmtfsb0r  ].reslab, 'mtfsb0r   ';
+   labcpy(ressym[opmtfsb1r  ].reslab, 'mtfsb1r   ';
+   labcpy(ressym[opstbx     ].reslab, 'stbx      ';
+   labcpy(ressym[opstfdu    ].reslab, 'stfdu     ';
+   labcpy(ressym[opstfdux   ].reslab, 'stfdux    '; ressym[opstfdux   ].reschn := opvavgsw;
+   labcpy(ressym[opstfdx    ].reslab, 'stfdx     ';
+   labcpy(ressym[opstfs     ].reslab, 'stfs      ';
+   labcpy(ressym[opbl       ].reslab, 'bl        ';
+   labcpy(ressym[opif       ].reslab, 'if        ';
+   labcpy(ressym[opstfsu    ].reslab, 'stfsu     '; ressym[opstfsu    ].reschn := opxoris;
+   labcpy(ressym[opsth      ].reslab, 'sth       ';
+   labcpy(ressym[opsthbrx   ].reslab, 'sthbrx    '; ressym[opsthbrx   ].reschn := opvmrghw;
+   labcpy(ressym[opsthx     ].reslab, 'sthx      ';
+   labcpy(ressym[opstvehx   ].reslab, 'stvehx    ';
+   labcpy(ressym[opstvx     ].reslab, 'stvx      ';
+   labcpy(ressym[opsc       ].reslab, 'sc        ';
+   labcpy(ressym[opsubf     ].reslab, 'subf      ';
+   labcpy(ressym[opsubfr    ].reslab, 'subfr     ';
+   labcpy(ressym[opsubfor   ].reslab, 'subfor    '; ressym[opsubfor   ].reschn := opvavguh;
+   labcpy(ressym[opbendian  ].reslab, 'bendian   ';
+   labcpy(ressym[opsubfc    ].reslab, 'subfc     ';
+   labcpy(ressym[opsubfe    ].reslab, 'subfe     ';
+   labcpy(ressym[opsubfeo   ].reslab, 'subfeo    '; ressym[opsubfeo   ].reschn := opnfloat;
+   labcpy(ressym[opsubfic   ].reslab, 'subfic    ';
+   labcpy(ressym[opsubfme   ].reslab, 'subfme    ';
+   labcpy(ressym[opsubfmer  ].reslab, 'subfmer   ';
+   labcpy(ressym[opor       ].reslab, 'or        ';
+   labcpy(ressym[opsubfze   ].reslab, 'subfze    '; ressym[opsubfze   ].reschn := opvavgsh;
+   labcpy(ressym[opsubfzeo  ].reslab, 'subfzeo   '; ressym[opsubfzeo  ].reschn := opvadduws;
+   labcpy(ressym[oplendian  ].reslab, 'lendian   ';
+   labcpy(ressym[opaddmeor  ].reslab, 'addmeor   '; ressym[opaddmeor  ].reschn := opfnmaddr;
+   labcpy(ressym[opfnmadds  ].reslab, 'fnmadds   ';
+   labcpy(ressym[opsubfzeor ].reslab, 'subfzeor  ';
+   labcpy(ressym[opsync     ].reslab, 'sync      '; ressym[opsync     ].reschn := opvslh;
+   labcpy(ressym[optlbie    ].reslab, 'tlbie     ';
+   labcpy(ressym[opfmaddsr  ].reslab, 'fmaddsr   ';
+   labcpy(ressym[optw       ].reslab, 'tw        '; ressym[optw       ].reschn := opvmaddfp;
+   labcpy(ressym[opvaddubm  ].reslab, 'vaddubm   ';
+   labcpy(ressym[opinclude  ].reslab, 'include   ';
+   labcpy(ressym[opvaddubs  ].reslab, 'vaddubs   '; ressym[opvaddubs  ].reschn := opvadduhm;
+   labcpy(ressym[opvadduhm  ].reslab, 'vadduhm   ';
+   labcpy(ressym[opvaddsbs  ].reslab, 'vaddsbs   ';
+   labcpy(ressym[opvadduws  ].reslab, 'vadduws   '; ressym[opvadduws  ].reschn := opvmulesb;
+   labcpy(ressym[opaddzeor  ].reslab, 'addzeor   '; ressym[opaddzeor  ].reschn := opvaddubs;
+   labcpy(ressym[opvand     ].reslab, 'vand      '; ressym[opvand     ].reschn := opelse;
+   labcpy(ressym[opvandc    ].reslab, 'vandc     ';
+   labcpy(ressym[opvavgsb   ].reslab, 'vavgsb    ';
+   labcpy(ressym[opvaddshs  ].reslab, 'vaddshs   ';
+   labcpy(ressym[opvaddcuw  ].reslab, 'vaddcuw   '; ressym[opvaddcuw  ].reschn := opvcmpbfp;
+   labcpy(ressym[opvadduhs  ].reslab, 'vadduhs   ';
+   labcpy(ressym[opvavgsh   ].reslab, 'vavgsh    '; ressym[opvavgsh   ].reschn := opvminsb;
+   labcpy(ressym[opsubfmeo  ].reslab, 'subfmeo   ';
+   labcpy(ressym[opvavgsw   ].reslab, 'vavgsw    ';
+   labcpy(ressym[opvlogefp  ].reslab, 'vlogefp   ';
+   labcpy(ressym[opsubfcor  ].reslab, 'subfcor   '; ressym[opsubfcor  ].reschn := opsubfmer;
+   labcpy(ressym[opvavgub   ].reslab, 'vavgub    ';
+   labcpy(ressym[opsubfeor  ].reslab, 'subfeor   ';
+   labcpy(ressym[opvavguh   ].reslab, 'vavguh    '; ressym[opvavguh   ].reschn := opvmaxsb;
+   labcpy(ressym[opvadduwm  ].reslab, 'vadduwm   ';
+   labcpy(ressym[opvavguw   ].reslab, 'vavguw    ';
+   labcpy(ressym[opvcfux    ].reslab, 'vcfux     ';
+   labcpy(ressym[opmtfsfir  ].reslab, 'mtfsfir   '; ressym[opmtfsfir  ].reschn := opm601;
+   labcpy(ressym[opvaddsws  ].reslab, 'vaddsws   ';
+   labcpy(ressym[opfnmsubr  ].reslab, 'fnmsubr   ';
+   labcpy(ressym[opfnmsubs  ].reslab, 'fnmsubs   '; ressym[opfnmsubs  ].reschn := opsubfzeo;
+   labcpy(ressym[optlbsync  ].reslab, 'tlbsync   ';
+   labcpy(ressym[opvmuleub  ].reslab, 'vmuleub   '; ressym[opvmuleub  ].reschn := opm750;
+   labcpy(ressym[opsubfzer  ].reslab, 'subfzer   ';
+   labcpy(ressym[opfmsubsr  ].reslab, 'fmsubsr   ';
+   labcpy(ressym[opvupkhsb  ].reslab, 'vupkhsb   ';
+   labcpy(ressym[opvmulesh  ].reslab, 'vmulesh   '; ressym[opvmulesh  ].reschn := opvsububm;
+   labcpy(ressym[opvcmpbfp  ].reslab, 'vcmpbfp   ';
+   labcpy(ressym[oprlwimir  ].reslab, 'rlwimir   '; ressym[oprlwimir  ].reschn := opvmuleuh;
+   labcpy(ressym[opfrsqrte  ].reslab, 'frsqrte   '; ressym[opfrsqrte  ].reschn := opvupklsb;
+   labcpy(ressym[opvmulosb  ].reslab, 'vmulosb   '; ressym[opvmulosb  ].reschn := opvsubsbs;
+   labcpy(ressym[opfctiwzr  ].reslab, 'fctiwzr   '; ressym[opfctiwzr  ].reschn := opvupkhsh;
+   labcpy(ressym[opvmuloub  ].reslab, 'vmuloub   '; ressym[opvmuloub  ].reschn := opvsububs;
+   labcpy(ressym[oprlwinmr  ].reslab, 'rlwinmr   ';
+   labcpy(ressym[opvcmpequb ].reslab, 'vcmpequb  ';
+   labcpy(ressym[opvupklsh  ].reslab, 'vupklsh   ';
+   labcpy(ressym[opvmulosh  ].reslab, 'vmulosh   '; ressym[opvmulosh  ].reschn := opvsubshs;
+   labcpy(ressym[opvsubcuw  ].reslab, 'vsubcuw   ';
+   labcpy(ressym[opdivwuor  ].reslab, 'divwuor   '; ressym[opdivwuor  ].reschn := opvmulouh;
+   labcpy(ressym[opvcmpgefpr].reslab, 'vcmpgefpr ';
+   labcpy(ressym[opmullwor  ].reslab, 'mullwor   '; ressym[opmullwor  ].reschn := opvpkshss;
+   labcpy(ressym[opvctsxs   ].reslab, 'vctsxs    ';
+   labcpy(ressym[opcntlzwr  ].reslab, 'cntlzwr   '; ressym[opcntlzwr  ].reschn := opmulhwur;
+   labcpy(ressym[opfsqrtsr  ].reslab, 'fsqrtsr   ';
+   labcpy(ressym[opvpkuhus  ].reslab, 'vpkuhus   '; ressym[opvpkuhus  ].reschn := opvupkhpx;
+   labcpy(ressym[opvctuxs   ].reslab, 'vctuxs    ';
+   labcpy(ressym[opvmaddfp  ].reslab, 'vmaddfp   ';
+   labcpy(ressym[opvsubuwm  ].reslab, 'vsubuwm   ';
+   labcpy(ressym[opvupklpx  ].reslab, 'vupklpx   ';
+   labcpy(ressym[opvmaxfp   ].reslab, 'vmaxfp    ';
+   labcpy(ressym[opvmaxsb   ].reslab, 'vmaxsb    '; ressym[opvmaxsb   ].reschn := opvminub;
+   labcpy(ressym[opbca      ].reslab, 'bca       '; ressym[opbca      ].reschn := opvsubsws;
+   labcpy(ressym[opvmaxsh   ].reslab, 'vmaxsh    '; ressym[opvmaxsh   ].reschn := opvminuh;
+   labcpy(ressym[opvpkuwum  ].reslab, 'vpkuwum   '; ressym[opvpkuwum  ].reschn := opvsubuws;
+   labcpy(ressym[opadd      ].reslab, 'add       ';
+   labcpy(ressym[opvpkswss  ].reslab, 'vpkswss   ';
+   labcpy(ressym[opvmaxsw   ].reslab, 'vmaxsw    '; ressym[opvmaxsw   ].reschn := opvminuw;
+   labcpy(ressym[opvpkswus  ].reslab, 'vpkswus   ';
+   labcpy(ressym[opvmaxuh   ].reslab, 'vmaxuh    ';
+   labcpy(ressym[opvpkuwus  ].reslab, 'vpkuwus   ';
+   labcpy(ressym[opbla      ].reslab, 'bla       ';
+   labcpy(ressym[opvmhaddshs].reslab, 'vmhaddshs '; ressym[opvmhaddshs].reschn := opvmladduhm;
+   labcpy(ressym[opbcl      ].reslab, 'bcl       '; ressym[opbcl      ].reschn := opvsumsws;
+   labcpy(ressym[opvminfp   ].reslab, 'vminfp    '; ressym[opvminfp   ].reschn := opvmrglh;
+   labcpy(ressym[opand      ].reslab, 'and       ';
+   labcpy(ressym[opvminsb   ].reslab, 'vminsb    ';
+   labcpy(ressym[oplha      ].reslab, 'lha       ';
+   labcpy(ressym[oplfd      ].reslab, 'lfd       ';
+   labcpy(ressym[opvminsh   ].reslab, 'vminsh    ';
+   labcpy(ressym[opm7400    ].reslab, 'm7400     ';
+   labcpy(ressym[opvminub   ].reslab, 'vminub    '; ressym[opvminub   ].reschn := opvsldoi;
+   labcpy(ressym[opneg      ].reslab, 'neg       ';
+   labcpy(ressym[opvminuh   ].reslab, 'vminuh    '; ressym[opvminuh   ].reschn := opsetequ;
+   labcpy(ressym[opvminuw   ].reslab, 'vminuw    ';
+   labcpy(ressym[opvmladduhm].reslab, 'vmladduhm '; ressym[opvmladduhm].reschn := opvrlw;
+   labcpy(ressym[opvmrghw   ].reslab, 'vmrghw    '; ressym[opvmrghw   ].reschn := opvspltb;
+   labcpy(ressym[opvmrglh   ].reslab, 'vmrglh    ';
+   labcpy(ressym[opcmp      ].reslab, 'cmp       ';
+   labcpy(ressym[oprfi      ].reslab, 'rfi       ';
+   labcpy(ressym[opvmrglw   ].reslab, 'vmrglw    ';
+   labcpy(ressym[opvmsumshs ].reslab, 'vmsumshs  ';
+   labcpy(ressym[oporc      ].reslab, 'orc       ';
+   labcpy(ressym[opfmr      ].reslab, 'fmr       '; ressym[opfmr      ].reschn := oplfs;
+   labcpy(ressym[opvmulesb  ].reslab, 'vmulesb   ';
+   labcpy(ressym[opvmuleuh  ].reslab, 'vmuleuh   ';
+   labcpy(ressym[oplbz      ].reslab, 'lbz       ';
+   labcpy(ressym[opstb      ].reslab, 'stb       ';
+   labcpy(ressym[opdss      ].reslab, 'dss       '; ressym[opdss      ].reschn := opori;
+   labcpy(ressym[opdst      ].reslab, 'dst       '; ressym[opdst      ].reschn := opequ;
+   labcpy(ressym[opeqv      ].reslab, 'eqv       ';
+   labcpy(ressym[opvmulouh  ].reslab, 'vmulouh   '; ressym[opvmulouh  ].reschn := opvpkuhum;
+   labcpy(ressym[oplhz      ].reslab, 'lhz       ';
+   labcpy(ressym[opnor      ].reslab, 'nor       '; ressym[opnor      ].reschn := opsth;
+   labcpy(ressym[oplmw      ].reslab, 'lmw       '; ressym[oplmw      ].reschn := opvsum4sbs;
+   labcpy(ressym[opvperm    ].reslab, 'vperm     ';
+   labcpy(ressym[opvsum4ubs ].reslab, 'vsum4ubs  ';
+   labcpy(ressym[oporr      ].reslab, 'orr       ';
+   labcpy(ressym[optwi      ].reslab, 'twi       ';
+   labcpy(ressym[opvsl      ].reslab, 'vsl       ';
+   labcpy(ressym[opslw      ].reslab, 'slw       '; ressym[opslw      ].reschn := opvsum4shs;
+   labcpy(ressym[opvor      ].reslab, 'vor       ';
+   labcpy(ressym[opfnmaddsr ].reslab, 'fnmaddsr  ';
+   labcpy(ressym[opxor      ].reslab, 'xor       ';
+   labcpy(ressym[oplvx      ].reslab, 'lvx       ';
+   labcpy(ressym[opvsr      ].reslab, 'vsr       ';
+   labcpy(ressym[opsrw      ].reslab, 'srw       ';
+   labcpy(ressym[oplwz      ].reslab, 'lwz       ';
+   labcpy(ressym[opstw      ].reslab, 'stw       ';
+   labcpy(ressym[opvpkshss  ].reslab, 'vpkshss   ';
+   labcpy(ressym[opvpkshus  ].reslab, 'vpkshus   ';
+   labcpy(ressym[opvcmpgefp ].reslab, 'vcmpgefp  ';
+   labcpy(ressym[opvpkuhum  ].reslab, 'vpkuhum   '; ressym[opvpkuhum  ].reschn := opvsubuhs;
+   labcpy(ressym[opvsum2sws ].reslab, 'vsum2sws  ';
+   labcpy(ressym[opvrefp    ].reslab, 'vrefp     ';
+   labcpy(ressym[opvrfim    ].reslab, 'vrfim     '; ressym[opvrfim    ].reschn := opvsrah;
+   labcpy(ressym[opvrfin    ].reslab, 'vrfin     ';
+   labcpy(ressym[opvrfip    ].reslab, 'vrfip     ';
+   labcpy(ressym[opvrfiz    ].reslab, 'vrfiz     ';
+   labcpy(ressym[opvcmpbfpr ].reslab, 'vcmpbfpr  ';
+   labcpy(ressym[opvrlb     ].reslab, 'vrlb      ';
+   labcpy(ressym[opvcmpeqfp ].reslab, 'vcmpeqfp  ';
+   labcpy(ressym[opsubfmeor ].reslab, 'subfmeor  '; ressym[opsubfmeor ].reschn := opvcmpequb;
+   labcpy(ressym[opvrlw     ].reslab, 'vrlw      '; ressym[opvrlw     ].reschn := opxorr;
+   labcpy(ressym[opvrsqrtefp].reslab, 'vrsqrtefp '; ressym[opvrsqrtefp].reschn := opdefbe;
+   labcpy(ressym[opvcmpgtsb ].reslab, 'vcmpgtsb  ';
+   labcpy(ressym[opvcmpgtfp ].reslab, 'vcmpgtfp  ';
+   labcpy(ressym[opvcmpgtub ].reslab, 'vcmpgtub  ';
+   labcpy(ressym[opvcmpequh ].reslab, 'vcmpequh  ';
+   labcpy(ressym[opvsel     ].reslab, 'vsel      ';
+   labcpy(ressym[opvslb     ].reslab, 'vslb      ';
+   labcpy(ressym[opvcmpgtsh ].reslab, 'vcmpgtsh  ';
+   labcpy(ressym[opvsldoi   ].reslab, 'vsldoi    ';
+   labcpy(ressym[opvcmpgtuh ].reslab, 'vcmpgtuh  ';
+   labcpy(ressym[opvslh     ].reslab, 'vslh      '; ressym[opvslh     ].reschn := opvsrb;
+   labcpy(ressym[opfnmsubsr ].reslab, 'fnmsubsr  '; ressym[opfnmsubsr ].reschn := opsubfzeor;
+   labcpy(ressym[opvnmsubfp ].reslab, 'vnmsubfp  ';
+   labcpy(ressym[opvexptefp ].reslab, 'vexptefp  ';
+   labcpy(ressym[opvslo     ].reslab, 'vslo      ';
+   labcpy(ressym[opvmsummbm ].reslab, 'vmsummbm  ';
+   labcpy(ressym[opvspltb   ].reslab, 'vspltb    ';
+   labcpy(ressym[opvsplth   ].reslab, 'vsplth    ';
+   labcpy(ressym[opvspltisb ].reslab, 'vspltisb  ';
+   labcpy(ressym[opvcmpequw ].reslab, 'vcmpequw  ';
+   labcpy(ressym[opfrsqrter ].reslab, 'frsqrter  ';
+   labcpy(ressym[opvspltish ].reslab, 'vspltish  ';
+   labcpy(ressym[opvcmpgtsw ].reslab, 'vcmpgtsw  ';
+   labcpy(ressym[opvmsumubm ].reslab, 'vmsumubm  ';
+   labcpy(ressym[opvcmpgtuw ].reslab, 'vcmpgtuw  '; ressym[opvcmpgtuw ].reschn := opvspltish;
+   labcpy(ressym[opvsrab    ].reslab, 'vsrab     ';
+   labcpy(ressym[opvsrah    ].reslab, 'vsrah     ';
+   labcpy(ressym[opvmsumshm ].reslab, 'vmsumshm  ';
+   labcpy(ressym[opdcba     ].reslab, 'dcba      ';
+   labcpy(ressym[opvmsumuhm ].reslab, 'vmsumuhm  ';
+   labcpy(ressym[opaddc     ].reslab, 'addc      ';
+   labcpy(ressym[opvsraw    ].reslab, 'vsraw     ';
+   labcpy(ressym[opadde     ].reslab, 'adde      ';
+   labcpy(ressym[opdcbf     ].reslab, 'dcbf      '; ressym[opdcbf     ].reschn := opfadd;
+   labcpy(ressym[opvsrb     ].reslab, 'vsrb      ';
+   labcpy(ressym[opvmsumuhs ].reslab, 'vmsumuhs  '; ressym[opvmsumuhs ].reschn := opdefb;
+   labcpy(ressym[opaddi     ].reslab, 'addi      '; ressym[opaddi     ].reschn := opbcla;
+   labcpy(ressym[opvsrh     ].reslab, 'vsrh      ';
+   labcpy(ressym[opvsro     ].reslab, 'vsro      ';
+   labcpy(ressym[opvspltisw ].reslab, 'vspltisw  '; ressym[opvspltisw ].reschn := opdeff;
+   labcpy(ressym[opandc     ].reslab, 'andc      ';
+   labcpy(ressym[opicbi     ].reslab, 'icbi      ';
+   labcpy(ressym[opaddo     ].reslab, 'addo      ';
+   labcpy(ressym[opvsrw     ].reslab, 'vsrw      ';
+   labcpy(ressym[opvsubsbs  ].reslab, 'vsubsbs   ';
+   labcpy(ressym[opaddr     ].reslab, 'addr      ';
+   labcpy(ressym[opfabs     ].reslab, 'fabs      ';
+   labcpy(ressym[opdcbt     ].reslab, 'dcbt      ';
+   labcpy(ressym[opvsubshs  ].reslab, 'vsubshs   ';
+   labcpy(ressym[opvsubsws  ].reslab, 'vsubsws   ';
+   labcpy(ressym[opfneg     ].reslab, 'fneg      ';
+   labcpy(ressym[opnand     ].reslab, 'nand      ';
+   labcpy(ressym[opvsububm  ].reslab, 'vsububm   ';
+   labcpy(ressym[opbclr     ].reslab, 'bclr      '; ressym[opbclr     ].reschn := opdcbz;
+   labcpy(ressym[opvsububs  ].reslab, 'vsububs   '; ressym[opvsububs  ].reschn := opvsubuhm;
+   labcpy(ressym[opandr     ].reslab, 'andr      ';
+   labcpy(ressym[opdefw     ].reslab, 'defw      ';
+   labcpy(ressym[opvsubuhm  ].reslab, 'vsubuhm   ';
+   labcpy(ressym[opmcrf     ].reslab, 'mcrf      '; ressym[opmcrf     ].reschn := opmfcr;
+   labcpy(ressym[opcmpi     ].reslab, 'cmpi      '; ressym[opcmpi     ].reschn := opfdiv;
+   labcpy(ressym[opfsel     ].reslab, 'fsel      '; ressym[opfsel     ].reschn := oplhau;
+   labcpy(ressym[oplfdu     ].reslab, 'lfdu      ';
+   labcpy(ressym[opcmpl     ].reslab, 'cmpl      '; ressym[opcmpl     ].reschn := opmffs;
+   labcpy(ressym[oplhax     ].reslab, 'lhax      ';
+   labcpy(ressym[oplfdx     ].reslab, 'lfdx      ';
+   labcpy(ressym[opvsubuhs  ].reslab, 'vsubuhs   ';
+   labcpy(ressym[opfres     ].reslab, 'fres      '; ressym[opfres     ].reschn := opfsub;
+   labcpy(ressym[opstfd     ].reslab, 'stfd      ';
+   labcpy(ressym[opvect     ].reslab, 'vect      ';
+   labcpy(ressym[opvsubuws  ].reslab, 'vsubuws   ';
+   labcpy(ressym[opfmul     ].reslab, 'fmul      '; ressym[opfmul     ].reschn := opassm;
+   labcpy(ressym[opvsumsws  ].reslab, 'vsumsws   ';
+   labcpy(ressym[opcror     ].reslab, 'cror      '; ressym[opcror     ].reschn := oporcr;
+   labcpy(ressym[opfmrr     ].reslab, 'fmrr      '; ressym[opfmrr     ].reschn := opvslb;
+   labcpy(ressym[opmfsr     ].reslab, 'mfsr      ';
+   labcpy(ressym[opvsum4sbs ].reslab, 'vsum4sbs  ';
+   labcpy(ressym[opdivw     ].reslab, 'divw      '; ressym[opdivw     ].reschn := oplfsu;
+   labcpy(ressym[opfrsp     ].reslab, 'frsp      ';
+   labcpy(ressym[opvrlh     ].reslab, 'vrlh      ';
+   labcpy(ressym[oplbzu     ].reslab, 'lbzu      '; ressym[oplbzu     ].reschn := oplfsx;
+   labcpy(ressym[opeqvr     ].reslab, 'eqvr      '; ressym[opeqvr     ].reschn := opstbu;
+   labcpy(ressym[opdstt     ].reslab, 'dstt      '; ressym[opdstt     ].reschn := oplswi;
+   labcpy(ressym[oplbzx     ].reslab, 'lbzx      '; ressym[oplbzx     ].reschn := opstfs;
+   labcpy(ressym[oplvsl     ].reslab, 'lvsl      '; ressym[oplvsl     ].reschn := opnorr;
+   labcpy(ressym[opxori     ].reslab, 'xori      ';
+   labcpy(ressym[oplhzu     ].reslab, 'lhzu      '; ressym[oplhzu     ].reschn := opvsrh;
+   labcpy(ressym[opsthu     ].reslab, 'sthu      '; ressym[opsthu     ].reschn := opvslo;
+   labcpy(ressym[opvnor     ].reslab, 'vnor      ';
+   labcpy(ressym[oplhzx     ].reslab, 'lhzx      '; ressym[oplhzx     ].reschn := oplvxl;
+   labcpy(ressym[oplvsr     ].reslab, 'lvsr      '; ressym[oplvsr     ].reschn := opsthx;
+   labcpy(ressym[opslwr     ].reslab, 'slwr      ';
+   labcpy(ressym[opvsum4shs ].reslab, 'vsum4shs  ';
+   labcpy(ressym[opvmhraddsh].reslab, 'vmhraddsh '; ressym[opvmhraddsh].reschn := opvsro;
+   labcpy(ressym[opstmw     ].reslab, 'stmw      '; ressym[opstmw     ].reschn := opvmhaddshs;
+   labcpy(ressym[opvslw     ].reslab, 'vslw      ';
+   labcpy(ressym[opvupkhpx  ].reslab, 'vupkhpx   ';
+   labcpy(ressym[oplswx     ].reslab, 'lswx      '; ressym[oplswx     ].reschn := opsrwr;
+   labcpy(ressym[opvxor     ].reslab, 'vxor      ';
+   labcpy(ressym[opvupkhsh  ].reslab, 'vupkhsh   ';
+   labcpy(ressym[opvupklsb  ].reslab, 'vupklsb   ';
+   labcpy(ressym[oplwzu     ].reslab, 'lwzu      '; ressym[oplwzu     ].reschn := opvsrw;
+   labcpy(ressym[opstwu     ].reslab, 'stwu      '; ressym[opstwu     ].reschn := opvcmpgefpr;
+   labcpy(ressym[opxorr     ].reslab, 'xorr      ';
+   labcpy(ressym[oplwzx     ].reslab, 'lwzx      '; ressym[oplwzx     ].reschn := opstvx;
+   labcpy(ressym[opstwx     ].reslab, 'stwx      ';
+   labcpy(ressym[opxoris    ].reslab, 'xoris     ';
+   labcpy(ressym[opnfloat   ].reslab, 'nfloat    ';
+   labcpy(ressym[opnvect    ].reslab, 'nvect     ';
+   labcpy(ressym[opm601     ].reslab, 'm601      ';
+   labcpy(ressym[opm750     ].reslab, 'm750      ';
+   labcpy(ressym[opmacro    ].reslab, 'macro     '; ressym[opmacro    ].reschn := opdefps;
+   labcpy(ressym[opvcmpeqfpr].reslab, 'vcmpeqfpr ';
+   labcpy(ressym[opvcmpequbr].reslab, 'vcmpequbr ';
+   labcpy(ressym[opequ      ].reslab, 'equ       ';
+   labcpy(ressym[opsetequ   ].reslab, 'setequ    ';
+   labcpy(ressym[opvcmpgtsbr].reslab, 'vcmpgtsbr ';
+   labcpy(ressym[opvcmpgtfpr].reslab, 'vcmpgtfpr ';
+   labcpy(ressym[opvcmpgtubr].reslab, 'vcmpgtubr ';
+   labcpy(ressym[opvcmpequhr].reslab, 'vcmpequhr ';
+   labcpy(ressym[opextern   ].reslab, 'extern    ';
+   labcpy(ressym[opalignv   ].reslab, 'alignv    ';
+   labcpy(ressym[opvcmpgtshr].reslab, 'vcmpgtshr ';
+   labcpy(ressym[opelse     ].reslab, 'else      ';
+   labcpy(ressym[opvcmpgtuhr].reslab, 'vcmpgtuhr ';
+   labcpy(ressym[opassm     ].reslab, 'assm      ';
+   labcpy(ressym[opdefb     ].reslab, 'defb      ';
+   labcpy(ressym[opdefps    ].reslab, 'defps     ';
+   labcpy(ressym[opdefbe    ].reslab, 'defbe     ';
+   labcpy(ressym[opdefle    ].reslab, 'defle     ';
+   labcpy(ressym[opdeff     ].reslab, 'deff      ';
+   labcpy(ressym[opdefsf    ].reslab, 'defsf     ';
+   labcpy(ressym[opdeflf    ].reslab, 'deflf     ';
+   labcpy(ressym[opdefhw    ].reslab, 'defhw     ';
+   labcpy(ressym[opvcmpequwr].reslab, 'vcmpequwr ';
+   labcpy(ressym[opdefdw    ].reslab, 'defdw     ';
+   labcpy(ressym[opaddic    ].reslab, 'addic     ';
+   labcpy(ressym[opvcmpgtswr].reslab, 'vcmpgtswr '; ressym[opvcmpgtswr].reschn := opvrsqrtefp;
+
+end;
+
+{******************************************************************************
+
+Initalize CPU dependent module for MPC7400
+
+******************************************************************************}
+
+procedure inidep;
+
+var i: opcodet;
+
+begin
+
+   { output sign - on }
+   writeln;
+   writeln('MPC7400 assembler vs. 1.1 Copyright (C) 1994 S. A. Moore');
+   writeln;
+   alignment := cpualign; { set CPU alignment }
+   bigend := cpubigend; { set CPU endian status }
+   wrdsiz := cpuwrdsiz; { set CPU word size }
+   float := true; { set floating point instructions enabled }
+   vect := true; { set vector instructions enabled }
+   cmachine := mt7400; { default to 7400 (most capable machine) }
+   bigend := cpubigend; { set default big/little endian mode }
+   { clear and initalize reserved table }
+   for i := opnull to opendif do begin
+
+      labcpy(ressym[i].reslab, '');
+      ressym[i].reschn := opnull
+
+   end;
+   resini { initalize resevered symbols }
+
+end;
+
+{******************************************************************************
+
+Check symbol is absolute
+
+Checks if the given symbol is absolute, that is, if it is defined and will
+never change.
+
+******************************************************************************}
+
+function absolute { (s: symptr): boolean };
+
+begin
+
+   { check symbol is defined, and not typed address or variable }
+   absolute := s^.symdef and not s^.symadd and not s^.symvar
+
+end;
+
+{******************************************************************************
+
+Validate machine type
+
+Validates that the current machine is equal to or greater than the given
+requirement. The PowerPC family is downward compatible, such that a given
+instruction or mode that works on a low level processor will work on all 
+processors above that. So specifying the first processor to contain a feature
+as the requirement will validate all processors above that as well.
+
+******************************************************************************}
+
+procedure valmac { (m: mach) }; { machine requirement }
+
+begin
+
+   if cmachine < m then prterr(emach)
+
+end;
+
+{******************************************************************************
+
+Validate machine type specific
+
+Validates that the current machine is equal to the given machine. There are
+a few operators that are specific to a given machine. We validate that the
+single appropriate processor is active.
+
+******************************************************************************}
+
+procedure valmacs { (m: mach) }; { machine requirement }
+
+begin
+
+   if cmachine <> m then prterr(emach)
+
+end;
+
+{******************************************************************************
+
+Validate floating point
+
+Validates that the floating point instructions are enabled.
+
+******************************************************************************}
+
+procedure valflt;
+
+begin
+
+   if not float then prterr(emach)
+
+end;
+
+{******************************************************************************
+
+Find reserved word
+
+Finds the reserved code corresponding to a given label. The hash value is found 
+for the label, then a sequential search of the entry list for a match with the 
+label. The result is a code equvalent to the index for the matching label, or 0 
+if none is found. See inires for more reserved table details.
+
+******************************************************************************}
+
+function fndres(view s: string) { label to find }
+               : opcodet;       { resulting opcode }
+
+var i: opcodet; { reserved table index }
+    b: boolean;
+    { free variant to convert opcodes to integers }
+    r: record case boolean of
+
+          false: (a: opcodet);
+          true:  (b: integer)
+
+       end;
+
+begin
+
+   r.b := hash(s, ord(opdefqw)); { find hash value }
+   i := r.a;
+   { traverse chain at hash entry looking for a match }
+   b := labequ(s, ressym[i].reslab); { check equal }
+   while not b and (ressym[i].reschn <> opnull) do begin { traverse }
+
+      i := ressym[i].reschn; { next entry }
+      b := labequ(s, ressym[i].reslab) { check equal }
+
+   end;
+   { check match was found }
+   if not b then i := opnull;
+   fndres := i { return resulting index }
+
+end;
+
+{******************************************************************************
+
+Parse expression
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+******************************************************************************}
+
+procedure mexpr { (var sym: symptr) };
+
+begin
+
+   expri(sym) { pass call to assembler main }
+
+end;
+
+{******************************************************************************
+
+Parse simple expression
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+******************************************************************************}
+
+procedure msexpr { (var sym: symptr) };
+
+begin
+
+   sexpri(sym) { pass call to assembler main }
+
+end;
+
+{******************************************************************************
+
+Parse term
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+******************************************************************************}
+
+procedure mterm { (var sym: symptr) };
+
+begin
+
+   termi(sym) { pass call to assembler main }
+
+end;
+
+{******************************************************************************
+
+Parse factor
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+******************************************************************************}
+
+procedure mfactor { (var sym: symptr) };
+
+begin
+
+   factori(sym) { pass call to assembler main }
+
+end;
+
+begin
+
+   inidep { initalize processor dependent module }
+
+end. { unit }

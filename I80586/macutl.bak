@@ -1,0 +1,2538 @@
+{*******************************************************************************
+*                                                                              *
+*                      MACHINE SPECIFIC UTILTITIES MODULE                      *
+*                                                                              *
+*                       Copyright (C) 2007 S. A. Moore                         *
+*                            All rights reserved                               *
+*                                                                              *
+* PURPOSE:                                                                     *
+*                                                                              *
+* Gives all the machine specific utilities for this assembler. The general     *
+* assembler module performs calls to the machine specific section via this     *
+* module. The following interface calls exist:                                 *
+*                                                                              *
+* procedure mexpr(var sym: symptr); forward;                                   *
+* procedure msexpr(var sym: symptr); forward;                                  *
+* procedure mterm(var sym: symptr); forward;                                   *
+* procedure mfactor(var sym: symptr); forward;                                 *
+*                                                                              *
+* All of these routines handle parsing of various expression constructs,       *
+* the expression, simple expression, term and factor levels. The reason the    *
+* main assembler module calls these routines is that it allows the machine     *
+* specific module to implement special expression constructs for the           *
+* particular assembly language being implemented. After performing special     *
+* processing, the calls are sent back to the main assembler calls which        *
+* the same purpose.                                                            *
+*                                                                              *
+* We also implement several machine specific support functions here.           *
+*                                                                              *
+*******************************************************************************}
+
+module macutl(output);
+
+uses asdef,  { generic definitions }
+     common, { global variables }
+     utl,    { generic utilities }
+     macdef, { processor specific definitions }
+     opcdef, { opcode definitions }
+     opcini; { initalize reserved table }
+
+var large: boolean; { large/small model flag }
+    float: boolean; { floating point instructions enabled flag }
+    cmachine: mach; { current machine type }
+    regset: set of regc; { check for general purpose registers }
+    segset: set of regc; { check for segment registers }
+    brgset: set of regc; { check for byte registers }
+    wrgset: set of regc; { check for word registers }
+    drgset: set of regc; { check for double word registers }
+    lrgset: set of regc; { check for "large" registers }
+    adrset: set of regc; { check for memory types }
+    rmset:  set of regc; { check for r/m modes }
+    drset:  set of regc; { check for drx registers }
+    trset:  set of regc; { check for trx registers }
+    crset:  set of regc; { check for crx registers }
+    spcset: set of regc; { check for special registers }
+    reglen: array [regc] of 0..10; { register operand lengths }
+    opclen: array [opcodet] of 0..10; { opcode lengths }
+    opcsad: array [opcodet] of boolean; { opcode length adjustable }
+
+procedure prtreg(r: regc); forward; { print register }
+procedure prtprc(var p: parrec); forward; { print parameter record }
+procedure regcod(var reg: regc); forward; { process register code }
+procedure parcod(var p: parrec);  forward; { parse parameter }
+function sreg(p: regc): byte;  forward; { convert single register }
+function fndres(view s: string): opcodet; forward; { find reserved word }
+procedure size2(i: opcodet; r1, r2: regc; var opsz: opsize); forward;
+procedure addr(rm: byte; p: parrec); forward; { generate address mode }
+function dispsz(d: symptr): opsize; forward;
+procedure valmac(m: mach); forward;
+procedure valmacs(m: mach); forward;
+procedure valflt; forward;
+procedure pardbl(i: opcodet; var l, r: parrec; var opsz: opsize); forward;
+procedure parsgl(i: opcodet; var p: parrec; var opsz: opsize); forward;
+procedure mexpr(var sym: symptr); forward; { parse expression }
+procedure msexpr(var sym: symptr); forward; { parse simple expression }
+procedure mterm(var sym: symptr); forward; { parse term }
+procedure mfactor(var sym: symptr); forward; { parse factor }
+function absolute(s: symptr): boolean; forward; { check symbol absolute }
+procedure setsiz(s: boolean); forward;
+procedure setadr(s: boolean); forward;
+
+private
+
+{*******************************************************************************
+
+Print register or mode
+
+Prints out the contents of a register or mode code. Used for diagnostics.
+
+*******************************************************************************}
+
+procedure prtreg(r: regc);
+
+begin
+
+   case r of { register or mode }
+
+      rgnl:    write('none');
+      rgal:    write('al');
+      rgah:    write('ah');
+      rgbl:    write('bl');
+      rgbh:    write('bh');
+      rgcl:    write('cl');
+      rgch:    write('ch');
+      rgdl:    write('dl');
+      rgdh:    write('dh');
+      rgax:    write('ax');
+      rgbx:    write('bx');
+      rgcx:    write('cx');
+      rgdx:    write('dx');
+      rgbp:    write('bp');
+      rgsi:    write('si');
+      rgdi:    write('di');
+      rgsp:    write('sp');
+      rgcs:    write('cs');
+      rgss:    write('ss');
+      rgds:    write('ds');
+      rges:    write('es');
+      rgfs:    write('fs');
+      rggs:    write('gs');
+      rgeax:   write('eax');
+      rgebx:   write('ebx');
+      rgecx:   write('ecx');
+      rgedx:   write('edx');
+      rgebp:   write('ebp');
+      rgesi:   write('esi');
+      rgedi:   write('edi');
+      rgesp:   write('esp');
+      rgcr0:   write('cr0');
+      rgcr2:   write('cr2');
+      rgcr3:   write('cr3');
+      rgcr4:   write('cr4');
+      rgdr0:   write('dr0');
+      rgdr1:   write('dr1');
+      rgdr2:   write('dr2');
+      rgdr3:   write('dr3');
+      rgdr6:   write('dr6');
+      rgdr7:   write('dr7');
+      rgtr4:   write('tr4');
+      rgtr5:   write('tr5');
+      rgtr6:   write('tr6');
+      rgtr7:   write('tr7');
+      rgst:    write('st');
+      rgstr:   write('st(r)');
+      rgimm:   write('immediate');
+      rgiad:   write('[address]');
+      rgir:    write('[register]');
+      rgird:   write('displacement[register]');
+      rgirs:   write('[register*scale]');
+      rgirsd:  write('displacement[register*scale]');
+      rgirr:   write('[register+register]');
+      rgirrd:  write('displacement[register+register]');
+      rgirrs:  write('[register+register*s]'); 
+      rgirrsd: write('displacement[register+register*scale]');
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Print parameter record
+
+Prints out the contents of a parameter record. Used for diagnostics.
+
+*******************************************************************************}
+
+procedure prtprc(var p: parrec);
+
+begin
+
+   write('Register or mode:          '); prtreg(p.m); writeln;
+   write('Base register:             '); prtreg(p.rb); writeln;
+   write('Index register:            '); prtreg(p.ri); writeln;
+   write('Scale factor:              '); dmpsym(p.sc, 0);
+   write('Displacement or immediate: '); dmpsym(p.vl, 0);
+
+end;
+
+{*******************************************************************************
+
+Initalize register operand size array
+
+The register size array gives the length, in bytes, of each register, or 0 if 
+there is no definite mode (either the null code or an effective address).
+
+*******************************************************************************}
+
+procedure rszini;
+
+begin
+
+   reglen[rgnl   ] := 0; { none }
+   reglen[rgal   ] := 1; { al }
+   reglen[rgah   ] := 1; { ah } 
+   reglen[rgbl   ] := 1; { bl } 
+   reglen[rgbh   ] := 1; { bh } 
+   reglen[rgcl   ] := 1; { cl } 
+   reglen[rgch   ] := 1; { ch } 
+   reglen[rgdl   ] := 1; { dl } 
+   reglen[rgdh   ] := 1; { dh } 
+   reglen[rgax   ] := 2; { ax } 
+   reglen[rgbx   ] := 2; { bx }
+   reglen[rgcx   ] := 2; { cx } 
+   reglen[rgdx   ] := 2; { dx } 
+   reglen[rgbp   ] := 2; { bp } 
+   reglen[rgsi   ] := 2; { si } 
+   reglen[rgdi   ] := 2; { di } 
+   reglen[rgsp   ] := 2; { sp } 
+   reglen[rgcs   ] := 2; { cs } 
+   reglen[rgss   ] := 2; { ss } 
+   reglen[rgds   ] := 2; { ds } 
+   reglen[rges   ] := 2; { es } 
+   reglen[rgfs   ] := 2; { fs }
+   reglen[rggs   ] := 2; { gs } 
+   reglen[rgeax  ] := 4; { eax } 
+   reglen[rgebx  ] := 4; { ebx } 
+   reglen[rgecx  ] := 4; { ecx } 
+   reglen[rgedx  ] := 4; { edx } 
+   reglen[rgebp  ] := 4; { ebp } 
+   reglen[rgesi  ] := 4; { esi } 
+   reglen[rgedi  ] := 4; { edi } 
+   reglen[rgesp  ] := 4; { esp }
+   reglen[rgcr0  ] := 4; { cr0 } 
+   reglen[rgcr2  ] := 4; { cr2 } 
+   reglen[rgcr3  ] := 4; { cr3} 
+   reglen[rgcr4  ] := 4; { cr4 } 
+   reglen[rgdr0  ] := 4; { dr0 } 
+   reglen[rgdr1  ] := 4; { dr1 } 
+   reglen[rgdr2  ] := 4; { dr2 } 
+   reglen[rgdr3  ] := 4; { dr3 } 
+   reglen[rgdr6  ] := 4; { dr6 }
+   reglen[rgdr7  ] := 4; { dr7 } 
+   reglen[rgtr4  ] := 4; { tr4 }
+   reglen[rgtr5  ] := 4; { tr5 }
+   reglen[rgtr6  ] := 4; { tr6 }
+   reglen[rgtr7  ] := 4; { tr7 }
+   { the floating point registers don't really have a length, but we pretend
+     they do to shut the typer up }
+   reglen[rgst   ] := 1; { st }
+   reglen[rgstr  ] := 1; { st(r) }
+   reglen[rgimm  ] := 0; { n } 
+   reglen[rgiad  ] := 0; { [n] } 
+   reglen[rgir   ] := 0; { [reg] }
+   reglen[rgird  ] := 0; { [reg+disp] }
+   reglen[rgirr  ] := 0; { [reg+reg] } 
+   reglen[rgirrd ] := 0; { [reg+reg+disp] } 
+   reglen[rgirrs ] := 0; { [reg+reg*s] } 
+   reglen[rgirrsd] := 0  { [reg+reg*s+disp] }
+
+end;
+
+{*******************************************************************************
+
+Initalize operand size array
+
+The operand size array gives the length, in bytes, of each operand, or 0 if 
+there is no definite mode (either no operands exist for opcode, or the opcode
+does not specify a size).
+
+*******************************************************************************}
+
+procedure oszini;
+
+begin
+
+   opclen[opaaa      ] :=  0;
+   opclen[opaad      ] :=  0;
+   opclen[opaam      ] :=  0;
+   opclen[opaas      ] :=  0;
+   opclen[opadc      ] :=  0;
+   opclen[opadcb     ] :=  1;
+   opclen[opadcw     ] :=  2;
+   opclen[opadcd     ] :=  4;
+   opclen[opadd      ] :=  0;
+   opclen[opaddb     ] :=  1;
+   opclen[opaddw     ] :=  2;
+   opclen[opaddd     ] :=  4;
+   opclen[opand      ] :=  0;
+   opclen[opandb     ] :=  1;
+   opclen[opandw     ] :=  2;
+   opclen[opandd     ] :=  4;
+   opclen[oparpl     ] :=  2;
+   opclen[opbound    ] :=  0;
+   opclen[opbsf      ] :=  0;
+   opclen[opbsr      ] :=  0;
+   opclen[opbswap    ] :=  4;
+   opclen[opbt       ] :=  0;
+   opclen[opbtw      ] :=  2;
+   opclen[opbtd      ] :=  4;
+   opclen[opbtc      ] :=  0;
+   opclen[opbtcw     ] :=  2;
+   opclen[opbtcd     ] :=  4;
+   opclen[opbtr      ] :=  0;
+   opclen[opbtrw     ] :=  2;
+   opclen[opbtrd     ] :=  4;
+   opclen[opbts      ] :=  0;
+   opclen[opbtsw     ] :=  2;
+   opclen[opbtsd     ] :=  4;
+   opclen[opcall     ] :=  0;
+   opclen[opcallm    ] :=  2;
+   opclen[opcalll    ] :=  4;
+   opclen[opcallf    ] :=  0;
+   opclen[opcallmf   ] :=  2;
+   opclen[opcalllf   ] :=  4;
+   opclen[opcbw      ] :=  0;
+   opclen[opcwde     ] :=  0;
+   opclen[opclc      ] :=  0;
+   opclen[opcld      ] :=  0;
+   opclen[opcli      ] :=  0;
+   opclen[opclts     ] :=  0;
+   opclen[opcmc      ] :=  0;
+   opclen[opcmp      ] :=  0;
+   opclen[opcmpb     ] :=  1;
+   opclen[opcmpw     ] :=  2;
+   opclen[opcmpd     ] :=  4;
+   opclen[opcmpsb    ] :=  1;
+   opclen[opcmpsw    ] :=  2;
+   opclen[opcmpsd    ] :=  4;
+   opclen[opcmpxchg  ] :=  0;
+   opclen[opcmpxchg8b] :=  8;
+   opclen[opcpuid    ] :=  0;
+   opclen[opcwd      ] :=  0;
+   opclen[opcdq      ] :=  0;
+   opclen[opdaa      ] :=  0;
+   opclen[opdas      ] :=  0;
+   opclen[opdec      ] :=  0;
+   opclen[opdecb     ] :=  1;
+   opclen[opdecw     ] :=  2;
+   opclen[opdecd     ] :=  4;
+   opclen[opdiv      ] :=  0;
+   opclen[opdivb     ] :=  1;
+   opclen[opdivw     ] :=  2;
+   opclen[opdivd     ] :=  4;
+   opclen[openter    ] :=  2;
+   opclen[opf2xm1    ] :=  0;
+   opclen[opfabs     ] :=  0;
+   opclen[opfadd     ] :=  0;
+   opclen[opfadds    ] :=  4;
+   opclen[opfaddd    ] :=  8;
+   opclen[opfaddp    ] :=  0;
+   opclen[opfiadd    ] :=  0;
+   opclen[opfiaddw   ] :=  2;
+   opclen[opfiaddd   ] :=  4;
+   opclen[opfbld     ] :=  10;
+   opclen[opfbstp    ] :=  10;
+   opclen[opfchs     ] :=  0;
+   opclen[opfclex    ] :=  0;
+   opclen[opfnclex   ] :=  0;
+   opclen[opfcom     ] :=  0;
+   opclen[opfcoms    ] :=  4;
+   opclen[opfcomd    ] :=  8;
+   opclen[opfcomp    ] :=  0;
+   opclen[opfcomps   ] :=  4;
+   opclen[opfcompd   ] :=  8;
+   opclen[opfcompp   ] :=  0;
+   opclen[opfcos     ] :=  0;
+   opclen[opfdecstp  ] :=  0;
+   opclen[opfdisi    ] :=  0;
+   opclen[opfndisi   ] :=  0;
+   opclen[opfdiv     ] :=  0;
+   opclen[opfdivs    ] :=  4;
+   opclen[opfdivd    ] :=  8;
+   opclen[opfdivp    ] :=  0;
+   opclen[opfidiv    ] :=  0;
+   opclen[opfidivw   ] :=  2;
+   opclen[opfidivd   ] :=  4;
+   opclen[opfdivr    ] :=  0;
+   opclen[opfdivrs   ] :=  4;
+   opclen[opfdivrd   ] :=  8;
+   opclen[opfdivrp   ] :=  0;
+   opclen[opfeni     ] :=  0;
+   opclen[opfneni    ] :=  0;
+   opclen[opfidivr   ] :=  0;
+   opclen[opfidivrw  ] :=  2;
+   opclen[opfidivrd  ] :=  4;
+   opclen[opffree    ] :=  0;
+   opclen[opficom    ] :=  0;
+   opclen[opficomw   ] :=  2;
+   opclen[opficomd   ] :=  4;
+   opclen[opficomp   ] :=  0;
+   opclen[opficompw  ] :=  2;
+   opclen[opficompd  ] :=  4;
+   opclen[opfild     ] :=  0;
+   opclen[opfildw    ] :=  2;
+   opclen[opfildd    ] :=  4;
+   opclen[opfildq    ] :=  8;
+   opclen[opfincstp  ] :=  0;
+   opclen[opfinit    ] :=  0;
+   opclen[opfninit   ] :=  0;
+   opclen[opfist     ] :=  0;
+   opclen[opfistw    ] :=  2;
+   opclen[opfistd    ] :=  4;
+   opclen[opfistp    ] :=  0;
+   opclen[opfistpw   ] :=  2;
+   opclen[opfistpd   ] :=  4;
+   opclen[opfistpq   ] :=  8;
+   opclen[opfld      ] :=  0;
+   opclen[opflds     ] :=  4;
+   opclen[opfldd     ] :=  8;
+   opclen[opfldl     ] := 10;
+   opclen[opfld1     ] :=  0;
+   opclen[opfldl2t   ] :=  0;
+   opclen[opfldl2e   ] :=  0;
+   opclen[opfldpi    ] :=  0;
+   opclen[opfldlg2   ] :=  0;
+   opclen[opfldln2   ] :=  0;
+   opclen[opfldz     ] :=  0;
+   opclen[opfldcw    ] :=  2;
+   opclen[opfldenvw  ] :=  2;
+   opclen[opfldenvd  ] :=  4;
+   opclen[opfmul     ] :=  0;
+   opclen[opfmuls    ] :=  4;
+   opclen[opfmuld    ] :=  8;
+   opclen[opfmulp    ] :=  0;
+   opclen[opfimul    ] :=  0;
+   opclen[opfimulw   ] :=  2;
+   opclen[opfimuld   ] :=  4;
+   opclen[opfnop     ] :=  0;
+   opclen[opfpatan   ] :=  0;
+   opclen[opfprem    ] :=  0;
+   opclen[opfprem1   ] :=  0;
+   opclen[opfptan    ] :=  0;
+   opclen[opfrndint  ] :=  0;
+   opclen[opfrstorw  ] :=  2;
+   opclen[opfrstord  ] :=  4;
+   opclen[opfsetpm   ] :=  0;
+   opclen[opfsavew   ] :=  2;
+   opclen[opfsaved   ] :=  4;
+   opclen[opfnsavew  ] :=  2;
+   opclen[opfnsaved  ] :=  4;
+   opclen[opfscale   ] :=  0;
+   opclen[opfsin     ] :=  0;
+   opclen[opfsincos  ] :=  0;
+   opclen[opfsqrt    ] :=  0;
+   opclen[opfst      ] :=  0;
+   opclen[opfsts     ] :=  4;
+   opclen[opfstd     ] :=  8;
+   opclen[opfstp     ] :=  0;
+   opclen[opfstps    ] :=  4;
+   opclen[opfstpd    ] :=  8;
+   opclen[opfstpl    ] := 10;
+   opclen[opfstcw    ] :=  2;
+   opclen[opfnstcw   ] :=  2;
+   opclen[opfstenvw  ] :=  2;
+   opclen[opfstenvd  ] :=  4;
+   opclen[opfnstenvw ] :=  2;
+   opclen[opfnstenvd ] :=  4;
+   opclen[opfstsw    ] :=  2;
+   opclen[opfnstsw   ] :=  2;
+   opclen[opfsub     ] :=  0;
+   opclen[opfsubs    ] :=  4;
+   opclen[opfsubd    ] :=  8;
+   opclen[opfsubp    ] :=  0;
+   opclen[opfisub    ] :=  0;
+   opclen[opfisubw   ] :=  2;
+   opclen[opfisubd   ] :=  4;
+   opclen[opfsubr    ] :=  0;
+   opclen[opfsubrs   ] :=  4;
+   opclen[opfsubrd   ] :=  8;
+   opclen[opfsubrp   ] :=  0;
+   opclen[opfisubr   ] :=  0;
+   opclen[opfisubrw  ] :=  2;
+   opclen[opfisubrd  ] :=  4;
+   opclen[opftst     ] :=  0;
+   opclen[opfucom    ] :=  0;
+   opclen[opfucomp   ] :=  0;
+   opclen[opfucompp  ] :=  0;
+   opclen[opfwait    ] :=  0;
+   opclen[opfxam     ] :=  0;
+   opclen[opfxch     ] :=  0;
+   opclen[opfxtract  ] :=  0;
+   opclen[opfyl2x    ] :=  0;
+   opclen[opfyl2xp1  ] :=  0;
+   opclen[ophlt      ] :=  0;
+   opclen[opidiv     ] :=  0;
+   opclen[opidivb    ] :=  1;
+   opclen[opidivw    ] :=  2;
+   opclen[opidivd    ] :=  4;
+   opclen[opimul     ] :=  0;
+   opclen[opimulb    ] :=  1;
+   opclen[opimulw    ] :=  2;
+   opclen[opimuld    ] :=  4;
+   opclen[opin       ] :=  0;
+   opclen[opinc      ] :=  0;
+   opclen[opincb     ] :=  1;
+   opclen[opincw     ] :=  2;
+   opclen[opincd     ] :=  4;
+   opclen[opinsb     ] :=  1;
+   opclen[opinsw     ] :=  2;
+   opclen[opinsd     ] :=  4;
+   opclen[opint      ] :=  1;
+   opclen[opinto     ] :=  0;
+   opclen[opinvd     ] :=  0;
+   opclen[opinvlpg   ] :=  1;
+   opclen[opiret     ] :=  0;
+   opclen[opiretd    ] :=  0;
+   opclen[opja       ] :=  0;
+   opclen[opjae      ] :=  0;
+   opclen[opjb       ] :=  0;
+   opclen[opjbe      ] :=  0;
+   opclen[opjc       ] :=  0;
+   opclen[opjcxz     ] :=  0;
+   opclen[opjecxz    ] :=  0;
+   opclen[opje       ] :=  0;
+   opclen[opjz       ] :=  0;
+   opclen[opjg       ] :=  0;
+   opclen[opjge      ] :=  0;
+   opclen[opjl       ] :=  0;
+   opclen[opjle      ] :=  0;
+   opclen[opjna      ] :=  0;
+   opclen[opjnae     ] :=  0;
+   opclen[opjnb      ] :=  0;
+   opclen[opjnbe     ] :=  0;
+   opclen[opjnc      ] :=  0;
+   opclen[opjne      ] :=  0;
+   opclen[opjng      ] :=  0;
+   opclen[opjnge     ] :=  0;
+   opclen[opjnl      ] :=  0;
+   opclen[opjnle     ] :=  0;
+   opclen[opjno      ] :=  0;
+   opclen[opjnp      ] :=  0;
+   opclen[opjns      ] :=  0;
+   opclen[opjnz      ] :=  0;
+   opclen[opjo       ] :=  0;
+   opclen[opjp       ] :=  0;
+   opclen[opjpe      ] :=  0;
+   opclen[opjpo      ] :=  0;
+   opclen[opjs       ] :=  0;
+   opclen[opjz       ] :=  0;
+   opclen[opjas      ] :=  1;
+   opclen[opjaes     ] :=  1;
+   opclen[opjbs      ] :=  1;
+   opclen[opjbes     ] :=  1;
+   opclen[opjcs      ] :=  1;
+   opclen[opjes      ] :=  1;
+   opclen[opjzs      ] :=  1;
+   opclen[opjgs      ] :=  1;
+   opclen[opjges     ] :=  1;
+   opclen[opjls      ] :=  1;
+   opclen[opjles     ] :=  1;
+   opclen[opjnas     ] :=  1;
+   opclen[opjnaes    ] :=  1;
+   opclen[opjnbs     ] :=  1;
+   opclen[opjnbes    ] :=  1;
+   opclen[opjncs     ] :=  1;
+   opclen[opjnes     ] :=  1;
+   opclen[opjngs     ] :=  1;
+   opclen[opjnges    ] :=  1;
+   opclen[opjnls     ] :=  1;
+   opclen[opjnles    ] :=  1;
+   opclen[opjnos     ] :=  1;
+   opclen[opjnps     ] :=  1;
+   opclen[opjnss     ] :=  1;
+   opclen[opjnzs     ] :=  1;
+   opclen[opjos      ] :=  1;
+   opclen[opjps      ] :=  1;
+   opclen[opjpes     ] :=  1;
+   opclen[opjpos     ] :=  1;
+   opclen[opjss      ] :=  1;
+   opclen[opjzs      ] :=  1;
+   opclen[opjam      ] :=  2;
+   opclen[opjaem     ] :=  2;
+   opclen[opjbm      ] :=  2;
+   opclen[opjbem     ] :=  2;
+   opclen[opjcm      ] :=  2;
+   opclen[opjem      ] :=  2;
+   opclen[opjzm      ] :=  2;
+   opclen[opjgm      ] :=  2;
+   opclen[opjgem     ] :=  2;
+   opclen[opjlm      ] :=  2;
+   opclen[opjlem     ] :=  2;
+   opclen[opjnam     ] :=  2;
+   opclen[opjnaem    ] :=  2;
+   opclen[opjnbm     ] :=  2;
+   opclen[opjnbem    ] :=  2;
+   opclen[opjncm     ] :=  2;
+   opclen[opjnem     ] :=  2;
+   opclen[opjngm     ] :=  2;
+   opclen[opjngem    ] :=  2;
+   opclen[opjnlm     ] :=  2;
+   opclen[opjnlem    ] :=  2;
+   opclen[opjnom     ] :=  2;
+   opclen[opjnpm     ] :=  2;
+   opclen[opjnsm     ] :=  2;
+   opclen[opjnzm     ] :=  2;
+   opclen[opjom      ] :=  2;
+   opclen[opjpm      ] :=  2;
+   opclen[opjpem     ] :=  2;
+   opclen[opjpom     ] :=  2;
+   opclen[opjsm      ] :=  2;
+   opclen[opjzm      ] :=  2;
+   opclen[opjal      ] :=  4;
+   opclen[opjael     ] :=  4;
+   opclen[opjbl      ] :=  4;
+   opclen[opjbel     ] :=  4;
+   opclen[opjcl      ] :=  4;
+   opclen[opjel      ] :=  4;
+   opclen[opjzl      ] :=  4;
+   opclen[opjgl      ] :=  4;
+   opclen[opjgel     ] :=  4;
+   opclen[opjll      ] :=  4;
+   opclen[opjlel     ] :=  4;
+   opclen[opjnal     ] :=  4;
+   opclen[opjnael    ] :=  4;
+   opclen[opjnbl     ] :=  4;
+   opclen[opjnbel    ] :=  4;
+   opclen[opjncl     ] :=  4;
+   opclen[opjnel     ] :=  4;
+   opclen[opjngl     ] :=  4;
+   opclen[opjngel    ] :=  4;
+   opclen[opjnll     ] :=  4;
+   opclen[opjnlel    ] :=  4;
+   opclen[opjnol     ] :=  4;
+   opclen[opjnpl     ] :=  4;
+   opclen[opjnsl     ] :=  4;
+   opclen[opjnzl     ] :=  4;
+   opclen[opjol      ] :=  4;
+   opclen[opjpl      ] :=  4;
+   opclen[opjpel     ] :=  4;
+   opclen[opjpol     ] :=  4;
+   opclen[opjsl      ] :=  4;
+   opclen[opjzl      ] :=  4;
+   opclen[opjmp      ] :=  0;
+   opclen[opjmps     ] :=  1;
+   opclen[opjmpm     ] :=  2;
+   opclen[opjmpl     ] :=  4;
+   opclen[opjmpf     ] :=  0;
+   opclen[opjmpmf    ] :=  2;
+   opclen[opjmplf    ] :=  4;
+   opclen[oplahf     ] :=  0;
+   opclen[oplar      ] :=  0;
+   opclen[oplds      ] :=  0;
+   opclen[oples      ] :=  0;
+   opclen[oplfs      ] :=  0;
+   opclen[oplgs      ] :=  0;
+   opclen[oplss      ] :=  0;
+   opclen[oplea      ] :=  0;
+   opclen[opleave    ] :=  0;
+   opclen[oplgdtw    ] :=  2;
+   opclen[oplgdtd    ] :=  4;
+   opclen[oplidtw    ] :=  2;
+   opclen[oplidtd    ] :=  4;
+   opclen[oplldt     ] :=  2;
+   opclen[oplmsw     ] :=  2;
+   opclen[oplock     ] :=  0;
+   opclen[oplodsb    ] :=  1;
+   opclen[oplodsw    ] :=  2;
+   opclen[oplodsd    ] :=  4;
+   opclen[oploop     ] :=  1;
+   opclen[oploopw    ] :=  2;
+   opclen[oploopd    ] :=  4;
+   opclen[oploope    ] :=  1;
+   opclen[oploopew   ] :=  2;
+   opclen[oplooped   ] :=  4;
+   opclen[oploopz    ] :=  1;
+   opclen[oploopzw   ] :=  4;
+   opclen[oploopzd   ] :=  4;
+   opclen[oploopne   ] :=  1;
+   opclen[oploopnew  ] :=  2;
+   opclen[oploopned  ] :=  4;
+   opclen[oploopnz   ] :=  1;
+   opclen[oploopnzw  ] :=  2;
+   opclen[oploopnzd  ] :=  4;
+   opclen[oplsl      ] :=  0;
+   opclen[opltr      ] :=  2;
+   opclen[opmov      ] :=  0;
+   opclen[opmovb     ] :=  1;
+   opclen[opmovw     ] :=  2;
+   opclen[opmovd     ] :=  4;
+   opclen[opmovsb    ] :=  1;
+   opclen[opmovsw    ] :=  2;
+   opclen[opmovsd    ] :=  4;
+   opclen[opmovsx    ] :=  0;
+   opclen[opmovsxb   ] :=  1;
+   opclen[opmovsxw   ] :=  2;
+   opclen[opmovzx    ] :=  0;
+   opclen[opmovzxb   ] :=  1;
+   opclen[opmovzxw   ] :=  2;
+   opclen[opmul      ] :=  0;
+   opclen[opmulb     ] :=  1;
+   opclen[opmulw     ] :=  2;
+   opclen[opmuld     ] :=  4;
+   opclen[opneg      ] :=  0;
+   opclen[opnegb     ] :=  1;
+   opclen[opnegw     ] :=  2;
+   opclen[opnegd     ] :=  4;
+   opclen[opnop      ] :=  0;
+   opclen[opnot      ] :=  0;
+   opclen[opnotb     ] :=  1;
+   opclen[opnotw     ] :=  2;
+   opclen[opnotd     ] :=  4;
+   opclen[opor       ] :=  0;
+   opclen[oporb      ] :=  1;
+   opclen[oporw      ] :=  2;
+   opclen[opord      ] :=  4;
+   opclen[opout      ] :=  0;
+   opclen[opoutsb    ] :=  1;
+   opclen[opoutsw    ] :=  2;
+   opclen[opoutsd    ] :=  4;
+   opclen[oppop      ] :=  0;
+   opclen[oppopw     ] :=  2;
+   opclen[oppopd     ] :=  4;
+   opclen[oppopa     ] :=  0;
+   opclen[oppopad    ] :=  0;
+   opclen[oppopf     ] :=  0;
+   opclen[oppopfd    ] :=  0;
+   opclen[oppush     ] :=  0;
+   opclen[oppushb    ] :=  1;
+   opclen[oppushw    ] :=  2;
+   opclen[oppushd    ] :=  4;
+   opclen[oppusha    ] :=  0;
+   opclen[oppushad   ] :=  0;
+   opclen[oppushf    ] :=  0;
+   opclen[oppushfd   ] :=  0;
+   opclen[oprcl      ] :=  0;
+   opclen[oprclb     ] :=  1;
+   opclen[oprclw     ] :=  2;
+   opclen[oprcld     ] :=  4;
+   opclen[oprcr      ] :=  0;
+   opclen[oprcrb     ] :=  1;
+   opclen[oprcrw     ] :=  2;
+   opclen[oprcrd     ] :=  4;
+   opclen[oprol      ] :=  0;
+   opclen[oprolb     ] :=  1;
+   opclen[oprolw     ] :=  2;
+   opclen[oprold     ] :=  4;
+   opclen[opror      ] :=  0;
+   opclen[oprorb     ] :=  1;
+   opclen[oprorw     ] :=  2;
+   opclen[oprord     ] :=  4;
+   opclen[oprdmsr    ] :=  0;
+   opclen[oprep      ] :=  0;
+   opclen[oprepe     ] :=  0;
+   opclen[oprepz     ] :=  0;
+   opclen[oprepne    ] :=  0;
+   opclen[oprepnz    ] :=  0;
+   opclen[opret      ] :=  0;
+   opclen[opretf     ] :=  0;
+   opclen[oprsm      ] :=  0;
+   opclen[opsahf     ] :=  0;
+   opclen[opsal      ] :=  0;
+   opclen[opsalb     ] :=  1;
+   opclen[opsalw     ] :=  2;
+   opclen[opsald     ] :=  4;
+   opclen[opsar      ] :=  0;
+   opclen[opsarb     ] :=  1;
+   opclen[opsarw     ] :=  2;
+   opclen[opsard     ] :=  4;
+   opclen[opshl      ] :=  0;
+   opclen[opshlb     ] :=  1;
+   opclen[opshlw     ] :=  2;
+   opclen[opshld     ] :=  4;
+   opclen[opshr      ] :=  0;
+   opclen[opshrb     ] :=  1;
+   opclen[opshrw     ] :=  2;
+   opclen[opshrd     ] :=  4;
+   opclen[opsbb      ] :=  0;
+   opclen[opsbbb     ] :=  1;
+   opclen[opsbbw     ] :=  2;
+   opclen[opsbbd     ] :=  4;
+   opclen[opscasb    ] :=  1;
+   opclen[opscasw    ] :=  2;
+   opclen[opscasd    ] :=  4;
+   opclen[opseta     ] :=  1;
+   opclen[opsetae    ] :=  1;
+   opclen[opsetb     ] :=  1;
+   opclen[opsetbe    ] :=  1;
+   opclen[opsetc     ] :=  1;
+   opclen[opsete     ] :=  1;
+   opclen[opsetg     ] :=  1;
+   opclen[opsetge    ] :=  1;
+   opclen[opsetl     ] :=  1;
+   opclen[opsetle    ] :=  1;
+   opclen[opsetna    ] :=  1;
+   opclen[opsetnae   ] :=  1;
+   opclen[opsetnb    ] :=  1;
+   opclen[opsetnbe   ] :=  1;
+   opclen[opsetnc    ] :=  1;
+   opclen[opsetne    ] :=  1;
+   opclen[opsetng    ] :=  1;
+   opclen[opsetnge   ] :=  1;
+   opclen[opsetnl    ] :=  1;
+   opclen[opsetnle   ] :=  1;
+   opclen[opsetno    ] :=  1;
+   opclen[opsetnp    ] :=  1;
+   opclen[opsetns    ] :=  1;
+   opclen[opsetnz    ] :=  1;
+   opclen[opseto     ] :=  1;
+   opclen[opsetp     ] :=  1;
+   opclen[opsetpe    ] :=  1;
+   opclen[opsetpo    ] :=  1;
+   opclen[opsets     ] :=  1;
+   opclen[opsetz     ] :=  1;
+   opclen[opsgdtw    ] :=  2;
+   opclen[opsgdtd    ] :=  4;
+   opclen[opsidtw    ] :=  2;
+   opclen[opsidtd    ] :=  4;
+   opclen[opshldw    ] :=  2;
+   opclen[opshldd    ] :=  4;
+   opclen[opshrdw    ] :=  2;
+   opclen[opshrdd    ] :=  4;
+   opclen[opsldt     ] :=  2;
+   opclen[opsmsw     ] :=  2;
+   opclen[opstc      ] :=  0;
+   opclen[opstd      ] :=  0;
+   opclen[opsti      ] :=  0;
+   opclen[opstosb    ] :=  1;
+   opclen[opstosw    ] :=  2;
+   opclen[opstosd    ] :=  4;
+   opclen[opstr      ] :=  2;
+   opclen[opsub      ] :=  0;
+   opclen[opsubb     ] :=  1;
+   opclen[opsubw     ] :=  2;
+   opclen[opsubd     ] :=  4;
+   opclen[optest     ] :=  0;
+   opclen[optestb    ] :=  1;
+   opclen[optestw    ] :=  2;
+   opclen[optestd    ] :=  4;
+   opclen[opverr     ] :=  2;
+   opclen[opverw     ] :=  2;
+   opclen[opwait     ] :=  0;
+   opclen[opwbinvd   ] :=  0;
+   opclen[opwrmsr    ] :=  0;
+   opclen[opxadd     ] :=  0;
+   opclen[opxchg     ] :=  0;
+   opclen[opxlatb    ] :=  1;
+   opclen[opxor      ] :=  0;
+   opclen[opxorb     ] :=  1;
+   opclen[opxorw     ] :=  2;
+   opclen[opxord     ] :=  4;
+   opclen[opcs       ] :=  0;
+   opclen[opds       ] :=  0;
+   opclen[opes       ] :=  0;
+   opclen[opfs       ] :=  0;
+   opclen[opgs       ] :=  0;
+   opclen[opss       ] :=  0;
+   opclen[oplarge    ] :=  0;
+   opclen[opsmall    ] :=  0;
+   opclen[opfloat    ] :=  0;
+   opclen[opnfloat   ] :=  0;
+   opclen[opm86      ] :=  0;
+   opclen[opm186     ] :=  0;
+   opclen[opm286     ] :=  0;
+   opclen[opm386     ] :=  0;
+   opclen[opm486     ] :=  0;
+   opclen[opm586     ] :=  0;
+   opclen[opmacro    ] :=  0;
+   opclen[opendmac   ] :=  0;
+   opclen[opinclude  ] :=  0;
+   opclen[opequ      ] :=  0;
+   opclen[opglobal   ] :=  0;
+   opclen[opextern   ] :=  0;
+   opclen[opalignp   ] :=  0;
+   opclen[opalignv   ] :=  0;
+   opclen[opif       ] :=  0;
+   opclen[opelse     ] :=  0;
+   opclen[opelseif   ] :=  0;
+   opclen[opendif    ] :=  0;
+   opclen[opassm     ] :=  0;
+   opclen[opbendian  ] :=  0;
+   opclen[oplendian  ] :=  0;
+   opclen[opdefb     ] :=  0;
+   opclen[opdefps    ] :=  0;
+   opclen[opdefvs    ] :=  0;
+   opclen[opdefbe    ] :=  0;
+   opclen[opdefle    ] :=  0;
+   opclen[opdefbef   ] :=  0;
+   opclen[opdeflef   ] :=  0;
+   opclen[opdeff     ] :=  0;
+   opclen[opdefsf    ] :=  0;
+   opclen[opdeflf    ] :=  0;
+   opclen[opdefw     ] :=  0;
+   opclen[opdefhw    ] :=  0;
+   opclen[opdefdw    ] :=  0;
+   opclen[opdefqw    ] :=  0;
+   opclen[opdefseg   ] :=  0;
+   opclen[opdefsegm  ] :=  4;
+   opclen[opdefsegl  ] :=  6
+
+end;
+
+{*******************************************************************************
+
+Initalize operand size fix flags
+
+Operand sizes may be changed on most instructions by an operand size prefix.
+However, on many instructions, the operand size is specified by the
+instruction, and does not require a size prefix. For example, none of the
+floating point instructions use a prefix to indicate sizing, but have
+the size indicated by the instruction code instead. The operand size flag will
+indicate this. True means the instruction has an adjustable size.
+
+*******************************************************************************}
+
+procedure sadini;
+
+begin
+
+   opcsad[opaaa      ] := true;
+   opcsad[opaad      ] := true;
+   opcsad[opaam      ] := true;
+   opcsad[opaas      ] := true;
+   opcsad[opadc      ] := true;
+   opcsad[opadcb     ] := true;
+   opcsad[opadcw     ] := true;
+   opcsad[opadcd     ] := true;
+   opcsad[opadd      ] := true;
+   opcsad[opaddb     ] := true;
+   opcsad[opaddw     ] := true;
+   opcsad[opaddd     ] := true;
+   opcsad[opand      ] := true;
+   opcsad[opandb     ] := true;
+   opcsad[opandw     ] := true;
+   opcsad[opandd     ] := true;
+   opcsad[oparpl     ] := false;
+   opcsad[opbound    ] := true;
+   opcsad[opbsf      ] := true;
+   opcsad[opbsr      ] := true;
+   opcsad[opbswap    ] := true;
+   opcsad[opbt       ] := true;
+   opcsad[opbtw      ] := true;
+   opcsad[opbtd      ] := true;
+   opcsad[opbtc      ] := true;
+   opcsad[opbtcw     ] := true;
+   opcsad[opbtcd     ] := true;
+   opcsad[opbtr      ] := true;
+   opcsad[opbtrw     ] := true;
+   opcsad[opbtrd     ] := true;
+   opcsad[opbts      ] := true;
+   opcsad[opbtsw     ] := true;
+   opcsad[opbtsd     ] := true;
+   opcsad[opcall     ] := true;
+   opcsad[opcallm    ] := true;
+   opcsad[opcalll    ] := true;
+   opcsad[opcallf    ] := true;
+   opcsad[opcallmf   ] := true;
+   opcsad[opcalllf   ] := true;
+   opcsad[opcbw      ] := true;
+   opcsad[opcwde     ] := true;
+   opcsad[opclc      ] := true;
+   opcsad[opcld      ] := true;
+   opcsad[opcli      ] := true;
+   opcsad[opclts     ] := true;
+   opcsad[opcmc      ] := true;
+   opcsad[opcmp      ] := true;
+   opcsad[opcmpb     ] := true;
+   opcsad[opcmpw     ] := true;
+   opcsad[opcmpd     ] := true;
+   opcsad[opcmpsb    ] := true;
+   opcsad[opcmpsw    ] := true;
+   opcsad[opcmpsd    ] := true;
+   opcsad[opcmpxchg  ] := true;
+   opcsad[opcmpxchg8b] := true;
+   opcsad[opcpuid    ] := true;
+   opcsad[opcwd      ] := true;
+   opcsad[opcdq      ] := true;
+   opcsad[opdaa      ] := true;
+   opcsad[opdas      ] := true;
+   opcsad[opdec      ] := true;
+   opcsad[opdecb     ] := true;
+   opcsad[opdecw     ] := true;
+   opcsad[opdecd     ] := true;
+   opcsad[opdiv      ] := true;
+   opcsad[opdivb     ] := true;
+   opcsad[opdivw     ] := true;
+   opcsad[opdivd     ] := true;
+   opcsad[openter    ] := true;
+   opcsad[opf2xm1    ] := false;
+   opcsad[opfabs     ] := false;
+   opcsad[opfadd     ] := false;
+   opcsad[opfadds    ] := false;
+   opcsad[opfaddd    ] := false;
+   opcsad[opfaddp    ] := false;
+   opcsad[opfiadd    ] := false;
+   opcsad[opfiaddw   ] := false;
+   opcsad[opfiaddd   ] := false;
+   opcsad[opfbld     ] := false;
+   opcsad[opfbstp    ] := false;
+   opcsad[opfchs     ] := false;
+   opcsad[opfclex    ] := false;
+   opcsad[opfnclex   ] := false;
+   opcsad[opfcom     ] := false;
+   opcsad[opfcoms    ] := false;
+   opcsad[opfcomd    ] := false;
+   opcsad[opfcomp    ] := false;
+   opcsad[opfcomps   ] := false;
+   opcsad[opfcompd   ] := false;
+   opcsad[opfcompp   ] := false;
+   opcsad[opfcos     ] := false;
+   opcsad[opfdecstp  ] := false;
+   opcsad[opfdisi    ] := false;
+   opcsad[opfndisi   ] := false;
+   opcsad[opfdiv     ] := false;
+   opcsad[opfdivs    ] := false;
+   opcsad[opfdivd    ] := false;
+   opcsad[opfdivp    ] := false;
+   opcsad[opfidiv    ] := false;
+   opcsad[opfidivw   ] := false;
+   opcsad[opfidivd   ] := false;
+   opcsad[opfdivr    ] := false;
+   opcsad[opfdivrs   ] := false;
+   opcsad[opfdivrd   ] := false;
+   opcsad[opfdivrp   ] := false;
+   opcsad[opfeni     ] := false;
+   opcsad[opfneni    ] := false;
+   opcsad[opfidivr   ] := false;
+   opcsad[opfidivrw  ] := false;
+   opcsad[opfidivrd  ] := false;
+   opcsad[opffree    ] := false;
+   opcsad[opficom    ] := false;
+   opcsad[opficomw   ] := false;
+   opcsad[opficomd   ] := false;
+   opcsad[opficomp   ] := false;
+   opcsad[opficompw  ] := false;
+   opcsad[opficompd  ] := false;
+   opcsad[opfild     ] := false;
+   opcsad[opfildw    ] := false;
+   opcsad[opfildd    ] := false;
+   opcsad[opfildq    ] := false;
+   opcsad[opfincstp  ] := false;
+   opcsad[opfinit    ] := false;
+   opcsad[opfninit   ] := false;
+   opcsad[opfist     ] := false;
+   opcsad[opfistw    ] := false;
+   opcsad[opfistd    ] := false;
+   opcsad[opfistp    ] := false;
+   opcsad[opfistpw   ] := false;
+   opcsad[opfistpd   ] := false;
+   opcsad[opfistpq   ] := false;
+   opcsad[opfld      ] := false;
+   opcsad[opflds     ] := false;
+   opcsad[opfldd     ] := false;
+   opcsad[opfldl     ] := false;
+   opcsad[opfld1     ] := false;
+   opcsad[opfldl2t   ] := false;
+   opcsad[opfldl2e   ] := false;
+   opcsad[opfldpi    ] := false;
+   opcsad[opfldlg2   ] := false;
+   opcsad[opfldln2   ] := false;
+   opcsad[opfldz     ] := false;
+   opcsad[opfldcw    ] := false;
+   opcsad[opfldenvw  ] := false;
+   opcsad[opfldenvd  ] := false;
+   opcsad[opfmul     ] := false;
+   opcsad[opfmuls    ] := false;
+   opcsad[opfmuld    ] := false;
+   opcsad[opfmulp    ] := false;
+   opcsad[opfimul    ] := false;
+   opcsad[opfimulw   ] := false;
+   opcsad[opfimuld   ] := false;
+   opcsad[opfnop     ] := false;
+   opcsad[opfpatan   ] := false;
+   opcsad[opfprem    ] := false;
+   opcsad[opfprem1   ] := false;
+   opcsad[opfptan    ] := false;
+   opcsad[opfrndint  ] := false;
+   opcsad[opfrstorw  ] := false;
+   opcsad[opfrstord  ] := false;
+   opcsad[opfsetpm   ] := false;
+   opcsad[opfsavew   ] := false;
+   opcsad[opfsaved   ] := false;
+   opcsad[opfnsavew  ] := false;
+   opcsad[opfnsaved  ] := false;
+   opcsad[opfscale   ] := false;
+   opcsad[opfsin     ] := false;
+   opcsad[opfsincos  ] := false;
+   opcsad[opfsqrt    ] := false;
+   opcsad[opfst      ] := false;
+   opcsad[opfsts     ] := false;
+   opcsad[opfstd     ] := false;
+   opcsad[opfstp     ] := false;
+   opcsad[opfstps    ] := false;
+   opcsad[opfstpd    ] := false;
+   opcsad[opfstpl    ] := false;
+   opcsad[opfstcw    ] := false;
+   opcsad[opfnstcw   ] := false;
+   opcsad[opfstenvw  ] := false;
+   opcsad[opfstenvd  ] := false;
+   opcsad[opfnstenvw ] := false;
+   opcsad[opfnstenvd ] := false;
+   opcsad[opfstsw    ] := false;
+   opcsad[opfnstsw   ] := false;
+   opcsad[opfsub     ] := false;
+   opcsad[opfsubs    ] := false;
+   opcsad[opfsubd    ] := false;
+   opcsad[opfsubp    ] := false;
+   opcsad[opfisub    ] := false;
+   opcsad[opfisubw   ] := false;
+   opcsad[opfisubd   ] := false;
+   opcsad[opfsubr    ] := false;
+   opcsad[opfsubrs   ] := false;
+   opcsad[opfsubrd   ] := false;
+   opcsad[opfsubrp   ] := false;
+   opcsad[opfisubr   ] := false;
+   opcsad[opfisubrw  ] := false;
+   opcsad[opfisubrd  ] := false;
+   opcsad[opftst     ] := false;
+   opcsad[opfucom    ] := false;
+   opcsad[opfucomp   ] := false;
+   opcsad[opfucompp  ] := false;
+   opcsad[opfwait    ] := false;
+   opcsad[opfxam     ] := false;
+   opcsad[opfxch     ] := false;
+   opcsad[opfxtract  ] := false;
+   opcsad[opfyl2x    ] := false;
+   opcsad[opfyl2xp1  ] := false;
+   opcsad[ophlt      ] := true;
+   opcsad[opidiv     ] := true;
+   opcsad[opidivb    ] := true;
+   opcsad[opidivw    ] := true;
+   opcsad[opidivd    ] := true;
+   opcsad[opimul     ] := true;
+   opcsad[opimulb    ] := true;
+   opcsad[opimulw    ] := true;
+   opcsad[opimuld    ] := true;
+   opcsad[opin       ] := true;
+   opcsad[opinc      ] := true;
+   opcsad[opincb     ] := true;
+   opcsad[opincw     ] := true;
+   opcsad[opincd     ] := true;
+   opcsad[opinsb     ] := true;
+   opcsad[opinsw     ] := true;
+   opcsad[opinsd     ] := true;
+   opcsad[opint      ] := true;
+   opcsad[opinto     ] := true;
+   opcsad[opinvd     ] := true;
+   opcsad[opinvlpg   ] := true;
+   opcsad[opiret     ] := true;
+   opcsad[opiretd    ] := true;
+   opcsad[opja       ] := true;
+   opcsad[opjae      ] := true;
+   opcsad[opjb       ] := true;
+   opcsad[opjbe      ] := true;
+   opcsad[opjc       ] := true;
+   opcsad[opjcxz     ] := true;
+   opcsad[opjecxz    ] := true;
+   opcsad[opje       ] := true;
+   opcsad[opjz       ] := true;
+   opcsad[opjg       ] := true;
+   opcsad[opjge      ] := true;
+   opcsad[opjl       ] := true;
+   opcsad[opjle      ] := true;
+   opcsad[opjna      ] := true;
+   opcsad[opjnae     ] := true;
+   opcsad[opjnb      ] := true;
+   opcsad[opjnbe     ] := true;
+   opcsad[opjnc      ] := true;
+   opcsad[opjne      ] := true;
+   opcsad[opjng      ] := true;
+   opcsad[opjnge     ] := true;
+   opcsad[opjnl      ] := true;
+   opcsad[opjnle     ] := true;
+   opcsad[opjno      ] := true;
+   opcsad[opjnp      ] := true;
+   opcsad[opjns      ] := true;
+   opcsad[opjnz      ] := true;
+   opcsad[opjo       ] := true;
+   opcsad[opjp       ] := true;
+   opcsad[opjpe      ] := true;
+   opcsad[opjpo      ] := true;
+   opcsad[opjs       ] := true;
+   opcsad[opjz       ] := true;
+   opcsad[opjas      ] := true;
+   opcsad[opjaes     ] := true;
+   opcsad[opjbs      ] := true;
+   opcsad[opjbes     ] := true;
+   opcsad[opjcs      ] := true;
+   opcsad[opjes      ] := true;
+   opcsad[opjzs      ] := true;
+   opcsad[opjgs      ] := true;
+   opcsad[opjges     ] := true;
+   opcsad[opjls      ] := true;
+   opcsad[opjles     ] := true;
+   opcsad[opjnas     ] := true;
+   opcsad[opjnaes    ] := true;
+   opcsad[opjnbs     ] := true;
+   opcsad[opjnbes    ] := true;
+   opcsad[opjncs     ] := true;
+   opcsad[opjnes     ] := true;
+   opcsad[opjngs     ] := true;
+   opcsad[opjnges    ] := true;
+   opcsad[opjnls     ] := true;
+   opcsad[opjnles    ] := true;
+   opcsad[opjnos     ] := true;
+   opcsad[opjnps     ] := true;
+   opcsad[opjnss     ] := true;
+   opcsad[opjnzs     ] := true;
+   opcsad[opjos      ] := true;
+   opcsad[opjps      ] := true;
+   opcsad[opjpes     ] := true;
+   opcsad[opjpos     ] := true;
+   opcsad[opjss      ] := true;
+   opcsad[opjzs      ] := true;
+   opcsad[opjam      ] := true;
+   opcsad[opjaem     ] := true;
+   opcsad[opjbm      ] := true;
+   opcsad[opjbem     ] := true;
+   opcsad[opjcm      ] := true;
+   opcsad[opjem      ] := true;
+   opcsad[opjzm      ] := true;
+   opcsad[opjgm      ] := true;
+   opcsad[opjgem     ] := true;
+   opcsad[opjlm      ] := true;
+   opcsad[opjlem     ] := true;
+   opcsad[opjnam     ] := true;
+   opcsad[opjnaem    ] := true;
+   opcsad[opjnbm     ] := true;
+   opcsad[opjnbem    ] := true;
+   opcsad[opjncm     ] := true;
+   opcsad[opjnem     ] := true;
+   opcsad[opjngm     ] := true;
+   opcsad[opjngem    ] := true;
+   opcsad[opjnlm     ] := true;
+   opcsad[opjnlem    ] := true;
+   opcsad[opjnom     ] := true;
+   opcsad[opjnpm     ] := true;
+   opcsad[opjnsm     ] := true;
+   opcsad[opjnzm     ] := true;
+   opcsad[opjom      ] := true;
+   opcsad[opjpm      ] := true;
+   opcsad[opjpem     ] := true;
+   opcsad[opjpom     ] := true;
+   opcsad[opjsm      ] := true;
+   opcsad[opjzm      ] := true;
+   opcsad[opjal      ] := true;
+   opcsad[opjael     ] := true;
+   opcsad[opjbl      ] := true;
+   opcsad[opjbel     ] := true;
+   opcsad[opjcl      ] := true;
+   opcsad[opjel      ] := true;
+   opcsad[opjzl      ] := true;
+   opcsad[opjgl      ] := true;
+   opcsad[opjgel     ] := true;
+   opcsad[opjll      ] := true;
+   opcsad[opjlel     ] := true;
+   opcsad[opjnal     ] := true;
+   opcsad[opjnael    ] := true;
+   opcsad[opjnbl     ] := true;
+   opcsad[opjnbel    ] := true;
+   opcsad[opjncl     ] := true;
+   opcsad[opjnel     ] := true;
+   opcsad[opjngl     ] := true;
+   opcsad[opjngel    ] := true;
+   opcsad[opjnll     ] := true;
+   opcsad[opjnlel    ] := true;
+   opcsad[opjnol     ] := true;
+   opcsad[opjnpl     ] := true;
+   opcsad[opjnsl     ] := true;
+   opcsad[opjnzl     ] := true;
+   opcsad[opjol      ] := true;
+   opcsad[opjpl      ] := true;
+   opcsad[opjpel     ] := true;
+   opcsad[opjpol     ] := true;
+   opcsad[opjsl      ] := true;
+   opcsad[opjzl      ] := true;
+   opcsad[opjmp      ] := true;
+   opcsad[opjmps     ] := true;
+   opcsad[opjmpm     ] := true;
+   opcsad[opjmpl     ] := true;
+   opcsad[opjmpf     ] := true;
+   opcsad[opjmpmf    ] := true;
+   opcsad[opjmplf    ] := true;
+   opcsad[oplahf     ] := true;
+   opcsad[oplar      ] := true;
+   opcsad[oplds      ] := true;
+   opcsad[oples      ] := true;
+   opcsad[oplfs      ] := true;
+   opcsad[oplgs      ] := true;
+   opcsad[oplss      ] := true;
+   opcsad[oplea      ] := true;
+   opcsad[opleave    ] := true;
+   opcsad[oplgdtw    ] := true;
+   opcsad[oplgdtd    ] := true;
+   opcsad[oplidtw    ] := true;
+   opcsad[oplidtd    ] := true;
+   opcsad[oplldt     ] := false;
+   opcsad[oplmsw     ] := false;
+   opcsad[oplock     ] := true;
+   opcsad[oplodsb    ] := true;
+   opcsad[oplodsw    ] := true;
+   opcsad[oplodsd    ] := true;
+   opcsad[oploop     ] := true;
+   opcsad[oploopw    ] := true;
+   opcsad[oploopd    ] := true;
+   opcsad[oploope    ] := true;
+   opcsad[oploopew   ] := true;
+   opcsad[oplooped   ] := true;
+   opcsad[oploopz    ] := true;
+   opcsad[oploopzw   ] := true;
+   opcsad[oploopzd   ] := true;
+   opcsad[oploopne   ] := true;
+   opcsad[oploopnew  ] := true;
+   opcsad[oploopned  ] := true;
+   opcsad[oploopnz   ] := true;
+   opcsad[oploopnzw  ] := true;
+   opcsad[oploopnzd  ] := true;
+   opcsad[oplsl      ] := true;
+   opcsad[opltr      ] := false;
+   opcsad[opmov      ] := false;
+   opcsad[opmovb     ] := false;
+   opcsad[opmovw     ] := false;
+   opcsad[opmovd     ] := false;
+   opcsad[opmovsb    ] := true;
+   opcsad[opmovsw    ] := true;
+   opcsad[opmovsd    ] := true;
+   opcsad[opmovsx    ] := true;
+   opcsad[opmovsxb   ] := true;
+   opcsad[opmovsxw   ] := true;
+   opcsad[opmovzx    ] := true;
+   opcsad[opmovzxb   ] := true;
+   opcsad[opmovzxw   ] := true;
+   opcsad[opmul      ] := true;
+   opcsad[opmulb     ] := true;
+   opcsad[opmulw     ] := true;
+   opcsad[opmuld     ] := true;
+   opcsad[opneg      ] := true;
+   opcsad[opnegb     ] := true;
+   opcsad[opnegw     ] := true;
+   opcsad[opnegd     ] := true;
+   opcsad[opnop      ] := true;
+   opcsad[opnot      ] := true;
+   opcsad[opnotb     ] := true;
+   opcsad[opnotw     ] := true;
+   opcsad[opnotd     ] := true;
+   opcsad[opor       ] := true;
+   opcsad[oporb      ] := true;
+   opcsad[oporw      ] := true;
+   opcsad[opord      ] := true;
+   opcsad[opout      ] := true;
+   opcsad[opoutsb    ] := true;
+   opcsad[opoutsw    ] := true;
+   opcsad[opoutsd    ] := true;
+   opcsad[oppop      ] := false;
+   opcsad[oppopw     ] := false;
+   opcsad[oppopd     ] := false;
+   opcsad[oppopa     ] := true;
+   opcsad[oppopad    ] := true;
+   opcsad[oppopf     ] := true;
+   opcsad[oppopfd    ] := true;
+   opcsad[oppush     ] := false;
+   opcsad[oppushb    ] := false;
+   opcsad[oppushw    ] := false;
+   opcsad[oppushd    ] := false;
+   opcsad[oppusha    ] := true;
+   opcsad[oppushad   ] := true;
+   opcsad[oppushf    ] := true;
+   opcsad[oppushfd   ] := true;
+   opcsad[oprcl      ] := true;
+   opcsad[oprclb     ] := true;
+   opcsad[oprclw     ] := true;
+   opcsad[oprcld     ] := true;
+   opcsad[oprcr      ] := true;
+   opcsad[oprcrb     ] := true;
+   opcsad[oprcrw     ] := true;
+   opcsad[oprcrd     ] := true;
+   opcsad[oprol      ] := true;
+   opcsad[oprolb     ] := true;
+   opcsad[oprolw     ] := true;
+   opcsad[oprold     ] := true;
+   opcsad[opror      ] := true;
+   opcsad[oprorb     ] := true;
+   opcsad[oprorw     ] := true;
+   opcsad[oprord     ] := true;
+   opcsad[oprdmsr    ] := true;
+   opcsad[oprep      ] := true;
+   opcsad[oprepe     ] := true;
+   opcsad[oprepz     ] := true;
+   opcsad[oprepne    ] := true;
+   opcsad[oprepnz    ] := true;
+   opcsad[opret      ] := true;
+   opcsad[opretf     ] := true;
+   opcsad[oprsm      ] := true;
+   opcsad[opsahf     ] := true;
+   opcsad[opsal      ] := true;
+   opcsad[opsalb     ] := true;
+   opcsad[opsalw     ] := true;
+   opcsad[opsald     ] := true;
+   opcsad[opsar      ] := true;
+   opcsad[opsarb     ] := true;
+   opcsad[opsarw     ] := true;
+   opcsad[opsard     ] := true;
+   opcsad[opshl      ] := true;
+   opcsad[opshlb     ] := true;
+   opcsad[opshlw     ] := true;
+   opcsad[opshld     ] := true;
+   opcsad[opshr      ] := true;
+   opcsad[opshrb     ] := true;
+   opcsad[opshrw     ] := true;
+   opcsad[opshrd     ] := true;
+   opcsad[opsbb      ] := true;
+   opcsad[opsbbb     ] := true;
+   opcsad[opsbbw     ] := true;
+   opcsad[opsbbd     ] := true;
+   opcsad[opscasb    ] := true;
+   opcsad[opscasw    ] := true;
+   opcsad[opscasd    ] := true;
+   opcsad[opseta     ] := true;
+   opcsad[opsetae    ] := true;
+   opcsad[opsetb     ] := true;
+   opcsad[opsetbe    ] := true;
+   opcsad[opsetc     ] := true;
+   opcsad[opsete     ] := true;
+   opcsad[opsetg     ] := true;
+   opcsad[opsetge    ] := true;
+   opcsad[opsetl     ] := true;
+   opcsad[opsetle    ] := true;
+   opcsad[opsetna    ] := true;
+   opcsad[opsetnae   ] := true;
+   opcsad[opsetnb    ] := true;
+   opcsad[opsetnbe   ] := true;
+   opcsad[opsetnc    ] := true;
+   opcsad[opsetne    ] := true;
+   opcsad[opsetng    ] := true;
+   opcsad[opsetnge   ] := true;
+   opcsad[opsetnl    ] := true;
+   opcsad[opsetnle   ] := true;
+   opcsad[opsetno    ] := true;
+   opcsad[opsetnp    ] := true;
+   opcsad[opsetns    ] := true;
+   opcsad[opsetnz    ] := true;
+   opcsad[opseto     ] := true;
+   opcsad[opsetp     ] := true;
+   opcsad[opsetpe    ] := true;
+   opcsad[opsetpo    ] := true;
+   opcsad[opsets     ] := true;
+   opcsad[opsetz     ] := true;
+   opcsad[opsgdtw    ] := true;
+   opcsad[opsgdtd    ] := true;
+   opcsad[opsidtw    ] := true;
+   opcsad[opsidtd    ] := true;
+   opcsad[opshldw    ] := true;
+   opcsad[opshldd    ] := true;
+   opcsad[opshrdw    ] := true;
+   opcsad[opshrdd    ] := true;
+   opcsad[opsldt     ] := false;
+   opcsad[opsmsw     ] := false;
+   opcsad[opstc      ] := true;
+   opcsad[opstd      ] := true;
+   opcsad[opsti      ] := true;
+   opcsad[opstosb    ] := true;
+   opcsad[opstosw    ] := true;
+   opcsad[opstosd    ] := true;
+   opcsad[opstr      ] := false;
+   opcsad[opsub      ] := true;
+   opcsad[opsubb     ] := true;
+   opcsad[opsubw     ] := true;
+   opcsad[opsubd     ] := true;
+   opcsad[optest     ] := true;
+   opcsad[optestb    ] := true;
+   opcsad[optestw    ] := true;
+   opcsad[optestd    ] := true;
+   opcsad[opverr     ] := false;
+   opcsad[opverw     ] := false;
+   opcsad[opwait     ] := true;
+   opcsad[opwbinvd   ] := true;
+   opcsad[opwrmsr    ] := true;
+   opcsad[opxadd     ] := true;
+   opcsad[opxchg     ] := true;
+   opcsad[opxlatb    ] := true;
+   opcsad[opxor      ] := true;
+   opcsad[opxorb     ] := true;
+   opcsad[opxorw     ] := true;
+   opcsad[opxord     ] := true;
+   opcsad[opcs       ] := false;
+   opcsad[opds       ] := false;
+   opcsad[opes       ] := false;
+   opcsad[opfs       ] := false;
+   opcsad[opgs       ] := false;
+   opcsad[opss       ] := false;
+   opcsad[oplarge    ] := false;
+   opcsad[opsmall    ] := false;
+   opcsad[opfloat    ] := false;
+   opcsad[opnfloat   ] := false;
+   opcsad[opm86      ] := false;
+   opcsad[opm186     ] := false;
+   opcsad[opm286     ] := false;
+   opcsad[opm386     ] := false;
+   opcsad[opm486     ] := false;
+   opcsad[opm586     ] := false;
+   opcsad[opmacro    ] := false;
+   opcsad[opendmac   ] := false;
+   opcsad[opinclude  ] := false;
+   opcsad[opequ      ] := false;
+   opcsad[opglobal   ] := false;
+   opcsad[opextern   ] := false;
+   opcsad[opalignp   ] := false;
+   opcsad[opalignv   ] := false;
+   opcsad[opif       ] := false;
+   opcsad[opelse     ] := false;
+   opcsad[opelseif   ] := false;
+   opcsad[opendif    ] := false;
+   opcsad[opassm     ] := false;
+   opcsad[opbendian  ] := false;
+   opcsad[oplendian  ] := false;
+   opcsad[opdefb     ] := false;
+   opcsad[opdefps    ] := false;
+   opcsad[opdefvs    ] := false;
+   opcsad[opdefbe    ] := false;
+   opcsad[opdefle    ] := false;
+   opcsad[opdefbef   ] := false;
+   opcsad[opdeflef   ] := false;
+   opcsad[opdeff     ] := false;
+   opcsad[opdefsf    ] := false;
+   opcsad[opdeflf    ] := false;
+   opcsad[opdefw     ] := false;
+   opcsad[opdefhw    ] := false;
+   opcsad[opdefdw    ] := false;
+   opcsad[opdefqw    ] := false
+
+end;
+
+{*******************************************************************************
+
+Initalize CPU dependent module for 80586
+
+*******************************************************************************}
+
+procedure inidep;
+
+var i: opcodet;
+
+begin
+
+   { output sign - on }
+   writeln;
+   writeln('80586 assembler vs. 1.13.09 Copyright (C) 2006 S. A. Moore');
+   writeln;
+   alignment := cpualign; { set CPU alignment }
+   bigend := cpubigend; { set CPU endian status }
+   wrdsiz := cpuwrdsiz; { set CPU word size }
+   large := true; { set large model as default mode }
+   float := true; { set floating point instructions enabled }
+   cmachine := mt586; { default to 80586 (most capable machine) }
+   { set check for registers }
+   regset := [rgal, rgah, rgbl, rgbh, rgcl, rgch, rgdl, rgdh, rgax, rgbx, rgcx,
+              rgdx, rgbp, rgsi, rgdi, rgsp, rgeax, rgebx, rgecx, rgedx, rgebp, 
+              rgesi, rgedi, rgesp];
+   { set check for segment registers }
+   segset := [rgcs, rgss, rgds, rges, rgfs, rggs];
+   { set check for word registers }
+   wrgset := [rgax, rgbx, rgcx, rgdx, rgbp, rgsi, rgdi, rgsp];
+   { set check for byte registers }
+   brgset := [rgal, rgah, rgbl, rgbh, rgcl, rgch, rgdl, rgdh];
+   { set check for double word registers }
+   drgset := [rgeax, rgebx, rgecx, rgedx, rgebp, rgesi, rgedi, rgesp];
+   { set check for "large" registers, or 16 bit + 32 bit }
+   lrgset := wrgset+drgset;
+   { set check for memory reference modes }
+   adrset := [rgiad, rgir, rgird, rgirs, rgirsd, rgirr, rgirrd, rgirrs, 
+              rgirrsd];
+   { set check for r/m modes }
+   rmset := regset+adrset;
+   { check for drx registers }
+   drset := [rgdr0, rgdr1, rgdr2, rgdr3, rgdr6, rgdr7];
+   trset := [rgtr4, rgtr5, rgtr6, rgtr7]; { check for trx registers }
+   crset := [rgcr0, rgcr2, rgcr3, rgcr4]; { check for crx registers }
+   spcset := drset+trset+crset; { "special" registers }
+   { clear and initalize reserved table }
+   for i := opnull to opendif do begin
+
+      copy(ressym[i].reslab, '');
+      ressym[i].reschn := opnull
+
+   end;
+   resini; { initalize resevered symbols }
+   rszini; { initalize register sizes }
+   oszini; { initalize opcode sizes }
+   sadini { initalize operand size flags }
+
+end;
+
+{******************************************************************************
+
+Process register code
+
+Checks if the next label matches any one of the simple register labels. If not,
+the null register code is returned. This means that the operand is a complex,
+or is invalid. If a register is found, the input position is set to past the
+register label. Otherwise, the input position is left unchanged.
+
+******************************************************************************}
+
+procedure regcod(var reg: regc); { register return }
+
+var inpsav: inpinx; { input postion save for backtrack }
+
+begin
+
+   inpsav := cmdrot^.inp; { save current input position }
+   skpspc; { skip input spaces }
+   if alpha(chkchr) then begin { possible register }
+
+      getlab; { get register }
+      if compp(labbuf, 'al') then
+         reg := rgal { al }
+      else if compp(labbuf, 'ah') then
+         reg := rgah { ah }
+      else if compp(labbuf, 'bl') then
+         reg := rgbl { bl }
+      else if compp(labbuf, 'bh') then
+         reg := rgbh { bh }
+      else if compp(labbuf, 'cl') then
+         reg := rgcl { cl }
+      else if compp(labbuf, 'ch') then
+         reg := rgch { ch }
+      else if compp(labbuf, 'dl') then
+         reg := rgdl { dl }
+      else if compp(labbuf, 'dh') then
+         reg := rgdh { dh }
+      else if compp(labbuf, 'ax') then
+         reg := rgax { ax }
+      else if compp(labbuf, 'bx') then
+         reg := rgbx { bx }
+      else if compp(labbuf, 'cx') then
+         reg := rgcx { cx }
+      else if compp(labbuf, 'dx') then
+         reg := rgdx { dx }
+      else if compp(labbuf, 'bp') then
+         reg := rgbp { bp }
+      else if compp(labbuf, 'si') then
+         reg := rgsi { si }
+      else if compp(labbuf, 'di') then
+         reg := rgdi { di }
+      else if compp(labbuf, 'sp') then
+         reg := rgsp { sp }
+      else if compp(labbuf, 'cs') then
+         reg := rgcs { cs }
+      else if compp(labbuf, 'ss') then
+         reg := rgss { ss }
+      else if compp(labbuf, 'ds') then
+         reg := rgds { ds }
+      else if compp(labbuf, 'es') then
+         reg := rges { es }
+      else if compp(labbuf, 'fs') then
+         reg := rgfs { fs }
+      else if compp(labbuf, 'gs') then
+         reg := rggs { gs }
+      else if compp(labbuf, 'eax') then
+         reg := rgeax { eax }
+      else if compp(labbuf, 'ebx') then
+         reg := rgebx { ebx }
+      else if compp(labbuf, 'ecx') then
+         reg := rgecx { ecx }
+      else if compp(labbuf, 'edx') then
+         reg := rgedx { edx }
+      else if compp(labbuf, 'ebp') then
+         reg := rgebp { ebp }
+      else if compp(labbuf, 'esi') then
+         reg := rgesi { esi }
+      else if compp(labbuf, 'edi') then
+         reg := rgedi { edi }
+      else if compp(labbuf, 'esp') then
+         reg := rgesp { esp }
+      else if compp(labbuf, 'cr0') then
+         reg := rgcr0 { cr0 }
+      else if compp(labbuf, 'cr2') then
+         reg := rgcr2 { cr2 }
+      else if compp(labbuf, 'cr3') then
+         reg := rgcr3 { cr3 }
+      else if compp(labbuf, 'cr4') then
+         reg := rgcr4 { cr4 }
+      else if compp(labbuf, 'dr0') then
+         reg := rgdr0 { dr0 }
+      else if compp(labbuf, 'dr1') then
+         reg := rgdr1 { dr1 }
+      else if compp(labbuf, 'dr2') then
+         reg := rgdr2 { dr2 }
+      else if compp(labbuf, 'dr3') then
+         reg := rgdr3 { dr3 }
+      else if compp(labbuf, 'dr6') then
+         reg := rgdr6 { dr6 }
+      else if compp(labbuf, 'dr7') then
+         reg := rgdr7 { dr7 }
+      else if compp(labbuf, 'tr4') then
+         reg := rgtr4 { dr7 }
+      else if compp(labbuf, 'tr5') then
+         reg := rgtr5 { dr7 }
+      else if compp(labbuf, 'tr6') then
+         reg := rgtr6 { dr7 }
+      else if compp(labbuf, 'tr7') then
+         reg := rgtr7 { dr7 }
+      else if compp(labbuf, 'st ') then
+         reg := rgst { st }
+      else begin
+
+         reg := rgnl; { set null register }
+         cmdrot^.inp := inpsav { restore input position }
+
+      end
+
+   end else begin
+
+      reg := rgnl; { set null register }
+      cmdrot^.inp := inpsav { restore input postion }
+
+   end;
+
+end;
+
+{******************************************************************************
+
+Find address mode
+
+Given a parsed parameter, finds the address mode size and places that in the
+parameter record. This will be 2 or 4, or 0 if no specific model is required.
+The only modes for which no specific model is required is loads of immediate
+data and access to byte registers.
+
+******************************************************************************}
+
+procedure adrsiz(var p: parrec); { register/mode }
+
+var os: opsize; { displacement size holder }
+
+begin
+
+   p.as := 0; { set no specific model required }
+   { get displacement size, if applicable }
+   if p.vl <> nil then os := dispsz(p.vl) else os := 0;
+   { if either register is dword, or a scaling mode is used, or the mode
+     is indirect address with dword address, then large model required }
+   if (p.rb in drgset) or (p.ri in drgset) or (p.m in [rgirrs, rgirrsd]) or
+      ((p.m = rgiad) and (os = 4)) then p.as := 4 { large model }
+   else if (p.rb in wrgset) or (p.ri in wrgset) or 
+           ((p.m = rgiad) and (os <= 2)) then 
+      p.as := 2 { small model }
+
+end;
+
+{*******************************************************************************
+
+Parse parameter
+
+Parses a complete 80586 operand or address specification. Processes the
+following forms:
+
+        reg
+        [addr]
+        [reg]
+        disp[reg]
+        [reg*s]
+        disp[reg*s]
+        [reg+reg]
+        disp[reg+reg]
+        [reg+reg*s]
+        disp[reg+reg*s]
+
+The first register/mode parameter gives either a simple register or a mode.
+The two register parameters, along with the scale factor and displacement,
+give the complete specifications for an extended address mode. The two register
+parameters are returned null if not used, so that you can determine if one is
+used regardless of what the primary register/mode is.
+
+*******************************************************************************}
+
+procedure parcod(var p: parrec); { parameter record }
+
+{ parse [ind] construct }
+
+procedure parind;
+
+begin
+
+   getchr; { skip '[' }
+   regcod(p.rb); { find type of next }
+   if p.rb = rgnl then begin { [addr] }
+
+      { check working on disp[reg..] form }
+      if p.m = rgird then prterr(eregexp); { register expected }
+      nexpr(p.vl); { parse displacement }
+      p.m := rgiad; { set as [addr] }
+      p.rb := rgnl { clear parameter register }
+
+   end else begin { [reg..] }
+
+      if p.m <> rgird then p.m := rgir; { set as [reg] }
+      if not (p.rb in [rgbx, rgbp, rgsi, rgdi, rgeax, rgebx, rgecx, rgedx, 
+                     rgesi, rgedi, rgebp, rgesp]) then 
+         prterr(eregt); { register is wrong type }
+      skpspc; { skip spaces }
+      if chkchr = '+' then begin { [reg+reg..] }
+
+         getchr; { skip '+' }
+         regcod(p.ri); { find type of next }
+         if not (p.ri in [rgsi, rgdi, rgeax, rgebx, rgecx, rgedx, rgebp, 
+                     rgesi, rgedi]) then
+            prterr(eregt); { register is wrong type }
+         if (p.rb in [rgbx, rgbp]) and not (p.ri in [rgsi, rgdi]) then
+            prterr(eregt); { bad register combination }
+         { type operation }
+         if p.m = rgird then p.m := rgirrd else p.m := rgirr
+
+      end;
+      skpspc; { skip spaces }
+      if chkchr = '*' then begin { [reg..*s] }
+         
+         getchr; { skip '*' }
+         nexpr(p.sc); { parse scale factor }
+         case p.m of { type }
+
+            rgir:   p.m := rgirs;  { [reg*s] }
+            rgird:  p.m := rgirsd; { disp[reg*s] }
+            rgirr:  p.m := rgirrs; { [reg+reg*s] }
+            rgirrd: p.m := rgirrsd { disp[reg+reg*s] }
+
+         end
+
+      end;
+
+   end;
+   skpspc; { skip spaces }
+   prcnxt(']', erbkexp) { check ']' }
+
+end;
+
+begin
+
+   skpspc; { skip spaces }
+   p.m := rgnl; { clear result }
+   p.rb := rgnl; { clear parameter registers }
+   p.ri := rgnl;
+   p.sc := nil; { clear value symbols }
+   p.vl := nil;
+   if chkchr = '[' then parind { indirect mode }
+   else begin { immediate, displacement or register }
+
+      regcod(p.m); { find type of next }
+      if p.m = rgnl then begin { immediate or displacement }
+
+         nexpr(p.vl); { parse expression }
+         skpspc; { skip spaces }
+         p.m := rgird; { assume it's disp[reg] }
+         if chkchr = '[' then parind { indirect mode }
+         else p.m := rgimm { change to immediate mode }
+
+      end else if p.m = rgst then begin { st[(x)] (stack relative address) }
+
+         skpspc; { skip spaces }
+         if chkchr = '(' then begin { an address is specified }
+   
+            getchr; { skip '(' }
+            nexpr(p.vl); { parse expression }
+            skpspc;
+            prcnxt(')', erpexp); { skip ')' }
+            if absolute(p.vl) and 
+               ((p.vl^.val < 0) or (p.vl^.val > 7)) then 
+               prterr(epoor); { parameter out of range }
+            p.m := rgstr { set st(r) type }
+
+         end
+         
+      end { else is register }
+
+   end;
+   adrsiz(p) { find address size for parameter }
+
+end;
+
+{*******************************************************************************
+
+Convert single register
+
+Converts a single register to a 3 bit code. Accepts any 8, 16 or 32 bit
+general register.
+
+*******************************************************************************}
+
+function sreg(p: regc): byte;
+
+var r: byte;
+
+begin
+
+   case p of
+
+      rgnl, rgimm, rgiad, rgir, rgird, rgirr, rgirrd, rgirrs, 
+      rgirrsd: prterr(emodt); { wrong type }
+      rgal:  r := 0; { al }
+      rgah:  r := 4; { ah }
+      rgbl:  r := 3; { bl }
+      rgbh:  r := 7; { bh }
+      rgcl:  r := 1; { cl }
+      rgch:  r := 5; { ch }
+      rgdl:  r := 2; { dl }
+      rgdh:  r := 6; { dh }
+      rgax:  r := 0; { ax }
+      rgbx:  r := 3; { bx }
+      rgcx:  r := 1; { cx }
+      rgdx:  r := 2; { dx }
+      rgsp:  r := 4; { sp }
+      rgbp:  r := 5; { bp }
+      rgsi:  r := 6; { si }
+      rgdi:  r := 7; { di }
+      rgeax: r := 0; { eax }
+      rgebx: r := 3; { ebx }
+      rgecx: r := 1; { ecx }
+      rgedx: r := 2; { edx }
+      rgesp: r := 4; { esp }
+      rgebp: r := 5; { ebp }
+      rgesi: r := 6; { esi }
+      rgedi: r := 7; { edi }
+      rges:  r := 0; { es }
+      rgcs:  r := 1; { cs }
+      rgss:  r := 2; { ss }
+      rgds:  r := 3; { ds }
+      rgfs:  r := 4; { fs }
+      rggs:  r := 5; { gs }
+      rgcr0: r := 0; { cr0 }
+      rgcr2: r := 2; { cr2 }
+      rgcr3: r := 3; { cr3 }
+      rgcr4: r := 4; { cr4 }
+      rgdr0: r := 0; { dr0 }
+      rgdr1: r := 1; { dr1 }
+      rgdr2: r := 2; { dr2 }
+      rgdr3: r := 3; { dr3 }
+      rgdr6: r := 6; { dr6 }
+      rgdr7: r := 7; { dr7 }
+      rgtr4: r := 4; { tr4 }
+      rgtr5: r := 5; { tr5 }
+      rgtr6: r := 6; { tr6 }
+      rgtr7: r := 7  { tr7 }
+
+   end;
+   sreg := r
+
+end;
+
+{*******************************************************************************
+
+Check symbol is absolute
+
+Checks if the given symbol is absolute, that is, if it is defined and will
+never change.
+
+*******************************************************************************}
+
+function absolute(s: symptr): boolean;
+
+begin
+
+   { check symbol is defined, and not typed address or variable }
+   absolute := s^.def and not s^.add and not s^.vrs
+
+end;
+
+{*******************************************************************************
+
+Find displacement size
+
+Given a displacement symbol (a signed number), will determine what size
+displacement is needed to contain it, in bytes. If the displacement is not
+defined, or is an address, then it gets the maximum of 4 bytes, which will then
+contain any possible displacement.
+
+*******************************************************************************}
+
+function dispsz(d: symptr): opsize;
+
+var sz: opsize; { operation size holder }
+
+begin
+
+   if absolute(d) then begin
+
+      { symbol is absolute }
+      if (d^.val <= 127) and (d^.val >= -128) then sz := 1 { byte }
+      else if (d^.val <= 32767) and 
+              (d^.val >= -32768) then sz := 2 { word }
+      else sz := 4 { dword }
+
+   end else begin { symbol not absolute }
+
+      { if the symbol is not absolute, it should be placed into the largest
+        possible size for the machine type. That way, it is most likely to
+        link without error }
+      if cmachine < mt386 then sz := 2 { if < 386, it must be a word }
+      else sz := 4; { >= 386, dword is ok }
+
+   end;
+   dispsz := sz { return size }
+
+end;
+
+{*******************************************************************************
+
+Generate address specification
+
+Given a single operand record, generates the full address specification, 
+including r/m byte, sib byte if required, and displacement if required. Also 
+accepts the large/small model in effect. This should indicate both the current 
+large/small state, and also if an address size prefix has been output. If the 
+prefix is required, this must be determined in advance, because the prefix 
+appears before the opcode.
+The starting r/m byte is given, which contains the register or opcode extention
+as determined by the operation.
+
+*******************************************************************************}
+
+procedure addr(rm: byte;    { beginning r/m byte }
+               p:  parrec); { parameter record }
+
+var sib: byte; { sib byte }
+
+{ modify r/m byte to reflect displacement }
+
+procedure setdis;
+
+begin
+
+   { set appropriate r/m modifier }
+   if dispsz(p.vl) = 1 then rm := rm+$40 else rm := rm+$80
+
+end;
+
+{ output displacement }
+
+procedure outdis;
+
+var ds: opsize; { size of displacement }
+
+begin
+
+   ds := dispsz(p.vl); { find size of displacement }
+   { if large model, and word required, promote to 32 bits, as that is the only
+     available mode }
+   if (p.as = 4) and (ds = 2) then ds := 4;
+   gensym(p.vl, 0, false, imnorm, 0, 0, ds*8) { output displacement }
+
+end;
+
+{ process scale factor }
+
+procedure fndscl;
+
+begin
+
+   if not p.sc^.def or p.sc^.add or p.sc^.vrs then 
+      prterr(epmba); { scale factor must be absolute }
+   if (p.sc^.val <> 2) and (p.sc^.val <> 4) and (p.sc^.val <> 8) then
+      prterr(eparam); { not a valid scale factor }
+   case p.sc^.val of { scale factor select }
+   
+      2: sib := $40;
+      4: sib := $80;
+      8: sib := $c0
+   
+   end
+
+end;
+
+begin
+
+   case p.m of
+
+      rgnl, rgcs, rgss, rgds, rges, rgfs, rggs, rgcr0, rgcr2, rgcr3, rgcr4, 
+      rgdr0, rgdr1, rgdr2, rgdr3, rgdr6, rgdr7, rgtr4, rgtr5, rgtr6, rgtr7,
+      rgimm: prterr(emodt); { register/mode type }
+      rgal, rgah, rgbl, rgbh, rgcl, rgch, rgdl, rgdh, rgax, rgbx, rgcx, 
+      rgdx, rgsp, rgbp, rgsi, rgdi, rgeax, rgebx, rgecx, rgedx, rgesp, rgebp, 
+      rgesi, rgedi: outbyt(rm+sreg(p.m)+$c0); { reg }
+      rgiad: begin { immediate indirect }
+
+         if p.as = 4 then begin { large model }
+
+            outbyt(rm+$05); { output r/m } 
+            gensym(p.vl, 0, false, imnorm, 0, 0, 4*8) { output displacement }
+
+         end else begin { small model }
+
+            outbyt(rm+$06); { output r/m }
+            gensym(p.vl, 0, false, imnorm, 0, 0, 2*8) { output displacement }
+
+         end
+
+      end;
+      rgir, rgird:  begin { [reg], disp[reg] }
+
+         if not (p.rb in [rgsi, rgdi, rgbx, rgbp, rgeax, rgecx, rgedx, rgebx,
+                        rgebp, rgesi, rgedi, rgesp]) then 
+            prterr(eregt); { invalid register }
+         if p.m = rgird then setdis; { set displacement modifier }
+         case p.rb of { register }
+
+            rgsi:  outbyt(rm+$04); { [si] }
+            rgdi:  outbyt(rm+$05); { [di] }
+            rgbp:  if p.m = rgir then { [bp], convert to 00[bp] }
+                      begin outbyt(rm+$46); outbyt(0) end
+                   else outbyt(rm+$06); { disp[bp] }
+            rgbx:  outbyt(rm+$07); { [bx] }
+            rgeax: outbyt(rm+$00); { [eax] }
+            rgecx: outbyt(rm+$01); { [ecx] }
+            rgedx: outbyt(rm+$02); { [edx] }
+            rgebx: outbyt(rm+$03); { [ebx] }
+            rgebp: if p.m = rgir then { [ebp], convert to 00[ebp] }
+                      begin outbyt(rm+$45); outbyt(0) end
+                   else outbyt(rm+$05); { disp[ebp] }
+            rgesi: outbyt(rm+$06); { [esi] }
+            rgedi: outbyt(rm+$07); { [edi] }
+            rgesp: begin outbyt(rm+$04); 
+                      outbyt($24) end { [esp], with sib }
+
+         end;
+         if p.m = rgird then outdis { output displacement }
+
+      end;
+      rgirs, rgirsd: begin { [reg*s], disp[reg*s] }
+
+         if not (p.rb in [rgeax, rgecx, rgedx, rgebx, rgebp, rgesi, 
+            rgedi]) then prterr(eregt); { invalid register }
+         outbyt(rm+$04); { output r/m for sib }
+         fndscl; { find scale factor }
+         outbyt(sib+sreg(p.rb)*8+$05); { output ..[reg*s] sib }
+         { now we only have one displacement type, 32 bits }
+         if p.m = rgirsd then { displacement exists }
+            gensym(p.vl, 0, false, imnorm, 0, 0, 4*8) { output displacement }
+         else { must fill with dummy displacement } 
+            begin outbyt(0); outbyt(0); outbyt(0); outbyt(0) end
+
+      end;
+      rgirr, rgirrd, rgirrs, rgirrsd: begin { [reg+reg], disp[reg+reg..] }
+
+         if (p.rb in drgset) and (p.ri in drgset) then begin 
+
+            { process as large }
+            if not (p.rb in [rgeax, rgecx, rgedx, rgebx, rgebp, rgesi, rgedi, 
+               rgesp]) then prterr(eregt); { invalid register }
+            if not (p.ri in [rgeax, rgecx, rgedx, rgebx, rgebp, rgesi, 
+               rgedi]) then prterr(eregt); { invalid register }
+            if (p.m = rgirrd) or (p.m = rgirrsd) then { displacement required }
+               setdis; { set displacement modifier }
+            { process scale factor }
+            sib := 0; { clear sib byte }
+            if (p.m = rgirrs) or (p.m = rgirrsd) then 
+               fndscl; { find scale factor } 
+            if ((p.m = rgirr) or (p.m = rgirrs)) and (p.rb = rgebp) then begin
+
+               { special case: ebp cannot serve as a base register in a
+                 non-displacement mode. So we encode these as r+r[*s]+0 }
+               outbyt(rm+$44); { output r/m disp8 and sib select }
+               { output sib with base and index }
+               outbyt(sib+$05+(sreg(p.ri)*8));
+               outbyt(0) { output dummy displacement }
+
+            end else begin { normal encodes }
+
+               outbyt(rm+$04); { output r/m as sib select }
+               { output sib with base and index }
+               outbyt(sib+sreg(p.rb)+(sreg(p.ri)*8));
+               if (p.m = rgirrd) or (p.m = rgirrsd) then 
+                  outdis { output displacement }
+
+            end
+      
+         end else begin { process as word }
+
+            if ((p.rb <> rgbx) and (p.rb <> rgbp)) or 
+               ((p.ri <> rgsi) and (p.ri <> rgdi)) then 
+               prterr(eregt); { register type }
+            if p.m = rgirrd then setdis; { set displacement modifier }
+            if p.rb = rgbx then begin { [bx+..] }
+
+               if p.ri = rgsi then outbyt(rm+$00) { [bx+si] }
+               else outbyt(rm+$01) { [bx+di] }
+
+            end else begin { [bp+..] }
+
+               if p.ri = rgsi then outbyt(rm+$02) { [bp+si] }
+               else outbyt(rm+$03) { [bp+di] }
+
+            end;
+            if p.m = rgirrd then outdis { output displacement }
+
+         end
+
+      end
+
+   end
+   
+end;
+
+{*******************************************************************************
+
+Find and validate sizes of a binary operation
+
+Given the opcode and both operands of a binary operator, looks up all the
+sizes, decides on and returns the size of the resulting operation, and
+validates that there are no mismatches.
+
+*******************************************************************************}
+
+procedure size2(i:        opcodet;  { opcode }
+                r1, r2:   regc;     { left and right register codes }
+                var opsz: opsize);  { resulting size code }
+
+var osz, lsz, rsz: opsize; { size of opcode and operands }
+
+begin
+
+   { find sizes of opcode and operands, and decide on final size }
+   osz := opclen[i]; { find opcode length }
+   lsz := reglen[r1]; { find size of left }
+   rsz := reglen[r2]; { find size of right }
+   { check that one of them has a size attrbute }
+   if (osz = 0) and (lsz = 0) and (rsz = 0) then 
+      prterr(eopsiz); { operation must have size }
+   { set overall size to the first size found }
+   if osz <> 0 then opsz := osz { set size to size of operand }
+   else if lsz <> 0 then opsz := lsz { set size to size of left operand }
+   else opsz := rsz; { set size to size of right operand }
+   { now check everybody matches that, or is non-specific }
+   if (osz <> 0) and (osz <> opsz) then prterr(eopsizm); { size mismatch }
+   if (lsz <> 0) and (lsz <> opsz) then prterr(eopsizm); { size mismatch }
+   if (rsz <> 0) and (rsz <> opsz) then prterr(eopsizm) { size mismatch }
+
+end;
+
+{*******************************************************************************
+
+Validate machine type
+
+Validates that the current machine is equal to or greater than the given
+requirement. The 80x86 family is downward compatible, such that a given
+instruction or mode that works on a low level processor will work on all 
+processors above that. So specifying the first processor to contain a feature
+as the requirement will validate all processors above that as well.
+
+*******************************************************************************}
+
+procedure valmac(m: mach); { machine requirement }
+
+begin
+
+   if cmachine < m then prterr(emach)
+
+end;
+
+{*******************************************************************************
+
+Validate machine type specific
+
+Validates that the current machine is equal to the given machine. There are
+a few operators that are specific to a given machine. We validate that the
+single appropriate processor is active.
+
+*******************************************************************************}
+
+procedure valmacs(m: mach); { machine requirement }
+
+begin
+
+   if cmachine <> m then prterr(emach)
+
+end;
+
+{*******************************************************************************
+
+Validate floating point
+
+Validates that the floating point instructions are enabled.
+
+*******************************************************************************}
+
+procedure valflt;
+
+begin
+
+   if not float then prterr(emach)
+
+end;
+
+{*******************************************************************************
+
+Set operand sizing
+
+Accepts a size flag, where true is large operand model. If this is not
+equal to the current machine mode, then we output an operand size change
+prefix to force it into the correct size for the next instruction.
+Also checks if the selected processor is capable of large model sizing,
+i.e., 386 or later.
+
+*******************************************************************************}
+
+procedure setsiz(s: boolean);{ large/small request }
+
+begin
+
+   { check required operand size against present address size }
+   if s <> large then begin
+
+      { if they are not equal, then we validate for large model capable.
+        This is because we are either escaping small for large, or
+        are already in large. Either way it must be 386+ }
+      valmac(mt386); { validate 386+ for large model }
+      outbyt($66) { output operand size change prefix }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Set address sizing
+
+Accepts a size flag, where true is large operand model. If this is not
+equal to the current machine mode, then we output an address size change
+prefix to force it into the correct size for the next instruction.
+Also checks if the selected processor is capable of large model sizing,
+i.e., 386 or later.
+
+*******************************************************************************}
+
+procedure setadr(s: boolean);{ large/small request }
+
+begin
+
+   { check required operand size against present address size }
+   if s <> large then begin
+
+      { if they are not equal, then we validate for large model capable.
+        This is because we are either escaping small for large, or
+        are already in large. Either way it must be 386+ }
+      valmac(mt386); { validate 386+ for large model }
+      outbyt($67) { output address size change prefix }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Parse double operand
+
+Parses and performs preliminary processing on a double parameter set.
+The parameters are expected to be separated by ','. Finds and returns the
+operand size, which is determined by examining both parameters. Finds the
+address size as determined by both parameters. Outputs prefix codes as required
+to escape the current large/small model to the required model.
+Note there are no cases where more than one operand is an address, so there is
+no conflict between addressing modes.
+Note that the address size does not need to be returned, as the operand that
+required the address size will have that information.
+
+*******************************************************************************}
+
+procedure pardbl(       i: opcodet; { opcode to parse for }
+                 var l, r: parrec;  { left and right parameter records }
+                 var opsz: opsize); { operand size return }
+
+var adsz: boolean; { address size (large/small) }
+
+begin
+
+   parcod(l); { parse left parameter }
+   prcnxt(',', ecmaexp); { skip ',' }
+   parcod(r); { parse right parameter }
+   size2(i, l.m, r.m, opsz); { find size of operation }
+   { if operation size is opposite mode size, and size is adjustable,
+     output size mode change prefix }
+   if ((opsz = 2) or (opsz = 4)) and opcsad[i] then setsiz(opsz = 4);
+   { determine address mode size. Note that only one operand may be an
+     address }
+   adsz := large; { set default address requirement }
+   if (l.as = 4) or (r.as = 4) then adsz := true { set large if required }
+   else if (l.as = 2) or (r.as = 2) then 
+      adsz := false; { set small if required } 
+   { check required address size against present address size }
+   if adsz <> large then begin
+
+      valmac(mt386); { validate 386+ for large model }
+      outbyt($67) { output address mode change prefix }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Parse single operand
+
+Parses and performs preliminary processing on a single operand.
+Finds and returns the operand size, based on operand and instruction.
+Finds the address size. Outputs any prefixes needed for size and addressing.
+Note that the address size does not need to be returned, as the operand that
+required the address size will have that information.
+
+*******************************************************************************}
+
+procedure parsgl(    i: opcodet;    { opcode to parse for }
+                 var p: parrec;     { left and right parameter records }
+                 var opsz: opsize); { operand size return }
+
+var adsz: boolean; { address size (large/small) }
+    osz:  opsize;  { size of instruction }
+    psz:  opsize;  { size of parameter }
+
+begin
+
+   parcod(p); { parse parameter }
+   osz := opclen[i]; { find opcode length }
+   psz := reglen[p.m]; { find operand length }
+   if (osz = 0) and (psz = 0) then prterr(eopsiz); { operation must have size }
+   { set to first size found }
+   if osz <> 0 then opsz := osz
+   else if psz <> 0 then opsz := psz;
+   { now check everybody matches that, or is non-specific }
+   if (osz <> 0) and (osz <> opsz) then prterr(eopsizm); { size mismatch }
+   if (psz <> 0) and (psz <> opsz) then prterr(eopsizm); { size mismatch }
+   { if operation size is opposite mode size, and size is adjustable,
+     output size mode change prefix }
+   if ((opsz = 2) or (opsz = 4)) and opcsad[i] then setsiz(opsz = 4);
+   { determine address mode size. Note that only one operand may be an
+     address }
+   adsz := large; { set default address requirement }
+   if p.as = 4 then adsz := true { set large if required }
+   else if p.as = 2 then adsz := false; { set small if required } 
+   setadr(adsz) { set address sizing }
+
+end;
+
+{*******************************************************************************
+
+Find reserved word
+
+Finds the reserved code corresponding to a given label. The hash value is found 
+for the label, then a sequential search of the entry list for a match with the 
+label. The result is a code equvalent to the index for the matching label, or 0 
+if none is found. See inires for more reserved table details.
+
+*******************************************************************************}
+
+function fndres(view s: string) { label to find }
+               : opcodet;       { resulting opcode }
+
+var i: opcodet; { reserved table index }
+    b: boolean;
+    { free variant to convert opcodes to integers }
+    r: record case boolean of
+
+          false: (a: opcodet);
+          true:  (b: integer)
+
+       end;
+
+begin
+
+   r.b := hash(s, ord(pred(oplast))); { find hash value }
+   i := r.a;
+   { traverse chain at hash entry looking for a match }
+   b := compp(s, ressym[i].reslab); { check equal }
+   while not b and (ressym[i].reschn <> opnull) do begin { traverse }
+
+      i := ressym[i].reschn; { next entry }
+      b := compp(s, ressym[i].reslab) { check equal }
+
+   end;
+   { check match was found }
+   if not b then i := opnull;
+   fndres := i { return resulting index }
+
+end;
+
+{*******************************************************************************
+
+Parse expression
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+*******************************************************************************}
+
+procedure mexpr(var sym: symptr);
+
+begin
+
+   expri(sym) { pass call to assembler main }
+
+end;
+
+{*******************************************************************************
+
+Parse simple expression
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+*******************************************************************************}
+
+procedure msexpr(var sym: symptr);
+
+begin
+
+   sexpri(sym) { pass call to assembler main }
+
+end;
+
+{*******************************************************************************
+
+Parse term
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+*******************************************************************************}
+
+procedure mterm(var sym: symptr);
+
+begin
+
+   termi(sym) { pass call to assembler main }
+
+end;
+
+{*******************************************************************************
+
+Parse factor
+
+This vector just calls the assembler internal routine. It is here to allow
+processor specific expression operators to be added to basic expression
+processing.
+
+*******************************************************************************}
+
+procedure mfactor(var sym: symptr);
+
+begin
+
+   factori(sym) { pass call to assembler main }
+
+end;
+
+begin
+
+   inidep { initalize processor dependent module }
+
+end. { unit }

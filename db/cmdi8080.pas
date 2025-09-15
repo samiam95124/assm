@@ -1,0 +1,597 @@
+{*******************************************************************************
+*                                                                              *
+*                            I8080 COMMAND MODULE                              *
+*                                                                              *
+* Contains 8080 specific commands and configuration for DB.                    *
+*                                                                              *
+*******************************************************************************}
+
+module cmdi8080(output);
+
+uses stddef,   { standard defines }
+     strlib,   { string library }
+     extlib,   { extention library }
+     dbdef,    { db defines }
+     defi8080, { cpu specific defines }
+     simi8080, { simulator defines }
+     db,       { db module }
+     syscall,  { system call module }
+     main;     { main module }
+
+var 
+
+   runcpu: boolean; { run cpu flag }
+
+function instlen(addr: integer): integer; forward;
+procedure listinst(addr: integer); forward;
+procedure goins(addr: integer); forward;
+procedure display; forward;
+procedure setbrk(p: brkptr); forward;
+procedure resbrk(p: brkptr); forward;
+procedure compmach(c: byte); forward;
+procedure execmach; forward;
+
+private
+
+var 
+
+   memdis:  integer; { settable memory display pointer }
+   brkadr:  integer; { address of simulated breakpoint routine }
+   brkins:  byte; { breakpoint instruction }
+
+{*******************************************************************************
+
+Find length of instruction
+
+Finds the length of the instruction at the given address. For the 8080, a simple
+set of rules can be used to find the length.
+
+*******************************************************************************}
+
+function instlen(addr: integer): integer;
+
+var l: integer;
+    i: integer;
+
+begin
+
+   l := 1; { set basic instruction length }
+   i := getmem(addr, 1); { get instruction byte }
+   if ((i and $c7) = $06) or ((i and $c7) = $c6) or ((i and $f7) = $d3) then
+      l := l + 1 { immediate byte }
+   else if ((i and $cf) = $01) or ((i and $e7) = $22) or 
+           ((i and $c7) = $c2) or (i = $c3) or
+           ((i and $c7) = $c4) or (i = $cd) or 
+           ((i = $ed) and (getmem((addr+1) and $ffff, 1) = $ff)) then
+      l := l + 2; { immediate word }
+   instlen := l { return length }
+
+end;
+
+{*******************************************************************************
+
+List instruction
+
+Lists the instruction at the given address.
+
+*******************************************************************************}
+
+procedure listinst(addr: integer);
+
+var i: integer; { byte counter }
+
+{ print byte register according to code }
+
+procedure prtreg(r: integer);
+
+begin
+
+   case r and 7 of
+
+      $0: write('b');
+      $1: write('c');
+      $2: write('d');
+      $3: write('e');
+      $4: write('h');
+      $5: write('l');
+      $6: write('m');
+      $7: write('a')
+
+   end
+
+end;
+
+{ print word register according to code }
+
+procedure prtdreg(r: integer);
+
+begin
+
+   case r and 3 of
+
+      $0: write('b');
+      $1: write('d');
+      $2: write('h');
+      $3: write('sp')
+
+   end
+
+end;
+
+{ print word "af mode" register according to code }
+
+procedure prtdregaf(r: integer);
+
+begin
+
+   case r and 3 of
+
+      $0: write('b');
+      $1: write('d');
+      $2: write('h');
+      $3: write('af')
+
+   end
+
+end;
+
+{ print byte with leading "$" }
+
+procedure prtbyt(a: integer);
+
+begin
+
+   write('$');
+   prtnum(16, 2, getmem(a, 1))
+
+end;
+
+{ print word with leading "$" }
+
+procedure prtwrd(a: integer);
+
+begin
+   
+   write('$');
+   prtnum(16, 4, getmem(a, 1)+getmem(a+1, 1)*256)
+
+end;
+
+begin
+
+   prtnum(16, 4, addr); { output list address }
+   write('  ');
+   for i := 1 to instlen(addr) do begin { print bytes of instruction }
+
+      prtnum(16, 2, getmem(addr+i-1, 1));
+      write(' ')
+
+   end;
+   for i := 1 to 3-instlen(addr)+1 do write('   ');
+   write('  ');
+   case getmem(addr, 1) of { instruction }
+
+      $37: write('stc');
+      $3f: write('cmc');
+      $04, $0c, $14, $1c, $24, $2c, $34, $3c, $05, $0d, $15, $1d, $25, $2d,
+      $35, $3d: begin 
+
+         if odd(getmem(addr, 1)) then write('dcr     ')
+         else write('inr     ');
+         prtreg(getmem(addr, 1) div 8)
+
+      end;
+      $2f: write('cma');
+      $27: write('daa');
+      $00: write('nop');
+      $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $4a, $4b, $4c, $4d,
+      $4e, $4f, $50, $51, $52, $53, $54, $55, $56, $57, $58, $59, $5a, $5b,
+      $5c, $5d, $5e, $5f, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69,
+      $6a, $6b, $6c, $6d, $6e, $6f, $70, $71, $72, $73, $74, $75, $77, $78,
+      $79, $7a, $7b, $7c, $7d, $7e, $7f: begin
+
+         write('mov     ');
+         prtreg(getmem(addr, 1) div 8);
+         write(',');
+         prtreg(getmem(addr, 1))
+
+      end;
+      $02: write('stax    b');
+      $12: write('stax    d');
+      $0a: write('ldax    b');
+      $1a: write('ldax    d');
+      $80, $81, $82, $83, $84, $85, $86, $87, $88, $89, $8a, $8b, $8c, $8d,
+      $8e, $8f, $90, $91, $92, $93, $94, $95, $96, $97, $98, $99, $9a, $9b, 
+      $9c, $9d, $9e, $9f, $a0, $a1, $a2, $a3, $a4, $a5, $a6, $a7, $a8, $a9, 
+      $aa, $ab, $ac, $ad, $ae, $af, $b0, $b1, $b2, $b3, $b4, $b5, $b6, $b7,
+      $b8, $b9, $ba, $bb, $bc, $bd, $be, $bf: begin
+
+         case getmem(addr, 1) div 8 and 7 of
+
+            0: write('add     ');
+            1: write('adc     ');
+            2: write('sub     ');
+            3: write('sbb     ');
+            4: write('ana     ');
+            5: write('xra     ');
+            6: write('ora     ');
+            7: write('cmp     ')
+
+         end;
+         prtreg(getmem(addr, 1))
+  
+      end;
+      $07: write('rlc');
+      $0f: write('rrc');
+      $17: write('ral');
+      $1f: write('rar');
+      $c5, $d5, $e5, $f5, $c1, $d1, $e1, $f1, $09, $19, $29, $39, $03, $13,
+      $23, $33, $0b, $1b, $2b, $3b: begin
+
+         case getmem(addr, 1) and $cf of
+
+            $c5: write('push    ');
+            $c1: write('pop     ');
+            $09: write('dad     ');
+            $03: write('inx     ');
+            $0b: write('dcx     ')
+
+         end;
+         if (getmem(addr, 1) and $cb) = $c1 then 
+            prtdregaf(getmem(addr, 1) div 16)
+         else 
+            prtdreg(getmem(addr, 1) div 16)
+   
+      end;
+      $eb: write('xchg');
+      $e3: write('xthl');
+      $f9: write('sphl');
+      $01, $11, $21, $31: begin
+
+         write('lxi     ');
+         prtdreg(getmem(addr, 1) div 16);
+         write(',');
+         prtwrd(addr+1)
+   
+      end;
+      $06, $0e, $16, $1e, $26, $2e, $36, $3e: begin
+
+         write('mvi     ');
+         prtreg(getmem(addr, 1) div 8);
+         write(',');
+         prtbyt(addr+1)
+
+      end;
+      $c6, $ce, $d6, $de, $e6, $ee, $f6, $fe: begin
+
+         case getmem(addr, 1) of
+
+            $c6: write('adi     ');
+            $ce: write('aci     ');
+            $d6: write('sui     ');
+            $de: write('sbi     ');
+            $e6: write('ani     ');
+            $ee: write('xri     ');
+            $f6: write('ori     ');
+            $fe: write('cpi     ')
+
+         end;
+         prtbyt(addr+1)
+
+      end;
+      $22, $2a, $32, $3a: begin
+
+         case getmem(addr, 1) div 8 and 3 of 
+
+            $2: write('sta     ');
+            $3: write('lda     ');
+            $0: write('shld    ');
+            $1: write('lhld    ')
+
+         end;
+         prtwrd(addr+1)
+
+      end;
+      $e9: write('pchl');
+      $c0, $c2, $c3, $c4, $c8, $c9, $ca, $cc, $cd, $d0, $d2, $d4, $d8, $da, 
+      $dc, $e0, $e2, $e4, $e8, $ea, $ec, $f0, $f2, $f4, $f8, $fa, $fc: begin
+
+         if odd(getmem(addr, 1)) then case getmem(addr, 1) and $c6 of
+
+            $c2: write('jmp     ');
+            $c4: write('call    ');
+            $c0: write('ret     ')
+
+         end else begin
+
+            case getmem(addr, 1) and $c6 of
+   
+               $c2: write('j');
+               $c4: write('c');
+               $c0: write('r')
+   
+            end;
+            case getmem(addr, 1) div 8 and 7 of
+   
+               $00: write('nz     ');
+               $01: write('z      ');
+               $02: write('nc     ');
+               $03: write('c      ');
+               $04: write('po     ');
+               $05: write('pe     ');
+               $06: write('p      ');
+               $07: write('m      ')
+   
+            end
+
+         end;
+         if (getmem(addr, 1) and $c6) <> $c0 then prtwrd(addr+1)
+
+      end;
+      $c7, $cf, $d7, $df, $e7, $ef, $f7, $ff: begin
+
+         write('rst     ');
+         write(getmem(addr, 1) div 8 and 7:1)
+
+      end;
+      $fb: write('ei');
+      $f3: write('di');
+      $db: begin write('in      '); prtbyt(addr+1) end;
+      $d3: begin write('out     '); prtbyt(addr+1) end;
+      $76: write('halt');
+      $08, $10, $18, $20, $28, $30, $38, $cb, $d9, $dd, $fd: write('???');
+      $ed: if fstap and (getmem((addr+1) and $ffff, 1) = $ff) then
+              begin write('prtcal  '); 
+                 if getmem((addr+2) and $ffff, 1) > ord(scwrite) then 
+                    write('???') else 
+                       case syscod(getmem((addr+2) and $ffff, 1)) of
+
+                    scterm:  write('term');
+                    scopen:  write('open');
+                    scclose: write('close');
+                    scread:  write('read');
+                    scwrite: write('write')
+
+                 end
+              end else write('???');
+
+   end;
+   writeln
+
+end;
+
+{*******************************************************************************
+
+Execute continuously at current address
+
+Sets the breakpoints in the breakpoint list, then sets the run flag and
+steps instructions until the run flag is no longer true. This will happen
+when a breakpoint, halt, error or similar event occurs.
+
+*******************************************************************************}
+
+procedure goins(addr: integer); 
+
+var p: brkptr; { breakpoint list pointer }
+
+begin
+
+   setbrk(brklst); { place all permenant breakpoints }
+   setbrk(tmplst); { place all temporary breakpoints }
+   putreg(regpc, addr); { place execute address }
+   runcpu := true; { set run flag on }
+   while (getreg(regpc) <> brkadr) and runcpu do exeins; { execute forever }
+   if getreg(regpc) = brkadr then begin
+
+      { a breakpoint was hit, or something really stupid happened.
+        in any case, we do just what the cpu would do, and so we clean
+        it up the same way }
+      { restore address }
+      putreg(regpc, getmem(getreg(regsp), 1)+
+                    getmem((getreg(regsp)+1) and $ffff, 1)*256-1);
+      putreg(regsp, getreg(regsp)+2) { restore stack }
+
+   end;
+   resbrk(brklst); { remove all permenant breakpoints }
+   resbrk(tmplst); { remove all temporary breakpoints }
+   { purge the temporary breakpoints list }
+   while tmplst <> nil do begin { purge }
+
+      p := tmplst; { index top entry }
+      tmplst := tmplst^.next; { gap list }
+      putbrk(p) { free entry }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Display current CPU status
+
+The cpu status display outputs the registers, flags, what is at the pointer
+registers, and the top section of the stack. This is followed by the next
+instruction to execute.
+
+*******************************************************************************}
+
+procedure display;
+
+var i: integer; { byte count }
+    t: integer; { temp }
+
+begin
+
+   writeln('A  B  C  D  E  H  L  SP   FLAGS IE [BC] [DE] [HL] [SP] ',
+           '--------- MEM ---------');
+   prtnum(16, 2, getreg(rega)); write(' ');
+   prtnum(16, 2, getreg(regb)); write(' ');
+   prtnum(16, 2, getreg(regc)); write(' ');
+   prtnum(16, 2, getreg(regd)); write(' ');
+   prtnum(16, 2, getreg(rege)); write(' ');
+   prtnum(16, 2, getreg(regh)); write(' ');
+   prtnum(16, 2, getreg(regl)); write(' ');
+   prtnum(16, 4, getreg(regsp)); write(' ');
+   if getreg(regfz) <> 0 then write('z') else write(' ');
+   if getreg(regfc) <> 0 then write('c') else write(' ');
+   if getreg(regfs) <> 0 then write('m') else write(' ');
+   if getreg(regfp) <> 0 then write('p') else write(' ');
+   if getreg(regfa) <> 0 then write('a') else write(' ');
+   write(' ');
+   if getreg(regie) <> 0 then write('e') else write('d'); write('  ');
+   t := getreg(regb)*256+getreg(regc); prtnum(16, 4, getmem(t, 1)+getmem(t+1, 1)*256); write(' ');
+   t := getreg(regd)*256+getreg(rege); prtnum(16, 4, getmem(t, 1)+getmem(t+1, 1)*256); write(' ');
+   t := getreg(regh)*256+getreg(regl); prtnum(16, 4, getmem(t, 1)+getmem(t+1, 1)*256); write(' ');
+   prtnum(16, 4, getmem(getreg(regsp), 1)+getmem((getreg(regsp)+1) and $ffff, 1)*256); write(' ');
+   for i := 1 to 8 do begin { print memory window }
+
+      prtnum(16, 2, getmem((memdis+i-1) and $ffff, 1));
+      write(' ')
+
+   end;
+   writeln;
+   listinst(getreg(regpc))
+
+end;
+
+{*******************************************************************************
+
+Set breakpoints in list
+
+Sets all the breakpoints in a list. To set a breakpoint, we save the data
+under the breakpoint location, then place the breakpoint instruction.
+
+*******************************************************************************}
+
+procedure setbrk(p: brkptr);
+
+begin
+
+   while p <> nil do begin { traverse }
+
+      p^.data := getmem(p^.addr, 1); { save data under breakpoint }
+      putmem(p^.addr, brkins, 1); { set breakpoint }
+      p := p^.next { link next break entry }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Remove breakpoints in list
+
+Removes the breakpoints in a list by replacing the origial data under the
+breakpoint instruction.
+
+*******************************************************************************}
+
+procedure resbrk(p: brkptr);
+
+begin
+
+   while p <> nil do begin { traverse }
+
+      putmem(p^.addr, p^.data, 1); { replace data under breakpoint }
+      p := p^.next { link next break entry }
+
+   end
+
+end;
+
+{*******************************************************************************
+
+Compile machine specific command
+
+Compiles the machine specific command by the given command code and places that
+in the code execute buffer.
+
+*******************************************************************************}
+
+procedure compmach(c: byte);
+
+begin
+
+   case mchcod(c) of { command }
+
+      mcfpe:  putbyt(ord(mifpe)+128); { flag parity even }
+      mcfpo:  putbyt(ord(mifpo)+128); { flag parity odd }
+      mcfp:   putbyt(ord(mifp)+128);  { flag positive }
+      mcfm:   putbyt(ord(mifm)+128);  { flag minus }
+      mcfz:   putbyt(ord(mifz)+128);  { flag zero }
+      mcfnz:  putbyt(ord(mifnz)+128); { flag not zero }
+      mcfa:   putbyt(ord(mifa)+128);  { flag arithmetic carry }
+      mcfna:  putbyt(ord(mifna)+128); { flag no arithmetic carry }
+      mcfc:   putbyt(ord(mifc)+128);  { flag carry }
+      mcfnc:  putbyt(ord(mifnc)+128)  { flag no carry }
+             
+   end
+
+end;
+
+{*******************************************************************************
+
+Execute machine specific command
+
+Executes a single intermediate command. The command at the current exec buffer
+position is executed.
+
+*******************************************************************************}
+
+procedure execmach;
+
+var i: byte; { instruction holder }
+
+begin
+
+   i := excbuf[excptr]; { get instruction }
+   excptr := excptr+1; { advance next instruction }
+   case mincod(i-128) of { intermediate command }
+
+      mifpe: putreg(regfp, ord(true));  { flag parity even }
+      mifpo: putreg(regfp, ord(false)); { flag parity odd }
+      mifp: putreg(regfs, ord(false)); { flag positive }
+      mifm: putreg(regfs, ord(true));  { flag minus }
+      mifz: putreg(regfz, ord(true));  { flag zero }
+      mifnz: putreg(regfz, ord(false)); { flag not zero }
+      mifa: putreg(regfa, ord(true));  { flag arithmetic carry }
+      mifna: putreg(regfa, ord(false)); { flag no arithmetic carry }
+      mifc: putreg(regfc, ord(true));  { flag carry }
+      mifnc: putreg(regfc, ord(false)) { flag no carry }
+
+   end
+
+end;
+
+begin
+
+   writeln;
+   writeln('8080 debugger vs. 0.2.00 Copyright (C) 1994 S. A. Moore');
+   writeln;
+   writeln('Target:          Cross');
+   writeln('Mode:            Simulate');
+   writeln('Stepper:         Low');
+   writeln('Remote link:     Disabled');
+   writeln('Emulator:        Not found/disabled');
+   writeln('Memory:          64k');
+   writeln('Bank select:     None');
+
+   memdis := 0; { clear settable view address }
+   brkadr := $0038; { address of simulated breakpoint address }
+   brkins := $ff; { instruction to cause a breakpoint }
+   runcpu := true; { set run cpu flag }
+
+   { initalize machine specific command table 
+          Name            Compile G   CM }
+   defcmd('fpe', 0, ord(mcfpe)); { flag parity even }
+   defcmd('fpo', 0, ord(mcfpo)); { flag parity odd }
+   defcmd('fp',  0, ord(mcfp));  { flag positive }
+   defcmd('fm',  0, ord(mcfm));  { flag minus }
+   defcmd('fz',  0, ord(mcfz));  { flag zero }
+   defcmd('fnz', 0, ord(mcfnz)); { flag not zero }
+   defcmd('fa',  0, ord(mcfa));  { flag auxiliary carry }
+   defcmd('fna', 0, ord(mcfna)); { flag no auxiliary carry }
+   defcmd('fc',  0, ord(mcfc));  { flag carry }
+   defcmd('fnc', 0, ord(mcfnc)); { flag no carry }
+
+end.

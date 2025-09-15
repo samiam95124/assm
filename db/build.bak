@@ -1,0 +1,33 @@
+rem
+rem Build db debugger/simulator
+rem
+rem The files are:
+rem
+rem dbdef    - The definitions file
+rem db       - DB executive
+rem simcpu   - A stub for the CPU specific simulator modules
+rem simi8080 - A cpu simulator for the I8080 processor
+rem event    - Event handler
+rem smplport - Simple port emulator
+rem syscall  - System call handler
+rem
+
+parse main=main
+parse cmdi8080=cmdi8080
+parse db=db
+parse simi8080=simi8080
+parse smplport=smplport
+parse syscall=syscall
+as event=event
+
+ec main=main
+ec simi8080=simi8080
+ec db=db
+ec cmdi8080=cmdi8080
+ec smplport=smplport
+ec syscall=syscall
+
+rem ln runfile=c:\ip\windows\i80386\lib\serlib c:\ip\windows\i80386\lib\strlib c:\ip\windows\i80386\lib\extlib event simi8080 db smplport syscall cmdi8080 c:\ip\windows\i80386\lib\main main c:\ip\windows\i80386\lib\cap/nu
+
+genpe db=runfile/v/sc
+del runfile.*

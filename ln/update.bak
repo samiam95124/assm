@@ -1,0 +1,3 @@
+copy ln.exe c:\ip\windows\i80386\bin
+copy ln c:\ip\linux\i80386\bin
+copy ln.exe c:\ipdemo\windows\i80386\bin

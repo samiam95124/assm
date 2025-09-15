@@ -1,0 +1,650 @@
+{******************************************************************************
+*                                                                             *
+*                       PORTABLE EXECUTIVE FILE CATALOGER                     *
+*                                                                             *
+*                            95/04 S. A. Moore                                *
+*                                                                             *
+* Forms a catalog of calls to modules in the file "catalog". From Windows     *
+* from Windows .dll files. The format of the command is:                      *
+*                                                                             *
+* pecat [<filespec>]                                                          *
+*                                                                             *
+* If the file specification is omitted, then all of the .dlls in the current  *
+* directory are found. If the file specification is a directory, then all of  *
+* the .dlls in that directory are found. Otherwise the file specification     *
+* should refer to a .dll file, with or without the .dll ending (if provided,  *
+* it is ignored).                                                             *
+*                                                                             *
+* Notes:                                                                      *
+*                                                                             *
+* 1. Does not recycle export symbol information, so this program is basically *
+* spilling virtual memory constantly.                                         *
+*                                                                             *
+* 2. Need to check .dll read failures in Windows XP, \windows\system32        *
+* directory.                                                                  *
+*                                                                             *
+******************************************************************************}
+
+program pecat(output);
+
+uses strlib,
+     extlib,
+     parlib;
+
+label next,     { go next file }
+      nextfile, { for nested routines }
+      99;       { abort program }
+
+const
+
+   hdrfix = 176;  { number of bytes in the fixed portion of the header }
+   maxlab = 1000; { number of characters in label }
+   maxext = 4;    { number of characters in an extention }
+   maxlin  = 200; { number of characters in a text line }
+   maxfil  = 100; { number of characters in a file name }
+
+type 
+
+   objptr = ^objrec; { pointer to object record }
+   objlab = packed array [1..8] of char; { object names }
+   { file object records }
+   objrec = record
+
+      name: objlab; { name of object }
+      vsiz: integer; { virtual size }
+      rva:  integer; { location in memory }
+      psiz: integer; { physical size }
+      poff: integer; { physical offset }
+      prel: integer; { pointer to relocations }
+      plin: integer; { pointer to line numbers }
+      rels: integer; { relocation count }
+      lins: integer; { line count }
+      oflg: integer; { object flags }
+      next: objptr   { next entry }
+
+   end;
+   labt = packed array [1..maxlab] of char; { label }
+   extinx  = 1..maxext; { index for file extentions }
+   extbuf  = packed array [extinx] of char; { extention }
+   lininx  = 1..maxlin;  { index for text line }
+   linbuf  = packed array [lininx] of char; { a text line }
+   filinx  = 1..maxfil; { index for file names }
+   filnam  = packed array [filinx] of char; { a file name }
+   { errors }
+   errcod = (efilovf,  { filename too long }
+             einvfil,  { write('Invalid filename }
+             einvcmd,  { command line syntax invalid }
+             einvffm,  { invalid PE file format }
+             edsymtl,  { DLL symbol too long }
+             einvsyt,  { invalid symbols table }
+             efilnf);  { input file not found }
+
+var 
+
+   exefil:  bytfil; { .exe file to read from }
+   objects: integer; { number of objects in file }
+   hdrsiz:  integer; { size of header }
+   objlst:  objptr; { object directory list }
+   objend:  objptr; { end of object list }
+   import:  integer; { inport table RVA }
+   export:  integer; { export table RVA }
+   cmdlin:  linbuf; { command line buffer }
+   cmdptr:  lininx; { command line index }
+   cmdlen:  lininx; { command line length }
+   filspc, filspc1:  filnam; { file list specification }
+   dmpfil:  filnam; { file to dump }
+   p, n, e: filnam; { file components }
+   filpth:  filnam; { master path }
+   dmphdr:  filnam; { dump file header }
+   dmphdrp: filnam; { dump file header with path }
+   fopnsrc: boolean; { source file is open }
+   stbobj:  objptr; { GCC symbols table object }
+   stsobj:  objptr; { GCC symbols list object }
+   cofsym:  integer; { location of COFF symbols }
+   cofnum:  integer; { number of COFF symbols }
+   valfch:  chrset;  { valid file characters }
+   cmdhan:  parhan;  { handle for command parsing }
+   err:     boolean; { error holder }
+   fillst:  filptr;  { file list }
+   outcat:  text;    { output catalog file }
+   w:       integer;
+   i:       integer;
+   b:       byte;
+
+{******************************************************************************
+
+Process error
+
+Prints the given error code, and aborts the program.
+
+******************************************************************************}
+
+procedure error(e: errcod);
+
+begin
+
+   write('*** ');
+   case e of { error }
+
+      efilovf: write('Filename too long');
+      einvfil: write('Invalid filename');
+      einvcmd: write('Command line invalid');
+      einvffm: write('Invalid input PE file format or not 32 bit PE');
+      edsymtl: write('DLL symbol too long');
+      efilnf:  write('Input file not found');
+      einvsyt: write('Invalid symbol file format');
+
+   end;
+   writeln; { terminate line }
+   if e in [einvffm, edsymtl, einvsyt] then begin 
+
+      { in file read, abort to next file }
+      close(exefil); { close input file }
+      fopnsrc := false; { set source file not open }
+      fillst := fillst^.next; { link next entry }
+      goto nextfile { skip next file }
+
+   end else goto 99 { terminate program }
+
+end;
+
+{******************************************************************************
+
+Read a 16 bit word from file
+
+******************************************************************************}
+
+procedure readwrd(var f: bytfil; var w: integer);
+
+var b1, b2: byte;
+    i1, i2: integer;
+
+begin
+
+   read(f, b1); { get low byte }
+   read(f, b2); { get high byte }
+   i1 := b1; { expand the value }
+   i2 := b2;
+   w := i2*256+i1 { place result }
+
+end;
+    
+{******************************************************************************
+
+Read a 32 bit word from file
+
+******************************************************************************}
+
+procedure readdwd(var f: bytfil; var w: integer);
+
+var b1, b2, b3, b4: byte;
+    i1, i2, i3, i4: integer;
+
+begin
+
+   read(f, b1); { get low byte }
+   read(f, b2); { get mid low byte }
+   read(f, b3); { get mid high byte }
+   read(f, b4); { get high byte }
+   i1 := b1; { expand the value }
+   i2 := b2;
+   i3 := b3;
+   i4 := b4;
+   w := i4*16777216+i3*65536+i2*256+i1 { place result }
+
+end;
+
+{******************************************************************************
+
+Print hex
+
+******************************************************************************}
+
+procedure prthex(f: byte; w: integer);
+ 
+var buff: packed array [1..10] of char; { buffer for number in ascii }
+    i:    integer; { index for same }
+    t:    integer; { holding }
+ 
+begin
+
+   { set sign of number and convert }
+   if w < 0 then begin
+
+      w := w+1+maxint; { convert number to 31 bit unsigned }
+      t := w div $10000000 + 8; { extract high digit }
+      writeh(output, t); { ouput that }
+	   w := w mod $10000000; { remove that digit }
+      f := 7 { force field to full }     
+
+   end;
+   hexs(buff, w); { convert the integer }
+   for i := 1 to f-len(buff) do write('0'); { pad with leading zeros }
+   write(output, buff:0) { output number }
+
+end;
+
+{******************************************************************************
+
+Load the object table
+
+******************************************************************************}
+
+procedure lodobj(objects: integer);
+
+var i: integer;
+    b: byte;
+    x: integer;
+    op: objptr; { pointer for object list }
+
+begin
+
+   for i := 1 to objects do begin { objects }
+    
+      new(op); { create new object entry }
+      op^.next := nil; { clear next }
+      if objlst = nil then begin { insert as first }
+     
+         objlst := op; { set as first entry }
+         objend := op { set as last entry }
+   
+      end else begin { insert as last }
+   
+         objend^.next := op; { link to last }
+         objend := op { set new last }
+   
+      end;   
+      for x := 1 to 8 do begin { read object name }
+
+         read(exefil, b); { get character }
+         op^.name[x] := chr(b and $7f) { place character }
+
+      end;
+      readdwd(exefil, op^.vsiz); { get virtual size }
+      readdwd(exefil, op^.rva); { get RVA }
+      readdwd(exefil, op^.psiz); { get physical size }
+      readdwd(exefil, op^.poff); { get physical offset }
+      readdwd(exefil, op^.prel); { get relocations }
+      readdwd(exefil, op^.plin); { get lines }
+      readwrd(exefil, op^.rels); { get reloc count }
+      readwrd(exefil, op^.lins); { get line count }
+      readdwd(exefil, op^.oflg) { get object flags }
+
+   end
+
+end;
+
+{******************************************************************************
+
+Find object by RVA
+
+******************************************************************************}
+
+function fndrva(rva: integer): objptr;
+
+var op, fp: objptr; { pointers for objects }
+
+begin
+
+   { find object corresponding to the import section }
+   fp := nil; { clear target object }
+   op := objlst; { index top of object list }
+   while op <> nil do begin
+
+      { we find any section even if it is zero length }
+      if (rva >= op^.rva) and (rva <= (op^.rva+op^.vsiz)) then
+         fp := op; { found it, set }
+      op := op^.next { next entry }
+
+   end;
+   if fp = nil then error(einvffm); { does not link up to an object, bad }
+   fndrva := fp { return result }
+
+end;
+
+{*******************************************************************************
+
+Find physical address from RVA
+
+Given an RVA, finds the object that the RVA exists within, then finds the net
+offset address in the file from that.
+
+*******************************************************************************}
+
+function fndoff(rva: integer): integer;
+
+var op: objptr; { pointer for object }
+
+begin
+
+   op := fndrva(rva); { find the object containing the RVA }
+   
+   fndoff := rva-(op^.rva-op^.poff)
+
+end;
+
+{*******************************************************************************
+
+Check name is valid
+
+Check name consists only of a-z, 0-9 and _. These are all that is acceptable
+because these are all that are admissable ids.
+
+*******************************************************************************}
+
+function vallab(view s: string): boolean;
+
+var i: integer;
+    v: boolean;
+
+begin
+
+   v := true; { set default valid }
+   for i := 1 to len(s) do 
+      if not (s[i] in ['a'..'z', 'A'..'Z', '0'..'9', '_']) then v := false;
+
+   vallab := v { return result }
+
+end;
+
+{*******************************************************************************
+
+Print the export table
+
+*******************************************************************************}
+
+procedure prtexp;
+
+label exit; { exit procedure }
+
+type expptr = ^expnam; { export name entry pointer }
+     expnam = record
+
+        nam:  pstring; { symbol name }
+        nrva: integer; { RVA for symbol name (used while loading) }
+        ordn: integer; { ordinal number }
+        rva:  integer; { rva }
+        next: expptr   { next entry }
+
+     end;
+
+var dir:    record { export header }
+
+       flags: integer; { export flags }
+       tdat:  integer; { date/time }
+       rev:   integer; { user version }
+       nrva:  integer; { name RVA }
+       bord:  integer; { ordinal base }
+       eatc:  integer; { EAT count }
+       namc:  integer; { name count }
+       atrva: integer; { address table RVA }
+       ntrva: integer; { name table RVA }
+       otrva: integer; { ordinal table RVA }
+       slist: expptr   { export symbol list }
+
+    end;
+    sp:     expptr; { export symbol pointer }
+    sc:     integer; { symbol count }
+    ords:   array [1..10000] of integer; { ordinal holding }
+    rvas:   array [1..10000] of integer; { name rvas }
+    oi:     0..1000; { index for ordinal array }
+    symbuf: labt; { label holding }
+    op:     objptr;  { pointer for object }
+    maxlen: 0..maxlab;
+    i:      integer;
+
+function fndord(o: integer) { ordinal to find }
+               : integer;   { index of ordinal found }
+
+var i: 1..1000; { index for ordinals }
+    r: 0..1000; { index for found ordinal }
+
+begin
+
+   r := 0; { set not found }
+   { find ordinal and set status }
+   for i := 1 to dir.namc do if ords[i] = o then r := i;
+   fndord := r { set status }
+
+end;
+  
+begin
+
+   op := fndrva(export); { index object entry }
+   if op^.vsiz = 0 then goto exit; { object is empty }
+   position(exefil, fndoff(export)+1); { position to export directory }
+   { load export header }
+   readdwd(exefil, dir.flags); { get flags }
+   readdwd(exefil, dir.tdat); { get date/time }
+   readdwd(exefil, dir.rev); { get user version }
+   readdwd(exefil, dir.nrva); { get name RVA }
+   readdwd(exefil, dir.bord); { get ordinal base }
+   readdwd(exefil, dir.eatc); { get EAT count }
+   readdwd(exefil, dir.namc); { get name count }
+   readdwd(exefil, dir.atrva); { get address table RVA }
+   readdwd(exefil, dir.ntrva); { get name table RVA }
+   readdwd(exefil, dir.otrva); { get ordinal table RVA }
+   dir.slist := nil; { clear symbols list }
+   { create export symbols, including anonymous }
+   for sc := 1 to dir.eatc do begin
+
+      new(sp); { get a symbol entry }
+      sp^.nam := nil; { clear label }
+      sp^.next := dir.slist; { insert to list }
+      dir.slist := sp;
+      sp^.rva := 0 { clear rva }
+
+   end;
+   { load ordinals }
+   position(exefil, fndoff(dir.otrva)+1);
+   for i := 1 to dir.namc do readwrd(exefil, ords[i]);
+   { load symbol rvas }
+   position(exefil, fndoff(dir.ntrva)+1);
+   for i := 1 to dir.namc do readdwd(exefil, rvas[i]);
+   { assign ordinals to symbols }
+   sp := dir.slist; { index 1st symbol }
+   for i := 1 to dir.eatc do begin
+
+      sp^.ordn := i-1; { place ordinal number }
+      oi := fndord(i-1); { find corresponding ordinal }
+      if oi <> 0 then sp^.nrva := rvas[oi];
+      sp := sp^.next { next symbol }
+
+   end;
+   { load symbols }
+   maxlen := 0; { clear maximum length }
+   sp := dir.slist; { index 1st symbol }
+   for sc := 1 to dir.eatc do begin { read symbols }
+
+      if sp = nil then error(einvffm);
+      if sp^.nrva <> 0 then begin { name exists }
+
+         position(exefil, fndoff(sp^.nrva)+1); { seek to name }
+         clears(symbuf); { clear symbol buffer }
+         i := 1; { set 1st label character }
+         repeat { get next symbol character }
+
+            read(exefil, b); { get a character }
+            if b <> 0 then begin { symbol character }
+
+               if i > maxlab then error(edsymtl); { overflow }
+               symbuf[i] := chr(b); { place character }
+               i := i+1 { next character }
+
+            end
+
+         until b = 0; { until end of string } 
+         sp^.nam := copy(symbuf); { place symbol }
+         if i > maxlen then maxlen := i { set new max }
+
+      end;
+      sp := sp^.next { next symbol entry }
+
+   end;
+   { load export addresses }
+   position(exefil, fndoff(dir.atrva)+1);
+   sp := dir.slist; { index 1st symbol }
+   for i := 1 to dir.eatc do begin { read addresses }
+
+      if sp = nil then error(einvffm);
+      readdwd(exefil, sp^.rva); { get the RVA }
+      sp := sp^.next { next symbol }
+
+   end;
+   sp := dir.slist; { index top symbol }
+   while sp <> nil do begin { print symbols }
+
+      if (len(sp^.nam^) > 0) and vallab(sp^.nam^) then 
+         begin { name is not empty and valid }
+
+         write(outcat, dmphdrp:0); { print the header }
+         write(outcat, ' ');
+         write(outcat, sp^.nam^); { write name }
+         writeln(outcat) { next line }
+
+      end;
+      sp := sp^.next { next symbol }
+
+   end;
+   
+   exit: { exit procedure }
+
+end;
+
+{******************************************************************************
+
+Check filename is directory
+
+Returns true if the given filename refers to a directory.
+
+******************************************************************************}
+
+function chkdir(view fn: string): boolean;
+
+var fillst: filptr; { file list }
+    f:      boolean; { result holder }
+
+begin
+
+   f := false; { default to not dir }
+   list(fn, fillst); { make a list of files }
+   if fillst <> nil then { there were file(s) found }
+      f := atdir in fillst^.attr; { set status of directory }
+
+   chkdir := f { return result }
+
+end;
+
+begin
+
+   objlst := nil; { clear object list }
+   objend := nil; { set no end }
+   fopnsrc := false; { set source file not open }
+   { open command line and get source file }
+   openpar(cmdhan); { open parser }
+   openfil(cmdhan, '_command', 250); { open command line level }
+   filchr(valfch); { get the filename valid characters }
+   { set default to all .dll files in curent directory }
+   maknam(filspc, '', '*', 'dll');
+   clears(filpth); { clear the path }
+   skpspc(cmdhan); { skip spaces }
+   if not endlin(cmdhan) then begin { line not empty } 
+
+      parfil(cmdhan, filspc, false, err); { get a file }
+      if err then error(einvfil); { invalid filename }
+      skpspc(cmdhan); { skip spaces }
+      if not endlin(cmdhan) then error(einvcmd); { invalid command line }
+      if chkdir(filspc) then begin { process as dir }
+
+         copy(filpth, filspc); { save directory as the path }
+         maknam(filspc1, filspc, '*', 'dll');
+         copy(filspc, filspc1)
+
+      end else begin { process as file }
+
+         brknam(filspc, p, n, e); {break down filename }
+         copy(filpth, p); { save master path }
+         if len(e) = 0 then copy(e, 'dll'); { place extention }
+         maknam(filspc, p, n, e)
+
+      end
+
+   end;
+   list(filspc, fillst); { make a list of files }
+   if fillst <> nil then begin { create output file }
+
+      if exists('catalog.cat') then delete('catalog.cat'); { delete any previous file }
+      assign(outcat, 'catalog.cat'); { create result file }
+      rewrite(outcat)
+
+   end;
+
+   nextfile: { abort and process next file }
+
+   while fillst <> nil do begin { process files }
+
+      writeln('Processing: ', fillst^.name^);
+      brknam(fillst^.name^, p, n, e); { break down filename }
+      maknam(dmpfil, filpth, n, e); { remake with path }
+      copy(dmphdr, n); { place dump header }
+      copy(dmphdrp, dmpfil); { place dump header }
+      fulnam(dmphdrp); { normalize filename }
+      assign(exefil, dmpfil); { open the dump file }
+      reset(exefil);
+      fopnsrc := true; { set source file is open }
+      readwrd(exefil, w);
+      if w <> $5a4d then begin
+
+         writeln('File ', fillst^.name^, 
+                 ' does not appear to be a PE format file (skipping)');
+         goto next
+
+      end;
+      for i := 1 to (15+4+10)*2 do read(exefil, b); { index new .exe header offset }
+      readdwd(exefil, w); { get offset }
+      position(exefil, w+1); { go to it }
+      readdwd(exefil, w); { check 'PE<0><0>' signiture }
+      if w <> $00004550 then begin
+
+         writeln('File ', fillst^.name^, 
+                 ' does not appear to be a PE format file (skipping)');
+         goto next
+
+      end;
+      writeln(outcat); { space off }
+      readwrd(exefil, w); { get the machine type }
+      readwrd(exefil, objects); { get the number of objects }
+      readdwd(exefil, w); { date/time }
+      readdwd(exefil, cofsym); { symbols pointer }
+      readdwd(exefil, cofnum); { symbols count }
+      readwrd(exefil, hdrsiz); { get NT header size }
+      readwrd(exefil, w); { get flags }
+      readwrd(exefil, w); { get nt header magic }
+      readwrd(exefil, w); { get DB ver }
+      for i := 1 to 16 do readdwd(exefil, w); { get size of code }
+      readwrd(exefil, w); { subsystem type }
+      readwrd(exefil, w); { DLL flags }
+      for i := 1 to 6 do readdwd(exefil, w); { stack reserve size }
+      readdwd(exefil, export); { export table RVA }
+      readdwd(exefil, w); { total export data size }
+      readdwd(exefil, import); { import table RVA }
+      for i := 1 to 17 do readdwd(exefil, w); { skip }
+      { skip the remaining bytes in the header }
+      for i := 1 to hdrsiz-hdrfix do read(exefil, b);
+      lodobj(objects); { load the object directory }
+      if (export <> 0) and vallab(dmphdr) then { exports exist, name is valid }
+         prtexp; { print the export table }
+
+      next: { go next file }
+
+      close(exefil); { close input file }
+      fopnsrc := false; { set source file not open }
+      fillst := fillst^.next { link next entry }
+
+   end;
+   
+   99:; { abort program }
+
+   if fopnsrc then close(exefil) { close input file }
+
+end.

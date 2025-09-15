@@ -1,0 +1,6 @@
+        defb    'hi there\CR\LF
+        block
+bark:   add b
+sniff:  add c
+junk:   defvs  2
+        endblk

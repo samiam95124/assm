@@ -1,0 +1,4 @@
+parse test=test
+ce test=test
+ln runfile=test
+genpe test=runfile c:\windows\system\gdi32.dll/v

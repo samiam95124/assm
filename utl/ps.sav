@@ -1,0 +1,546 @@
+{******************************************************************************
+*                                                                             *
+* Symbols file printout program                                               *
+* Prints the formatted content of a given '.sym' file.                        *
+* The file is a command parameter.                                            *
+*                                                                             *
+******************************************************************************}
+ 
+program prtsym(command, output);
+
+label 99; { abort program }
+
+const
+ 
+   maxfil = 20;  { number of characters in a file name }
+   maxlin = 200; { number of characters in input line }
+   maxhex = 8;   { number of digits in integer }
+
+type
+
+   byte   = 0..255; { byte }
+   filinx = 1..maxfil; { index for filenames }
+   filnam = packed array [filinx] of char; { filename }
+   bytfil = file of byte; { raw byte file }
+   lininx = 1..maxlin; { index for text line }
+   line   = packed array [lininx] of char; { text line }
+ 
+var symfil: bytfil;
+    def:    boolean;
+    i:      integer; { label index }
+    b, t:   byte;
+    cmdlin: line; { command line }
+    cmdlen: lininx; { command line length }
+    cmdptr: lininx; { command line pointer }
+    symnam: filnam; { name of symbol file }
+
+{ abort program }
+
+procedure abort;
+
+begin
+
+   goto 99 { go abort }
+
+end;
+
+{ get command line }
+
+procedure getcmd;
+
+var i: lininx;  { command line index }
+
+begin
+
+   for i := 1 to maxlin do cmdlin[i] := ' '; { clear command line }
+   i := 1; { set 1st command position }
+   while not eoln(command) do begin { get command line characters }
+
+      read(command, cmdlin[i]);
+      if i = maxlin then begin { overflow }
+ 
+         writeln('*** Command input line overflow');
+         abort
+
+      end;
+      i := i + 1 { next character position }
+   
+   end;
+   cmdlen := i-1; { set length of line }
+   cmdptr := 1 { reset line pointer }
+
+end;
+
+function endlin: boolean;
+
+begin
+
+   endlin := cmdptr > cmdlen { input pointer past end of line }
+
+end;
+
+function chkchr: char;
+
+begin
+
+   if not endlin then chkchr := cmdlin[cmdptr] { return current character }
+   else chkchr := ' ' { else return space }
+
+end;
+
+procedure getchr;
+
+begin
+
+   if not endlin then cmdptr := cmdptr+1 { advance position if not end }
+
+end;
+
+procedure skpspc;
+
+begin
+
+   while (chkchr = ' ') and not endlin do getchr { skip spaces, not end }
+
+end;
+
+{***************************************************************
+
+Check digit
+
+Checks wether the given character lies in the set ['0'..'9'].
+Returns the status.
+
+***************************************************************}
+
+function digit(c: char)  { character to check }
+              : boolean; { status of check }
+
+begin
+
+   digit := c in ['0'..'9']
+
+end;
+
+{***************************************************************
+
+Check alphabetical
+
+Checks if the given character lies in the set
+['A'..'Z', 'a'..'z'] (is a letter). Returns the status.
+
+***************************************************************}
+
+function alpha(c : char) { character to check }
+              : boolean; { status }
+
+begin
+
+   alpha := c in ['A'..'Z', 'a'..'z']
+
+end;
+
+{***************************************************************
+
+Parse file name
+
+Parses a filename in the format:
+
+     <filename> ::= [<letter>:]<letter>[<letter>/<digit>/'.']...
+     <letter>   ::= 'a'..'z'/'A'..'Z'
+     <digit>    ::= '0'..'9'
+
+Obviously, this routine is CP/M dependent. If more than 10 total
+characters are used (ffffff.eee), an error is generated.
+The file string so parsed is returned in place, and an error
+'mode' parameter indicates whether or not a file name parsing
+error would be fatal to the assembly.
+
+***************************************************************}
+
+procedure parfil(var fn: filnam); { file name return }
+
+var i: filinx;    { file name index }
+    p: 0..maxfil; { primary length }
+    u: integer;   { user number }
+
+procedure getncr; { get name character }
+
+begin
+
+   if i > maxfil then begin { filename too long }
+
+      writeln('*** Filename too long');
+      abort
+ 
+   end;
+   fn[i] := chkchr; { place file character }
+   getchr; { skip that }
+   i := i + 1 { next }
+
+end;
+
+procedure getseq(max: filinx); { read name sequence }
+
+var l: 0..maxfil;
+
+begin
+
+   l := 0; { initalize count }
+   while alpha(chkchr) or digit(chkchr) do begin { filename }
+
+      getncr; { get character }
+      l := l + 1 { count }
+
+   end;
+   if l > max then begin { filename too long }
+
+      writeln('*** Filename too long');
+      abort
+ 
+   end
+
+end;
+
+begin { parnam }
+
+   skpspc; { skip spaces }
+   for i := 1 to maxfil do fn[i] := ' '; { clear filename }
+   i := 1; { initalize index }
+   p := 1; { initalize primary count for first character }
+   u := 0; { initalize user number }
+   if not alpha(chkchr) then begin { must lead with alpha }
+
+      writeln('*** Invalid filename');
+      abort
+
+   end;
+   getncr; { get character }
+   while digit(chkchr) do begin { process unit number }
+
+      u := u*10 + (ord(chkchr) - ord('0')); { add to specification }
+      getncr; { get character }
+      p := p + 1 { since could be primary }
+
+   end;
+   if chkchr = ':' then begin { process unit specification }
+
+      if u > 15 then begin { unit out of range }
+
+         writeln('*** Invalid filename');
+         abort
+
+      end;
+      getncr; { get character }
+      if not alpha(chkchr) then begin { must lead off alpha }
+
+         writeln('*** Invalid filename');
+         abort
+
+      end;
+      p := 0 { re - initalize primary }
+
+   end;
+   if p > 8 then begin { too long }
+
+      writeln('*** Filename too long');
+      abort
+ 
+   end;
+   getseq(8 - p); { get rest of primary }
+   if chkchr = '.' then begin { secondary }
+
+      getncr; { get character }
+      if not alpha(chkchr) or digit(chkchr) then begin { error }
+
+         writeln('*** Invalid filename');
+         abort
+
+      end;
+      getseq(3) { get secondary }
+
+   end
+
+end; { parnam }
+
+procedure prthex(f: byte; w: integer);
+ 
+var i, j: byte;
+    v:    integer;
+ 
+begin
+
+   for i := 1 to f do begin { output digits }
+
+      v := w; { save word }
+      for j := 1 to f - i do v := v div 16; { extract digit }
+      v := v mod 16; { mask }
+      { convert ascii }
+      if v >= 10 then v := v + (ord('A') - 10)
+      else v := v + ord('0');
+      write(chr(v)) { output }
+
+   end
+
+end;
+ 
+procedure prtflg;
+ 
+type flag = packed array [1..3] of char; { flag ascii }
+
+var b:     byte;
+    first: boolean; { first output flag }
+ 
+procedure prtflg(f: flag);
+
+begin
+
+   if not first then write(' '); { space off }
+   write(f); { output flag }
+   first := false { set not first output }
+
+end;
+   
+begin
+
+   first := true; { set 1st flag output true }
+   write('flags[');
+   read(symfil, b); { read flag byte }
+   if (b and $80) <> 0 then prtflg('???');
+   if (b and $40) <> 0 then prtflg('???');
+   if (b and $20) <> 0 then prtflg('???');
+   if (b and $10) <> 0 then prtflg('var');
+   if (b and $08) <> 0 then prtflg('ext');
+   if (b and $04) <> 0 then prtflg('gbl');
+   if (b and $02) <> 0 then prtflg('pgm');
+   if (b and $01) <> 0 then prtflg('def');
+   write('] ');
+   def := odd(b) { set defined flag }
+
+end;
+
+{***************************************************************
+
+Input variger
+
+Inputs a variger to the given integer.
+Varigers are of the following format:
+
+   1. (byte) the tag byte.
+   2-N. The variger value.
+
+The tag byte values are:
+
+   bit 7 - Low for integer number, high for float.
+   bit 6 - Contains the sign of the integer. 
+   bit 5 - Unused.
+   bit 4 - Length of integer in bytes, 1-32, in -1 format.
+   bit 3 -      ""              ""
+   bit 2 -      ""              ""
+   bit 1 -      ""              ""
+   bit 0 -      ""              ""
+
+The integer is converted by removing the sign bit and converting
+to signed magnitude, then determining the byte size, then
+outputting the tag and number.
+
+***************************************************************}
+
+procedure rdvar(var n: integer); { integer to output}
+
+var t: byte;     { tag byte }
+    s: integer;  { sign }
+    b: byte;     { read byte holder }
+
+begin
+
+   read(symfil, t); { get tag byte }
+   if (t and $80) <> 0 then begin { floating point }
+
+      writeln('*** Floating point format not implemented');
+      abort
+
+   end;
+   if (t and $40) <> 0 then s := -1 else s := 1; { set sign of value }
+   if (t and $20) <> 0 then begin
+
+      writeln('*** Bad symbol file format1');
+      abort
+
+   end;
+   t := (t and $1f)+1; { mask byte length and adjust }
+   n := 0; { clear result }
+   while t <> 0 do begin { read in bytes of value }
+
+      n := n*256; { scale up bytes for big endian format }
+      read(symfil, b); { get the next byte }
+      n := n+b; { add in }
+      t := t-1 { count bytes read }
+
+   end;
+   n := n*s { set sign of result }
+
+end;
+ 
+procedure prtval;
+ 
+var n: integer;
+ 
+begin
+
+   rdvar(n); { get the value }
+   prthex(maxhex, n) { print value }
+
+end;
+
+procedure prtop;
+
+var b: byte;
+
+begin
+
+   write('op[');
+   read(symfil, b); { get operation byte }
+   if b > 12 then begin { bad code }
+
+      writeln('*** Bad symbol file format2');
+      abort
+
+   end;
+   case b of { operation }
+
+      0:  write('nop');
+      1:  write('add');
+      2:  write('sub');
+      3:  write('mult');
+      4:  write('div');
+      5:  write('mod');
+      6:  write('shl');
+      7:  write('shr');
+      8:  write('and');
+      9:  write('or');
+      10: write('xor');
+      11: write('not');
+      12: write('neg')
+
+   end;
+   write('] ')
+
+end;
+
+procedure prtit;
+
+var t, b: byte;
+
+begin
+
+   write('it[');
+   read(symfil, t); { get tagfield }
+   if (t and $80) <> 0 then write('big ');
+   case (t div $08) and $03 of { insertion mode }
+
+      0: write('norm ');  { normal }
+      1: write('off ');   { signed offset }
+      2: write('ns off ') { non-standard offset }
+
+   end;
+   if (t and $40) <> 0 then write('off ');
+   write(t and $07:1, ':'); { output starting bit }
+   read(symfil, b); { get bit length }
+   write(b+1:1); { output }
+   if (t and $20) <> 0 then begin { there is a constant offset }
+
+      write(' cof: ');
+      read(symfil, b); { get offset byte }
+      write(b:1) { output }
+      
+   end;
+   write('] ')
+
+end;
+ 
+begin
+
+   writeln;
+   writeln('Symbol file printer vs. 1.0 Copyright (C) 1994 S. A. Moore');
+   writeln;
+   
+   getcmd; { load command line }
+   parfil(symnam); { get the name of the symbol file }
+   if not exists(symnam) then begin { not found }
+
+      writeln('*** Input symbol file does not exist');
+      abort
+
+   end;
+   assign(symfil, symnam); { open the symbols file }
+   reset(symfil);
+   
+   repeat { read entries }
+
+      read(symfil, t); { get entry type }
+      if t > 4 then begin
+
+         writeln('*** Bad symbol file format3');
+         abort
+
+      end;
+      write(t, ': '); { output entry type }
+      if t = 1 then begin { symbol }
+
+         prtop; { print operation code }
+         read(symfil, b); { get the string length }
+         for i := 1 to b+1 do begin { read symbol characters }
+
+            read(symfil, b); { get a character }
+            write(chr(b)) { output }
+
+         end;
+         write(' '); { space off }
+         prtflg; { output flags }
+         if def then begin
+
+           write('value[');
+           prtval; { output value }
+           write(']')
+
+         end
+
+      end else if t = 2 then begin { complex }
+
+         prtop; { print operation code }
+         prtflg; { output flags }
+         if def then begin
+
+           write('value[');
+           prtval; { output value }
+           write(']')
+
+         end
+
+      end else if t = 3 then begin { rld }
+
+         prtit; { print insertion type }
+         write('addr[');
+         prtval; { output address }
+         write(']')
+
+      end else if t = 4 then begin { constant rld }
+
+         prtit; { print insertion type }
+         write('addr[');
+         prtval; { output address }
+         write('] ');
+         prtflg; { output flags }
+         write('value[');
+         prtval; { output value }
+         write(']')
+
+      end;
+{      writeln} { terminate line }
+
+   until t = 0; { end of file }
+   99: { abort program }
+   close(symfil) { close symbol file }
+
+end.
